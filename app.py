@@ -3,7 +3,7 @@ SPX Algo — Player224 Style  |  Streamlit Web UI
 Run: streamlit run spx_app.py
 """
 
-import sys, io, re, xml.etree.ElementTree as _ET
+import sys, io, re, os, csv, xml.etree.ElementTree as _ET
 from datetime import datetime, date, timedelta
 import pytz
 import numpy as np
@@ -99,6 +99,57 @@ SIGNAL_GROUPS = {
                    "Above Prior Day High",        # current close > PDH = trend continuation / breakout
                    "Above Pivot",                 # above classic pivot = session bull lean
                    "Above 5d High"],              # broke above prior 5-bar high = weekly breakout
+}
+
+# Signal tier classification — determines which signals are included in Core SSR vs Live-Adj SSR.
+#
+#   core    — computed from completed daily bars (SPX/VIX/sectors); historically backtestable
+#   session — depends on the current-session open price (today's gap); not available prior to open
+#   live    — requires real-time or intraday feeds (PCR, macro rates, A/D, overnight ES)
+#             these cannot be reconstructed historically in the day backtest
+#
+# Core SSR = score from core signals only → directly comparable to backtest accuracy numbers
+# Live-Adj SSR = Core + session/live overlay → richer but only partially validated
+SIGNAL_TIERS = {
+    # ── core (28 signals) — backtestable from closed daily bars ──────────────
+    "Above 20 SMA":           "core",
+    "Above 50 SMA":           "core",
+    "Above 200 SMA":          "core",
+    "20 SMA > 50 SMA":        "core",
+    "Higher Close (1d)":      "core",
+    "Higher Close (5d)":      "core",
+    "RSI Above 50":           "core",
+    "MACD Bullish":           "core",
+    "RSI Strong Trend":       "core",
+    "VIX Below 20":           "core",
+    "VIX Falling":            "core",
+    "ATR Contracting":        "core",
+    "VIX Below 15":           "core",
+    "VIX 3d Relief":          "core",
+    "VIX 1d Down":            "core",
+    "VIX No Spike":           "core",
+    "Volume Above Average":   "core",
+    "Sector Breadth ≥ 50%":   "core",
+    "Sector Breadth ≥ 70%":   "core",
+    "Sector Breadth ≥ 85%":   "core",
+    "Stoch Bullish":          "core",
+    "RSI Trend Zone":         "core",
+    "52w Range Upper Half":   "core",
+    "52w Range Top 20%":      "core",
+    "Above BB Mid":           "core",
+    "Above Prior Day High":   "core",
+    "Above Pivot":            "core",
+    "Above 5d High":          "core",
+    # ── session (1 signal) — valid only after today's open price is known ────
+    "Gap/ATR Normal":         "session",
+    # ── live (7 signals) — real-time feeds; not available in day backtest ────
+    "A/D Line Positive":      "live",
+    "Put/Call Fear Premium":  "live",
+    "Put/Call Fear Abating":  "live",
+    "Yield Curve Positive":   "live",
+    "Credit Spread Calm":     "live",
+    "Above Overnight Midpoint": "live",
+    "Overnight Upper Third":  "live",
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -1931,6 +1982,20 @@ _news_nudge = max(-5, min(5, int(round(_news_comp * 5))))
 score       = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
+# ── Core SSR: weighted score from backtestable closed-bar signals only ───────
+# Excludes session context (Gap/ATR Normal) and live-only signals (PCR, macro, overnight).
+# This is the score that the day backtest actually validates — use it when citing accuracy.
+# Live-Adj SSR = score (above) includes all signals for the richest real-time estimate.
+_core_wg_s, _core_wg_w = [], []
+for _gn, _gs in SIGNAL_GROUPS.items():
+    _cpr = [signals.get(k, 0) for k in _gs if SIGNAL_TIERS.get(k) == "core" and k in signals]
+    if _cpr:
+        _cw = _grp_weights.get(_gn, 1.0)
+        _core_wg_s.append((sum(_cpr) / len(_cpr)) * _cw)
+        _core_wg_w.append(_cw)
+_core_ssr      = round(sum(_core_wg_s) / sum(_core_wg_w) * 100) if _core_wg_s else _weighted_base
+_live_adj_delta = score - _core_ssr   # positive = live overlay is bullish; negative = bearish overlay
+
 # ── Score driver narrative: top 2 bullish drivers + top drag group ────────
 _grp_pct = {}
 for _gn, _gs in SIGNAL_GROUPS.items():
@@ -2049,7 +2114,7 @@ _mc4_vc  = "#f59e0b" if _opex_week else "#94a3b8"
 _mc4_sc  = "#f59e0b" if _opex_friday else ("#64748b" if _opex_week else "#475569")
 
 for col, lbl, val, sub, vc, sc, fsize in [
-    (mc1, "SSR Score",    str(score),      f"{rating.split()[0]} {rating.split()[1] if len(rating.split())>1 else ''}",  color,  "#94a3b8", "22px"),
+    (mc1, "Live-Adj SSR", str(score),      f"Core: {_core_ssr} &nbsp;·&nbsp; {rating.split()[0]}",  color,  "#94a3b8", "22px"),
     (mc2, "SSR Action",   _act_dir,        f"<span style='font-size:9px;letter-spacing:.5px'>{_act_conv}</span>&nbsp; {buys}✅{sells}❌", color, "#64748b", "20px"),
     (mc3, "ES Futures",   es_display,      chg_str(live["es_change"],live["es_pct"]),  "#f1f5f9", es_chg_color,  "18px"),
     (mc4, _mc4_lbl,       _mc4_val,        _mc4_sub,                                  _mc4_vc,  _mc4_sc,       "13px"),
@@ -2084,6 +2149,22 @@ with cL:
       </div>
       <div style="font-size:14px;font-weight:700;color:{color}">{rating}</div>
       <div style="font-size:12px;color:#94a3b8;margin:3px 0 6px">{action}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:8px">
+        <div style="background:#0f1f0f;border-radius:6px;padding:5px 8px;text-align:center">
+          <div style="font-size:9px;color:#64748b;letter-spacing:.8px">CORE SSR</div>
+          <div style="font-size:18px;font-weight:800;color:{'#22c55e' if _core_ssr>=55 else '#ef4444' if _core_ssr<=44 else '#94a3b8'}">{_core_ssr}</div>
+          <div style="font-size:9px;color:#475569">backtested · 28 signals</div>
+        </div>
+        <div style="background:#0f1117;border-radius:6px;padding:5px 8px;text-align:center;border:1px solid #1e3a5f">
+          <div style="font-size:9px;color:#64748b;letter-spacing:.8px">LIVE-ADJ SSR</div>
+          <div style="font-size:18px;font-weight:800;color:{color}">{score}</div>
+          <div style="font-size:9px;color:#475569">+session/live overlay
+            <span style="color:{'#4ade80' if _live_adj_delta>0 else '#f87171' if _live_adj_delta<0 else '#64748b'}">
+              ({'+' if _live_adj_delta>=0 else ''}{_live_adj_delta})
+            </span>
+          </div>
+        </div>
+      </div>
       <div style="font-size:10px;color:#475569;margin-bottom:4px">
         Base: {_base_score} → Wt: {_weighted_base} &nbsp;·&nbsp;
         News: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
@@ -2382,12 +2463,10 @@ _tab_live, _tab_research = st.tabs(["📈 Live Signal", "🔬 Research & Validat
 # SIGNAL BREAKDOWN (Research tab)
 # ═══════════════════════════════════════════════════════════════════════════════
 with _tab_research:
-    with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell", expanded=False):
-        # Signals available only in live mode (no historical data for these)
-        _LIVE_ONLY_SIGS = {"A/D Line Positive", "Yield Curve Positive", "Credit Spread Calm",
-                            "Above Overnight Midpoint", "Overnight Upper Third"}
-        # Signals that are overridden by intraday data during RTH
-        _INTRADAY_SIGS  = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
+    with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell · Core SSR: {_core_ssr} · Live-Adj: {score}", expanded=False):
+        _INTRADAY_SIGS = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
+        # Tier label + color for each signal
+        _TIER_LABEL = {"core": "", "session": ("session", "#f59e0b"), "live": ("live", "#64748b")}
         bull_sigs = {k:v for k,v in signals.items() if v==1}
         bear_sigs = {k:v for k,v in signals.items() if v==0}
         scol1, scol2, scol3 = st.columns(3)
@@ -2398,10 +2477,11 @@ with _tab_research:
             rows_html = "".join(
                 f'<div class="sig-row">'
                 f'<span>{"✅" if v else "❌"} {k}'
-                + (f' <span style="font-size:9px;color:#64748b">(live-only)</span>'
-                   if k in _LIVE_ONLY_SIGS else
-                   f' <span style="font-size:9px;color:#60a5fa">(5m)</span>'
-                   if k in _INTRADAY_SIGS else "")
+                + (f' <span style="font-size:9px;color:#60a5fa">(5m)</span>'
+                   if k in _INTRADAY_SIGS else
+                   (f' <span style="font-size:9px;color:{_TIER_LABEL[SIGNAL_TIERS.get(k,"core")][1]}">'
+                    f'({_TIER_LABEL[SIGNAL_TIERS.get(k,"core")][0]})</span>'
+                    if SIGNAL_TIERS.get(k, "core") != "core" else ""))
                 + f'</span>'
                 f'<span style="color:{"#22c55e" if v else "#ef4444"};font-size:10px">{"BUY" if v else "SELL"}</span>'
                 f'</div>'
@@ -2409,7 +2489,7 @@ with _tab_research:
             )
             col.markdown(f'<div style="background:#1e2130;border-radius:8px;padding:8px 12px">{rows_html}</div>',
                          unsafe_allow_html=True)
-        st.caption("(live-only) = macro/flow data not available historically · (5m) = replaced by intraday 5-min RSI during RTH")
+        st.caption("core = backtestable closed-bar signal · session = requires today's open · live = real-time feed only · (5m) = intraday RSI override")
 
         # Group score breakdown — shows each category's score + adaptive weight
         _grp_rows = []
@@ -3526,6 +3606,168 @@ with _tab_research:
                     f'</div>',
                     unsafe_allow_html=True)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHADOW PERFORMANCE LEDGER
+# Appends one row per trading day at or after 4 PM (post-close snapshot).
+# Records frozen daily outputs so live performance can be measured forward.
+# Works locally; on Streamlit Cloud writes to /tmp (ephemeral across restarts).
+# ─────────────────────────────────────────────────────────────────────────────
+_LEDGER_DIR  = "Codex"
+_LEDGER_FILE = os.path.join(_LEDGER_DIR, "shadow-ledger.csv")
+_LEDGER_COLS = ["date","core_ssr","live_adj_ssr","vix","gap_pts","event_flags",
+                "opex","orb_status","actual_dir","actual_pts"]
+
+def _ledger_read():
+    """Load the shadow ledger CSV; return list of dicts."""
+    try:
+        if not os.path.exists(_LEDGER_FILE):
+            return []
+        with open(_LEDGER_FILE, newline="") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:
+        return []
+
+def _ledger_append(row_dict):
+    """Append one row to the shadow ledger, creating file + header if needed."""
+    try:
+        os.makedirs(_LEDGER_DIR, exist_ok=True)
+        exists = os.path.exists(_LEDGER_FILE)
+        with open(_LEDGER_FILE, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=_LEDGER_COLS, extrasaction="ignore")
+            if not exists or os.path.getsize(_LEDGER_FILE) == 0:
+                w.writeheader()
+            w.writerow(row_dict)
+    except Exception:
+        pass  # silently fail (e.g. read-only FS on Cloud)
+
+def _ledger_fill_actuals(rows):
+    """
+    Retroactively fill 'actual_dir' / 'actual_pts' for rows where it's blank.
+    actual_dir = direction of SPX close on that date vs prior close.
+    Uses SPX 5d/1d data already available — cheap and accurate.
+    """
+    try:
+        _spx_hist = yf.download("^GSPC", period="6mo", interval="1d",
+                                progress=False, auto_adjust=True)
+        if _spx_hist.empty: return rows
+        _hc = _spx_hist["Close"].squeeze()
+        if isinstance(_hc, pd.DataFrame): _hc = _hc.iloc[:, 0]
+        _hist_map = {idx.date().isoformat(): float(v) for idx, v in zip(_spx_hist.index, _hc)}
+        dates_sorted = sorted(_hist_map.keys())
+        _prev_close_map = {dates_sorted[i]: _hist_map[dates_sorted[i-1]]
+                           for i in range(1, len(dates_sorted))}
+        updated = []
+        for r in rows:
+            if r.get("actual_dir", "").strip() == "" and r["date"] in _hist_map:
+                _close = _hist_map[r["date"]]
+                _prev  = _prev_close_map.get(r["date"])
+                if _prev:
+                    _pts = round(_close - _prev, 1)
+                    r = dict(r)
+                    r["actual_pts"] = str(_pts)
+                    r["actual_dir"]  = "bull" if _pts > 5 else ("bear" if _pts < -5 else "flat")
+            updated.append(r)
+        return updated
+    except Exception:
+        return rows
+
+# ── Auto-append today's row at post-close ───────────────────────────────────
+_is_post_close = (now_est.weekday() < 5 and now_est.hour >= 16)
+_today_str     = now_est.strftime("%Y-%m-%d")
+if _is_post_close:
+    _existing_rows = _ledger_read()
+    _existing_dates = {r["date"] for r in _existing_rows}
+    if _today_str not in _existing_dates:
+        _today_events_str = ",".join(sorted(get_event_types_today()))
+        _ledger_append({
+            "date":         _today_str,
+            "core_ssr":     str(_core_ssr),
+            "live_adj_ssr": str(score),
+            "vix":          str(vix_now),
+            "gap_pts":      str(round(live_gap, 1)),
+            "event_flags":  _today_events_str if _today_events_str else "none",
+            "opex":         "yes" if _opex_week else "no",
+            "orb_status":   _orb_status,
+            "actual_dir":   "",
+            "actual_pts":   "",
+        })
+
+# ── Shadow ledger display in research tab ───────────────────────────────────
+with _tab_research:
+    with st.expander("📓 Shadow Performance Ledger — Forward-Tracked Sessions (click to expand)", expanded=False):
+        st.caption(
+            "Each row = one post-close snapshot (Core SSR + Live-Adj SSR). "
+            "'actual_dir' is filled retroactively from daily SPX closes. "
+            "Requires local filesystem write — ephemeral on Streamlit Cloud unless volume mounted."
+        )
+        _ledger_rows = _ledger_read()
+        if _ledger_rows:
+            _ledger_rows = _ledger_fill_actuals(_ledger_rows)
+            # Re-save with filled actuals
+            try:
+                os.makedirs(_LEDGER_DIR, exist_ok=True)
+                with open(_LEDGER_FILE, "w", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=_LEDGER_COLS, extrasaction="ignore")
+                    w.writeheader(); w.writerows(_ledger_rows)
+            except Exception:
+                pass
+            _recent = _ledger_rows[-30:][::-1]   # last 30, newest first
+            _hits_c = sum(1 for r in _recent
+                          if r.get("actual_dir","").strip()
+                          and ((r["actual_dir"] == "bull" and int(r.get("live_adj_ssr",50)) >= 55)
+                               or (r["actual_dir"] == "bear" and int(r.get("live_adj_ssr",50)) <= 44)
+                               or r["actual_dir"] == "flat"))
+            _tot_known = sum(1 for r in _recent if r.get("actual_dir","").strip())
+            _ldg_acc   = int(_hits_c / _tot_known * 100) if _tot_known else 0
+            _ldg_c     = "#4ade80" if _ldg_acc >= 60 else ("#f59e0b" if _ldg_acc >= 45 else "#f87171")
+            if _tot_known:
+                st.markdown(
+                    f'<div style="font-size:13px;color:#94a3b8;margin-bottom:10px">'
+                    f'Forward accuracy (last {_tot_known} sessions): '
+                    f'<b style="color:{_ldg_c};font-size:16px">{_ldg_acc}%</b></div>',
+                    unsafe_allow_html=True)
+            _ldg_rows_html = ""
+            for _lr in _recent:
+                _cs  = int(_lr.get("core_ssr","50") or 50)
+                _ls  = int(_lr.get("live_adj_ssr","50") or 50)
+                _ad  = _lr.get("actual_dir","")
+                _ap  = _lr.get("actual_pts","")
+                _cs_c = "#4ade80" if _cs >= 55 else "#ef4444" if _cs <= 44 else "#94a3b8"
+                _ls_c = "#4ade80" if _ls >= 55 else "#ef4444" if _ls <= 44 else "#94a3b8"
+                _ad_c = "#4ade80" if _ad == "bull" else "#ef4444" if _ad == "bear" else "#64748b"
+                _ldg_rows_html += (
+                    f'<tr style="border-bottom:1px solid #1a1f33">'
+                    f'<td style="padding:4px 8px;font-size:11px;color:#64748b">{_lr["date"]}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_cs_c};font-weight:700">{_cs}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_ls_c};font-weight:700">{_ls}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("vix","")}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("gap_pts","")}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:#64748b">{_lr.get("event_flags","")}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:{_ad_c}">{_ad or "—"}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:{_ad_c}">{_ap or "—"}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;padding:12px 14px;overflow-x:auto">'
+                f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9">'
+                f'<thead><tr style="background:#0f1117">'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px;text-align:left">DATE</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">CORE</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">LIVE-ADJ</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">VIX</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">GAP</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">EVENTS</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">ACTUAL DIR</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">SPX Δ pts</th>'
+                f'</tr></thead><tbody>{_ldg_rows_html}</tbody></table></div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">'
+                'No ledger entries yet. The first row is appended automatically after market close (4 PM EST). '
+                'Requires writable local filesystem.</div>',
+                unsafe_allow_html=True)
 
 st.markdown("""
 <div style="text-align:center;color:#374151;font-size:11px;margin-top:10px;padding-bottom:6px">

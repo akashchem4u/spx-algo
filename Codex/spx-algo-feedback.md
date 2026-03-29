@@ -81,15 +81,32 @@ Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
 
-## Open Items
+## Resolved Items (8d044b9 + latest)
 
-**Low priority (no action needed now):**
+| Commit | Item | Fix |
+|--------|------|-----|
+| 8d044b9 | Gap/ATR Normal UnboundLocalError | Initialize defaults before conditional — no more crash on short data |
+| 8d044b9 | Weekly research table wording | Caption clarifies SSR-direction only, not weekly projection path |
+| 8d044b9 | Feedback note re: flat opens | Fixed: 0.0 signed gap fires 1 (neutral, not bearish) |
+| 8d044b9 | Backtest gap inflation | Always anchor projection to `day_open`, not `prev_close` |
+| 8d044b9 | ATM strike selection | 5-point SPX strikes instead of 25-point rounding |
+| 8d044b9 | Window live win-rate | Live window card shows 2yr accuracy % badge per window row |
+| latest  | Core vs Live SSR split | `SIGNAL_TIERS` dict; Core SSR tile in metrics row + card section; tier labels in signal breakdown |
+| latest  | Shadow performance ledger | Auto-appends post-close snapshot to `Codex/shadow-ledger.csv`; research tab shows last 30 with forward accuracy |
+
+---
+
+## Open Items (Next Agent Plan — see `next-agent-action-plan.md`)
+
+**High priority:**
+1. Walk-forward regime tables (Priority 2) — break day-backtest SSR accuracy by VIX/gap/weekday/event/OpEx. The 2yr window backtest has VIX+gap per window; day-level SSR regime breakdown is missing.
+2. Signal ablation testing (Priority 3) — test which newly-added signals improve accuracy vs add noise. Run baseline + one-signal-at-a-time loop; write report to `Codex/ablation-report.md`.
+3. Shadow ledger needs 30–60 sessions to produce meaningful forward hit-rate numbers (Priority 4, now writing).
+
+**Low priority:**
 1. `_slot_atr` in live accuracy section is flat (`levels["atr"] / 6.5`) — chop classification only, not projection math.
 2. `Gap/ATR Normal` in prior-eve backtest SSR still uses prior-day gap. Requires `session_gap` param refactor.
 3. ORB width/distance not available in 2-yr hourly backtest (requires intraday ORB reconstruction).
-4. Backtest SSR scored at prior close — hit rates on gap days may be 5–10% inflated vs. true open-anchor accuracy.
-5. Trade suggestion strike selection uses dumb round-down to nearest 25 — not ATM-optimal.
-6. Window live win-rate not yet surfaced on live projection cards (research tab has it; live tab doesn't).
 
 ---
 
@@ -163,3 +180,51 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 - It still does **not** justify calling the system “high confidence” yet, mainly because:
   - one new scorer robustness bug was introduced
   - some claimed weekly improvements are not yet tied to validation
+
+---
+
+## Follow-up Audit 2 (Codex, 2026-03-29 03:35 CT)
+
+### Findings
+
+#### 1. Weekly accuracy still counts `neutral` calls as correct
+- Severity: Medium-High
+- File: `app.py:2480-2488`
+- Problem:
+  - `_proj_call` can be `"neutral"`
+  - `_correct = (_proj_call == _actual) or (_proj_call == "neutral")`
+- Why it matters:
+  - the weekly research metric is still inflated whenever the model makes neutral calls
+  - this is especially important because the table is presented as an investor-facing accuracy surface
+- Recommendation:
+  - exclude neutral calls from both numerator and denominator
+  - or report three separate counts: bullish calls, bearish calls, neutral calls
+
+#### 2. Live window accuracy badges are label-aggregated, not slot-specific
+- Severity: Medium
+- Files:
+  - `app.py:20-44`
+  - `app.py:1714-1728`
+- Problem:
+  - window badges on the live intraday card look up stats by `label`
+  - at least one label is duplicated in `TIME_WINDOWS` (`Intraday Bounce` appears twice)
+  - both rows therefore show the same 2-year accuracy badge even though they are different time slots
+- Why it matters:
+  - the UI implies slot-level evidence, but the badge is actually label-level aggregation
+  - this can overstate precision for the user
+- Recommendation:
+  - key historical stats by `(start, end, label)` instead of just `label`
+  - or relabel the badge as `label avg` so it is not mistaken for slot-specific accuracy
+
+#### 3. Missing gap context currently defaults bullish
+- Severity: Medium
+- File: `app.py:867-882`
+- Problem:
+  - after the crash fix, unknown gap/ATR context now falls back to `_signed_gap_atr = 0.0`
+  - that makes `Gap/ATR Normal = 1`
+- Why it matters:
+  - degraded data now biases the score upward instead of becoming neutral/omitted
+  - that is safer from a runtime perspective, but not safer from a trading-signal perspective
+- Recommendation:
+  - when gap context is unavailable, omit the signal from scoring or treat it as neutral
+  - do not default unknown context to bullish
