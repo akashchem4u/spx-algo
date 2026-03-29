@@ -2296,6 +2296,25 @@ spx_price  = live["spx_price"] or levels["current"]
 es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
 
+# ── Pre-market implied gap (ES futures vs SPX last close) ─────────────────
+# Outside RTH (before 9:30, after 16:00, weekend): SPX open hasn't happened.
+# Implied gap = ES price − last SPX close. Feeds projections + gap overrides.
+_is_rth = (datetime.now(EST).weekday() < 5 and
+           datetime.now(EST).hour >= 9 and
+           not (datetime.now(EST).hour == 9 and datetime.now(EST).minute < 30) and
+           datetime.now(EST).hour < 16)
+_implied_gap     = round(es_price - levels["current"], 1) if live["es_price"] else 0.0
+_implied_gap_pct = round(_implied_gap / levels["current"] * 100, 2) if levels["current"] else 0.0
+# Use implied gap for projections when pre-market; live_gap (RTH open-prev_close) when in session
+if not _is_rth and live["es_price"]:
+    live_gap = _implied_gap
+
+# Countdown to next 6 PM ES open (shown pre-market)
+_now_est      = datetime.now(EST)
+_next_open_dt = next_es_open(_now_est)
+_mins_to_open = int((_next_open_dt - _now_est).total_seconds() / 60)
+_pre_market   = not _is_rth
+
 # Key level proximity — warn when SPX is within 15 pts of a major level
 _watch_levels = {
     "R2": levels["resistance_2"], "R1": levels["resistance_1"],
@@ -2388,6 +2407,32 @@ _mc4_val = ("3rd Fri" if _opex_friday else "Active") if _opex_week else ts1
 _mc4_sub = "⚡ Exp. Friday" if _opex_friday else ("Pin + Unwind" if _opex_week else "ES=F  24×5")
 _mc4_vc  = "#f59e0b" if _opex_week else "#94a3b8"
 _mc4_sc  = "#f59e0b" if _opex_friday else ("#64748b" if _opex_week else "#475569")
+
+# ── Pre-market banner: implied gap + countdown when outside RTH ──────────
+if _pre_market and live["es_price"]:
+    _gap_color  = "#f87171" if _implied_gap < -GAP_THRESHOLD else ("#4ade80" if _implied_gap > GAP_THRESHOLD else "#f59e0b")
+    _gap_regime_lbl = ("GAP DOWN" if _implied_gap < -GAP_THRESHOLD
+                       else "GAP UP" if _implied_gap > GAP_THRESHOLD else "FLAT OPEN")
+    _open_label = (f"{_mins_to_open}m to ES Open" if _mins_to_open > 0
+                   else "ES Session Active")
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid {_gap_color};border-radius:8px;'
+        f'padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'
+        f'<div>'
+        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase">PRE-MARKET MODE</span>'
+        f'<div style="font-size:15px;font-weight:800;color:{_gap_color};margin-top:2px">'
+        f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
+        f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
+        f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
+        f'{"Gap-down override active: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override active: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No gap override threshold crossed"}'
+        f'</div>'
+        f'</div>'
+        f'<div style="text-align:right">'
+        f'<div style="font-size:22px;font-weight:800;color:#64748b">⏳</div>'
+        f'<div style="font-size:12px;color:#64748b">{_open_label}</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True)
 
 for col, lbl, val, sub, vc, sc, fsize in [
     (mc1, "Live-Adj SSR", str(score),      f"Core: {_core_ssr} &nbsp;·&nbsp; {rating.split()[0]}",  color,  "#94a3b8", "22px"),
