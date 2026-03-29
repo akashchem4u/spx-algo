@@ -414,3 +414,42 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 
 1. Make news timestamp normalization robust across RSS `pubDate`, ISO strings, and vendor-specific formats before recency weighting.
 2. Show current-regime window hit rate in the live strip instead of only the all-regime average.
+
+### Re-Verification After Commits c6cf7cd and 4fd82af (2026-03-29)
+
+- `Pre-market gap-aware SSR`:
+  - Verified fixed.
+  - `Gap/ATR Normal` is now injected before `_weighted_base` / `score` / `_core_ssr` in `app.py:2337-2363`.
+
+- `All-feed news dedupe`:
+  - Verified fixed.
+  - A final dedupe pass now runs after RSS + GNews + AV + fallback aggregation in `app.py:749-759`.
+
+- `News timestamp normalization / sort`:
+  - Verified materially improved.
+  - RSS / Atom timestamps are now normalized at ingest in `app.py:626-639`.
+  - Global sort before recency weighting now runs in `app.py:761-771`.
+
+- `Window strip regime-specific accuracy`:
+  - Verified implemented.
+  - `windows_html()` now prefers VIX / gap-specific hit rate when sample size is adequate in `app.py:1956-1996`.
+
+### New Remaining Issue
+
+#### 1. Gap regime thresholds are inconsistent between live window logic and historical regime badges
+- Severity: Medium
+- Files:
+  - `app.py:47`
+  - `app.py:1889-1890`
+  - `app.py:1963-1964`
+  - `app.py:3891`
+- Problem:
+  - live window overrides use `GAP_THRESHOLD = 25.0`
+  - but the historical regime-bucket stats still classify `gap_up` / `gap_down` using `> 10` / `< -10`
+  - the new live badge can therefore show a "context-specific" gap accuracy for a different regime definition than the live model is actually using
+- Why it matters:
+  - the regime-specific badge is now more sophisticated, but it is not yet using the same gap buckets as the live window engine
+  - that can misstate the historical edge shown beside the live window
+- Recommendation:
+  - make the backtest / aggregate gap buckets use `GAP_THRESHOLD`
+  - or explicitly separate `small gap` and `large gap` statistics and label them correctly in the UI
