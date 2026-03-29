@@ -458,3 +458,40 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 - The pre-market banner now shows `_es_rth_anchor` (falling back to `_proj_spx_open` only if ES data unavailable)
 - The `_tab_live` projection block reuses `_es_rows_precomp` and `_es_rth_anchor` — no redundant computation
 - Banner and SPX table now always show the same overnight-drift-adjusted RTH open projection
+
+---
+
+## Re-Verification After Commits 33d5356, b53b658, dba6c35 (2026-03-29)
+
+- `Pre-market implied gap overwrite`:
+  - Verified fixed.
+  - `live_gap` now preserves the ES-implied gap pre-market and only switches to `_rth_gap` during RTH.
+
+- `Window regime badge / aggregated window stats`:
+  - Verified fixed.
+  - Window backtest and aggregate paths now use `GAP_THRESHOLD` for `gap_up` / `gap_down`.
+
+- `Research / live integrity`:
+  - App compiles cleanly with `python3 -m py_compile app.py`.
+  - Repo worktree is clean.
+
+### Current Remaining Item
+
+#### 1. 2-year regime breakdown still buckets gaps at ±10, but the UI labels that table as ±25
+- Severity: Medium
+- Files:
+  - `app.py:2279-2283`
+  - `app.py:3181-3182`
+- Problem:
+  - `compute_historical_analysis()` still uses:
+    - `up` if `_gp > 10`
+    - `down` if `_gp < -10`
+  - but the UI labels the gap regime table as:
+    - `Gap Up > 25 pts`
+    - `Gap Down > 25 pts`
+- Why it matters:
+  - the live model and window regime badges are now aligned
+  - but the 2-year regime research table still overstates what its gap buckets mean
+- Recommendation:
+  - either change `compute_historical_analysis()` to use `GAP_THRESHOLD`
+  - or relabel the regime table to match the actual ±10 buckets
