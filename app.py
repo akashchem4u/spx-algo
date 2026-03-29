@@ -1480,9 +1480,18 @@ def run_extended_window_backtest():
                 # RTH only
                 if not (9 <= ts.hour < 16): continue
 
-                # Match window — use window_bias_at() so the same overrides
-                # (gap, VIX, events, OpEx) that the live page uses are also
-                # applied in the 2-year research validation.
+                # Resolve historical context BEFORE window_bias_at() call.
+                # vix_val/gap_val were previously assigned after the call → NameError
+                # on every iteration, making the 2-year table return empty stats.
+                vix_val = vix_map.get(dt, 20.0)
+                gap_val = gap_map.get(dt, 0.0)
+                vix_key = ("vix_high" if vix_val > VIX_FEAR_THRESHOLD
+                           else "vix_low" if vix_val < VIX_CALM_THRESHOLD
+                           else "vix_mid")
+                gap_key = ("gap_up"   if gap_val > 10 else
+                           "gap_down" if gap_val < -10 else "gap_flat")
+
+                # Match window — use window_bias_at() with fully resolved historical context.
                 _hist_dt_str = dt.strftime("%Y-%m-%d")
                 _hist_evts   = {ev[2] for ev in _ECON_CAL if ev[0] == _hist_dt_str}
                 _is_opex_h   = is_opex_week(dt)
@@ -1491,14 +1500,6 @@ def run_extended_window_backtest():
                     event_types=_hist_evts, weekday=dt.weekday(),
                     opex=_is_opex_h)
                 if mlabel == "Outside Hours": continue
-
-                vix_val = vix_map.get(dt, 20.0)
-                gap_val = gap_map.get(dt, 0.0)
-                vix_key = ("vix_high" if vix_val > VIX_FEAR_THRESHOLD
-                           else "vix_low" if vix_val < VIX_CALM_THRESHOLD
-                           else "vix_mid")
-                gap_key = ("gap_up"   if gap_val > 10 else
-                           "gap_down" if gap_val < -10 else "gap_flat")
 
                 prev_c = float(close_1h.iloc[i-1])
                 curr_c = float(close_1h.iloc[i])
@@ -2016,19 +2017,22 @@ with cR:
             unsafe_allow_html=True
         )
 
-# ── Compute live_gap and ORB status at module level (used in Why This Bias
-#    and again inside _tab_live for projections — must be defined before tabs)
+# ── Compute live_gap, prior_close, and ORB status at module level
+#    (used in Why This Bias, projections, and live accuracy — before tabs)
 try:
     _spx_open_  = spx["Open"].squeeze()
     _spx_close_ = spx["Close"].squeeze()
     if isinstance(_spx_open_,  pd.DataFrame): _spx_open_  = _spx_open_.iloc[:,  0]
     if isinstance(_spx_close_, pd.DataFrame): _spx_close_ = _spx_close_.iloc[:, 0]
     if len(_spx_open_) >= 2 and len(_spx_close_) >= 2:
-        live_gap = round(float(_spx_open_.iloc[-1]) - float(_spx_close_.iloc[-2]), 1)
+        live_gap             = round(float(_spx_open_.iloc[-1]) - float(_spx_close_.iloc[-2]), 1)
+        _session_prior_close = float(_spx_close_.iloc[-2])
     else:
-        live_gap = 0.0
+        live_gap             = 0.0
+        _session_prior_close = spx_price
 except Exception:
-    live_gap = 0.0
+    live_gap             = 0.0
+    _session_prior_close = spx_price
 _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2352,7 +2356,10 @@ with _tab_live:
         sec_base  = {k: v.iloc[:-offset_from_end] if offset_from_end > 0 else v for k, v in sectors_d.items()}
 
         prev_close   = float(spx_base["Close"].squeeze().iloc[-1])
-        bt_score, bt_buys, bt_sells, _ = compute_ssr(spx_base, vix_base, pd.DataFrame(), sec_base)
+        # Pass historical noon timestamp so VIX Falling uses the right clock
+        _bt_as_of = EST.localize(datetime(target_date.year, target_date.month, target_date.day, 12, 0))
+        bt_score, bt_buys, bt_sells, _ = compute_ssr(
+            spx_base, vix_base, pd.DataFrame(), sec_base, as_of_dt=_bt_as_of)
         bt_rating, bt_action, _, bt_color = ssr_meta(bt_score)
         bt_direction = ssr_direction(bt_score)
 
@@ -2782,7 +2789,9 @@ with _tab_research:
             _slot_atr   = levels["atr"] / 6.5
 
             _today_results = []
-            _prev_actual   = _5m_open
+            # Anchor first slot direction comparison against prior session close
+            # (same reference the day backtest uses), not the 9:30 bar's own close.
+            _prev_actual   = _session_prior_close
             for _sl in _slots:
                 _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
                 _actual  = _snap_at(_sl)
