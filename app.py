@@ -84,7 +84,8 @@ SIGNAL_GROUPS = {
                    "VIX 3d Relief",              # 3-day VIX decline = fear unwinding = bull
                    "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
-                   "Sector Breadth ≥ 70%"],      # strong breadth: second tier for gradient
+                   "Sector Breadth ≥ 70%",        # strong breadth: second tier for gradient
+                   "Sector Breadth ≥ 85%"],        # near-full breadth: third tier
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
@@ -872,9 +873,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         _above = sum(1 for _c in _sec_closes.values()
                      if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
         sigs["Sector Breadth ≥ 50%"] = int((_above / _total_s) >= 0.5)
-        # Strong breadth tier: ≥70% of sectors above 50-SMA.
-        # Pairs with ≥50% to give Breadth group a 2-tier gradient.
+        # Gradient breadth tiers: 50% / 70% / 85%.
+        # Each tier adds a signal point, creating a 3-step gradient:
+        #   >50% = broad participation; >70% = strong; >85% = near-full breadth.
         sigs["Sector Breadth ≥ 70%"] = int((_above / _total_s) >= 0.7)
+        sigs["Sector Breadth ≥ 85%"] = int((_above / _total_s) >= 0.85)
 
     # ── Extremes group ───────────────────────────────────────────────────────
     sigs["Stoch Bullish"]   = int(stoch_k.iloc[-1] > stoch_d.iloc[-1])
