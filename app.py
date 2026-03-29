@@ -1013,6 +1013,9 @@ def compute_levels(spx):
     pivot = (ph+pl+pc)/3
     atr14_raw = atr(spx).iloc[-1]
     atr14 = float(atr14_raw) if not pd.isna(atr14_raw) else float(high.iloc[-1] - low.iloc[-1])
+    # Fallback: if ATR is still 0 or NaN (data gap / partial bar), estimate as 1% of price
+    if not atr14 or pd.isna(atr14):
+        atr14 = round(float(c) * 0.010, 1)
     return {
         "current":       round(c,1),   "atr":           round(atr14,1),
         "pivot":         round(pivot,1),
@@ -1222,6 +1225,8 @@ def next_es_open(now):
 
 def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
+    if not daily_atr or daily_atr < 1.0:
+        daily_atr = round(base_price * 0.010, 1)
     direction = ssr_direction(score)
 
     # VIX regime scaling — high VIX = larger per-slot swings (fear = bigger moves)
@@ -1329,6 +1334,8 @@ def next_trading_day(from_date):
 
 def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
+    if not daily_atr or daily_atr < 1.0:
+        daily_atr = round(base_price * 0.010, 1)
     direction = ssr_direction(score)
     # VIX regime scaling — same thresholds as ES projections
     if   vix >= 35: _vx = 2.0
@@ -1423,6 +1430,8 @@ def generate_weekly_projections(base_price, daily_atr, score):
       • Exhaustion dampener: extreme SSR fades toward neutral over the week
       • Per-day directional confidence (not just magnitude decay)
     """
+    if not daily_atr or daily_atr < 1.0:
+        daily_atr = round(base_price * 0.010, 1)
     base_dir = ssr_direction(score)
 
     # Exhaustion factor [0–1]: kicks in beyond ±15 SSR units from 50
