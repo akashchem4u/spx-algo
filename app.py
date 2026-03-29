@@ -2387,6 +2387,7 @@ if levels["current"] <= 0 and spx_price > 0:
 _implied_gap     = round(es_price - levels["current"], 1) if live["es_price"] else 0.0
 _implied_gap_pct = round(_implied_gap / levels["current"] * 100, 2) if levels["current"] else 0.0
 _pre_market      = not _is_rth_now
+live_gap         = 0.0  # default; overwritten below when ES is live or RTH gap is known
 # Inject implied gap into Gap/ATR Normal BEFORE scoring so score is gap-aware.
 # A small gap-up (<0.5 ATR) fires 1; a large gap-up or any gap-down fires 0.
 if _pre_market and live["es_price"]:
