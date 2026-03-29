@@ -79,9 +79,21 @@ SIGNAL_GROUPS = {
     "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
     "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish"],
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting"],
-    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%"],
+    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive"],
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
+    "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
+}
+
+# US Federal Holidays (market closed) — 2025 and 2026
+# Source: NYSE holiday schedule
+US_MARKET_HOLIDAYS = {
+    date(2025, 1, 1), date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
+    date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4), date(2025, 9, 1),
+    date(2025, 11, 27), date(2025, 12, 25),
+    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
+    date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
+    date(2026, 11, 26), date(2026, 12, 25),
 }
 
 BIAS_COLOR = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
@@ -515,11 +527,14 @@ def load_news(vix_now=0.0):
             for item in (yf.Ticker("^GSPC").news or [])[:10]:
                 title = item.get("title","")
                 sc, cat, wt, note = _keyword_impact(title, vix=vix_now)
-                ts  = item.get("providerPublishTime", 0)
+                ts  = item.get("providerPublishTime", None)
+                # Guard against Unix epoch timestamp (0 or missing) — display "N/A" not "1970"
+                _time_str = (datetime.fromtimestamp(ts).strftime("%I:%M %p")
+                             if (ts and ts > 86400) else "N/A")
                 lbl = "🟢 Bullish" if sc > 0.1 else ("🔴 Bearish" if sc < -0.1 else "⚪ Neutral")
                 articles.append({
                     "title": title, "source": item.get("publisher","yf"),
-                    "time":  datetime.fromtimestamp(ts).strftime("%I:%M %p") if ts else "",
+                    "time":  _time_str,
                     "score": sc, "label": lbl,
                     "category": cat, "impact_weight": wt, "note": note,
                 })
@@ -538,6 +553,12 @@ def load_news(vix_now=0.0):
     comb_wts = [iw * rw for iw, rw in zip(imp_wts, rec_wts)]
     total_w  = sum(comb_wts) or 1.0
     comp     = sum(s * w for s, w in zip(scores, comb_wts)) / total_w
+
+    # Require minimum 5 articles before trusting the composite — fewer than that
+    # means a single headline can swing ±0.5 which unfairly shifts SSR ±5 pts.
+    # Below threshold, dampen the composite proportionally.
+    if len(articles) < 5:
+        comp = comp * (len(articles) / 5.0)
 
     label    = "🟢 Bullish" if comp > 0.10 else ("🔴 Bearish" if comp < -0.10 else "⚪ Neutral")
     bull_pct = int(sum(1 for a in articles if a["score"] > 0.1)  / len(articles) * 100)
@@ -626,6 +647,54 @@ def fetch_live():
     return results
 
 
+@st.cache_data(ttl=3600)
+def fetch_macro_signals():
+    """
+    Fetch macro regime signals not captured in price/vol data:
+      1. Yield Curve: 10-year minus 3-month Treasury spread (^TNX - ^IRX).
+         Positive = normal/bull; Negative = inverted = recession warning.
+      2. Credit Spread proxy: HYG (high-yield bond ETF) vs TLT (long Treasury).
+         HYG/TLT ratio rising = credit spreads compressing = risk-on.
+      3. A/D Line proxy: Advance/Decline ratio (^ADVN / ^DECL).
+         Ratio > 1.0 = more stocks advancing = broad bull; < 1 = breadth deteriorating.
+    Returns dict with signal values, or defaults on failure.
+    """
+    out = {"yield_curve_pts": 0.0, "hyhg_ratio": 1.0, "ad_ratio": 1.0}
+    try:
+        tnx = yf.download("^TNX", period="5d", interval="1d", progress=False, auto_adjust=True)
+        irx = yf.download("^IRX", period="5d", interval="1d", progress=False, auto_adjust=True)
+        if not tnx.empty and not irx.empty:
+            _tnx = float(tnx["Close"].squeeze().iloc[-1])
+            _irx = float(irx["Close"].squeeze().iloc[-1])
+            out["yield_curve_pts"] = round(_tnx - _irx, 3)
+    except Exception:
+        pass
+    try:
+        hyg = yf.download("HYG", period="10d", interval="1d", progress=False, auto_adjust=True)
+        tlt = yf.download("TLT", period="10d", interval="1d", progress=False, auto_adjust=True)
+        if not hyg.empty and not tlt.empty:
+            _h = float(hyg["Close"].squeeze().iloc[-1])
+            _t = float(tlt["Close"].squeeze().iloc[-1])
+            _h1 = float(hyg["Close"].squeeze().iloc[-6]) if len(hyg) >= 6 else _h
+            _t1 = float(tlt["Close"].squeeze().iloc[-6]) if len(tlt) >= 6 else _t
+            # Ratio of HYG/TLT: rising = risk-on (credit spreads calm)
+            _cur = _h / _t if _t else 1.0
+            _ref = _h1 / _t1 if _t1 else _cur
+            out["hyg_tlt_rising"] = _cur > _ref
+    except Exception:
+        pass
+    try:
+        adv = yf.download("^ADVN", period="5d", interval="1d", progress=False, auto_adjust=True)
+        dec = yf.download("^DECL", period="5d", interval="1d", progress=False, auto_adjust=True)
+        if not adv.empty and not dec.empty:
+            _a = float(adv["Close"].squeeze().iloc[-1])
+            _d = float(dec["Close"].squeeze().iloc[-1])
+            out["ad_ratio"] = round(_a / _d, 2) if _d > 0 else 1.0
+    except Exception:
+        pass
+    return out
+
+
 @st.cache_data(ttl=180)
 def fetch_intraday_rsi():
     """
@@ -645,7 +714,8 @@ def fetch_intraday_rsi():
         l   = (-d.clip(upper=0)).rolling(14).mean()
         _rv = 100 - (100 / (1 + g / (l + 1e-10)))
         val = float(_rv.iloc[-1])
-        return round(val, 1) if not pd.isna(val) else None
+        if pd.isna(val) or np.isinf(val): return None
+        return round(max(0.0, min(100.0, val)), 1)
     except Exception:
         return None
 
@@ -672,24 +742,36 @@ def atr(df, n=14):
     return tr.rolling(n).mean()
 
 
-def compute_ssr(spx, vix, pcr, sectors):
+def compute_ssr(spx, vix, pcr, sectors, macro=None):
     close = spx["Close"].squeeze(); vol = spx["Volume"].squeeze()
     high  = spx["High"].squeeze();  low = spx["Low"].squeeze()
+    if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
+    if isinstance(vol,   pd.DataFrame): vol   = vol.iloc[:, 0]
+    if isinstance(high,  pd.DataFrame): high  = high.iloc[:, 0]
+    if isinstance(low,   pd.DataFrame): low   = low.iloc[:, 0]
+
+    # Guard: need at least 6 bars for Higher Close (5d) and 200 for SMA200
+    if len(close) < 7:
+        return 50, 0, 0, {}
+
     rsi_v = rsi(close); macd_l, macd_s = macd(close); atr_v = atr(spx)
     vix_c = vix["Close"].squeeze()
+    if isinstance(vix_c, pd.DataFrame): vix_c = vix_c.iloc[:, 0]
     sma20 = close.rolling(20).mean(); sma50 = close.rolling(50).mean()
-    sma200= close.rolling(200).mean(); ema9 = close.ewm(span=9).mean()
+    sma200= close.rolling(200).mean()
     bb_mid= close.rolling(20).mean(); bb_std = close.rolling(20).std()
-    bb_upper = bb_mid + 2*bb_std; bb_lower = bb_mid - 2*bb_std
-    _stoch_denom = (high.rolling(14).max() - low.rolling(14).min()).replace(0, 1e-10)
-    stoch_k = 100 * (close - low.rolling(14).min()) / _stoch_denom
-    stoch_d = stoch_k.rolling(3).mean()
-    c = close.iloc[-1]; c1 = close.iloc[-2]; c5 = close.iloc[-6]
 
-    # Clamp Stochastic to [0, 100] — prevents astronomically large values when
-    # high==low for 14 bars (denom replaced with 1e-10 would otherwise overflow).
-    stoch_k = stoch_k.clip(0, 100)
-    stoch_d = stoch_d.clip(0, 100)
+    # Stochastic: when high==low for 14 bars (halt/circuit breaker), set to 50 (neutral).
+    # Replacing 0 denom with 1e-10 causes huge values even after clipping because
+    # clip happens after the giant multiplication. Instead, default those bars to 50.
+    _stoch_range = high.rolling(14).max() - low.rolling(14).min()
+    _stoch_safe  = _stoch_range.where(_stoch_range > 0)   # NaN where range = 0
+    stoch_k = (100 * (close - low.rolling(14).min()) / _stoch_safe).fillna(50).clip(0, 100)
+    stoch_d = stoch_k.rolling(3).mean().fillna(50)
+
+    c  = close.iloc[-1]
+    c1 = close.iloc[-2] if len(close) >= 2 else c
+    c5 = close.iloc[-6] if len(close) >= 6 else c
 
     sigs = {}
     # ── Trend group ──────────────────────────────────────────────────────────
@@ -706,10 +788,14 @@ def compute_ssr(spx, vix, pcr, sectors):
 
     # ── Volatility group ─────────────────────────────────────────────────────
     sigs["VIX Below 20"]      = int(vix_c.iloc[-1] < 20)
-    sigs["VIX Falling"]       = int(vix_c.iloc[-1] < vix_c.iloc[-2])
-    # ATR Contracting = low and shrinking realized vol = calm, predictable market.
-    # REVERSED from old "ATR Expanding" — expanding ATR = fear/uncertainty = NOT bullish.
-    sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 5 and atr_v.iloc[-1] < atr_v.iloc[-5])
+    # VIX Falling: only meaningful during live market hours — stale on weekends/holidays
+    _now_wd = datetime.now(EST).weekday()
+    _now_h  = datetime.now(EST).hour
+    _mkt_open = (_now_wd < 5 and 9 <= _now_h < 16)
+    sigs["VIX Falling"] = (int(vix_c.iloc[-1] < vix_c.iloc[-2])
+                           if (len(vix_c) >= 2 and _mkt_open) else 0)
+    # ATR Contracting: need >= 20 bars for ATR(14) to stabilize + 5 for comparison
+    sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 20 and atr_v.iloc[-1] < atr_v.iloc[-5])
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: confirmed only when price is also higher (accumulation),
@@ -749,6 +835,20 @@ def compute_ssr(spx, vix, pcr, sectors):
         sigs["Put/Call Fear Premium"] = int(pc.iloc[-1] > 1.0)       # HIGH fear = contrarian BULL
         # Fear Abating: PCR was above 1 (fear) AND is now falling = fear unwinding = bullish
         sigs["Put/Call Fear Abating"] = int(pc.iloc[-1] > 0.85 and pc.iloc[-1] < pc.iloc[-2])
+
+    # ── A/D Breadth signal (from macro dict if provided) ─────────────────────
+    if macro:
+        _ad = macro.get("ad_ratio", 1.0)
+        sigs["A/D Line Positive"] = int(_ad > 1.0)   # more advancing than declining = broad bull
+
+    # ── Macro / regime signals ────────────────────────────────────────────────
+    # Yield Curve: 10yr − 3mo > 0 = normal (bull context); < 0 = inverted = recession warning
+    # Credit Spread proxy: HYG/TLT ratio rising = spreads compressing = risk-on
+    if macro:
+        _yc = macro.get("yield_curve_pts", 0.0)
+        sigs["Yield Curve Positive"]  = int(_yc > 0)   # non-inverted = macro tailwind
+        _hyg_rising = macro.get("hyg_tlt_rising", True)
+        sigs["Credit Spread Calm"]    = int(_hyg_rising)  # HYG/TLT rising = credit risk-on
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
@@ -897,16 +997,17 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                 return "chop", label + " (CPI/NFP reversal zone)"
 
             # ── OpEx week overrides ──────────────────────────────────────────
-            # Monthly options expiration (3rd Friday) creates two patterns:
-            #   1. Gamma pinning mid-week (Tue-Thu): price pinned near strikes →
-            #      reinforce any "chop" windows as genuinely choppy (don't upscale)
-            #   2. EOD Friday: gamma unwind + delta hedge = directional — preserve
-            #      EOD Trend bias regardless of VIX softening.
+            # Monthly options expiration (3rd Friday) patterns:
+            #   1. Mon-Tue: early gamma pinning — reinforce chop windows as genuinely flat
+            #   2. Wed-Thu: hedges re-price and fast money re-positions → directional allowed
+            #   3. EOD Friday: gamma delta-hedge unwind = sharp directional move — keep bias
             if opex:
-                if bias == "chop" and "10:45" <= hhmm <= "14:00":
+                _today_wd = datetime.now(EST).weekday()  # 0=Mon..4=Fri
+                if bias == "chop" and "10:45" <= hhmm <= "14:00" and _today_wd <= 1:
+                    # Mon/Tue only — early pinning is real; Wed-Thu don't suppress direction
                     return "chop", label + " (OpEx pin)"
                 if label == "EOD Trend":
-                    # Override any VIX-based softening — EOD Trend stays directional on OpEx
+                    # Override any VIX-based softening on OpEx week — gamma unwind = directional
                     return bias, label + " (OpEx unwind)"
 
             # ── ORB breakout override ───────────────────────────────────────
@@ -1048,11 +1149,13 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
 
 
 def next_trading_day(from_date):
-    """Return the next weekday on or after from_date."""
+    """Return the next NYSE trading day on or after from_date (skips weekends + holidays)."""
     d = from_date
-    while d.weekday() >= 5:   # 5=Sat, 6=Sun
+    for _ in range(10):   # max 10-day scan covers any holiday cluster
+        if d.weekday() < 5 and d not in US_MARKET_HOLIDAYS:
+            return d
         d += timedelta(days=1)
-    return d
+    return d  # fallback
 
 
 def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
@@ -1065,7 +1168,11 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
     elif vix >= 20: _vx = 1.15
     else:           _vx = 1.0
     _opex_factor = 0.85 if opex else 1.0
-    slot_atr  = (daily_atr / 6.5) * _vx * _opex_factor
+
+    # Adaptive intraday ATR profile: market open is front-loaded (~30% of day's ATR
+    # in first hour), then decays into lunch, picks up into close.
+    # Weights sum to 1.0 × daily_atr. Slots: 9:30, 10:30, 11:30, 12:30, 13:30, 14:30, 15:30, 16:00
+    _atr_profile = [0.28, 0.18, 0.12, 0.08, 0.09, 0.11, 0.09, 0.05]  # sums to 1.0
     slots     = ["09:30","10:30","11:30","12:30","13:30","14:30","15:30","16:00"]
     now       = datetime.now(EST)
 
@@ -1082,7 +1189,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
 
     rows  = []
     price = base_price
-    for slot in slots:
+    for idx, slot in enumerate(slots):
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
@@ -1091,15 +1198,17 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
         _revert     = -_drift * 0.015
-        move        = slot_atr * (direction * 0.55 + win_factor * 0.45) * _dir_conf + _revert
+        # Adaptive slot ATR: front-loaded to match real intraday vol distribution
+        _slot_atr   = daily_atr * _atr_profile[min(idx, len(_atr_profile)-1)] * _vx * _opex_factor
+        move        = _slot_atr * (direction * 0.55 + win_factor * 0.45) * _dir_conf + _revert
         price = round(price + move, 1)
         day_label = session_date.strftime("%a") if all_future else ""
         rows.append({
             "time":      f"{day_label} {to_ampm(slot)}".strip(),
             "price":     price,
             "move":      round(move, 1),
-            "rng_lo":    round(price - slot_atr * 0.4, 1),
-            "rng_hi":    round(price + slot_atr * 0.4, 1),
+            "rng_lo":    round(price - _slot_atr * 0.4, 1),
+            "rng_hi":    round(price + _slot_atr * 0.4, 1),
             "win_bias":  win_bias,
             "win_label": win_label,
             "past":      is_past,
@@ -1302,6 +1411,16 @@ def run_extended_window_backtest():
         close_1h = spx_1h["Close"].squeeze()
         if isinstance(close_1h, pd.DataFrame): close_1h = close_1h.iloc[:, 0]
 
+        # Pre-compute rolling 20-period ATR on 1h closes for a stable chop threshold.
+        # Single-bar proxy (abs(diff)*4) is circular and overstates chop accuracy.
+        _h1 = spx_1h["High"].squeeze(); _l1 = spx_1h["Low"].squeeze()
+        if isinstance(_h1, pd.DataFrame): _h1 = _h1.iloc[:, 0]
+        if isinstance(_l1, pd.DataFrame): _l1 = _l1.iloc[:, 0]
+        _tr1 = pd.concat([_h1 - _l1,
+                          (_h1 - close_1h.shift()).abs(),
+                          (_l1 - close_1h.shift()).abs()], axis=1).max(axis=1)
+        _atr1h = _tr1.rolling(20).mean().fillna(_tr1)   # fallback to raw TR before 20 bars
+
         stats = {}
         for i in range(1, len(spx_1h)):
             try:
@@ -1329,9 +1448,10 @@ def run_extended_window_backtest():
                 prev_c = float(close_1h.iloc[i-1])
                 curr_c = float(close_1h.iloc[i])
                 diff   = curr_c - prev_c
-                # Chop threshold: 20% of hourly ATR proxy (spread × 2)
-                hourly_atr_proxy = abs(diff) * 4 if abs(diff) > 0 else 2.0
-                _flat = abs(diff) < hourly_atr_proxy * 0.2
+                # Chop threshold: 25% of rolling 20-period hourly ATR.
+                # More stable than single-bar proxy which was circular (used same bar's move).
+                _hatr  = float(_atr1h.iloc[i]) if not pd.isna(_atr1h.iloc[i]) else 5.0
+                _flat  = abs(diff) < _hatr * 0.25
 
                 if   mbias == "bull":  correct = diff > 0
                 elif mbias == "bear":  correct = diff < 0
@@ -1477,13 +1597,14 @@ with st.spinner("Fetching market data..."):
     today_events = get_todays_events(lookahead_days=4)
     live = fetch_live()
     orb_data = compute_orb()
+    macro_data = fetch_macro_signals()
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 
 # Load news with live VIX so VIX-conditional items (jobs data) score correctly
 news_data = load_news(vix_now=vix_now)
 
-_base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors)
+_base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=macro_data)
 
 # ── Intraday RSI override: replace daily RSI signals with 5-min RSI during RTH ──
 # Daily RSI is computed on close-to-close bars; by mid-afternoon it reflects
@@ -1513,9 +1634,12 @@ def compute_group_weights():
         _spx_d, _vix_d, _sec_d, _day_s, _days = load_backtest_data()
         if not _days: return {g: 1.0 for g in SIGNAL_GROUPS}
         _dl = list(_spx_d.index.date); _td = len(_spx_d)
-        _gc = {g: 0 for g in SIGNAL_GROUPS}
-        _gt = {g: 0 for g in SIGNAL_GROUPS}
-        for _day in _days[-252:]:
+        # Weighted counts: recent 30 days count 2× older days (regime decay)
+        _gc = {g: 0.0 for g in SIGNAL_GROUPS}
+        _gt = {g: 0.0 for g in SIGNAL_GROUPS}
+        _recent_cutoff = len(_days) - 30  # last 30 days = "recent"
+        for _i, _day in enumerate(_days[-252:]):
+            _day_weight = 2.0 if _i >= (len(_days[-252:]) - 30) else 1.0
             try:
                 _pos = _dl.index(_day)
                 _off = _td - _pos
@@ -1530,15 +1654,16 @@ def compute_group_weights():
                     _pr = [_sigs.get(k, 0) for k in _gs if k in _sigs]
                     if not _pr: continue
                     _vote = 1 if (sum(_pr) / len(_pr)) > 0.5 else -1
-                    _gt[_gn] += 1
-                    if _vote == _act: _gc[_gn] += 1
+                    _gt[_gn] += _day_weight
+                    if _vote == _act: _gc[_gn] += _day_weight
             except Exception:
                 continue
-        # acc → weight: 50%=0.5, 60%=1.0, 70%=1.4, 80%=1.8 (linear through those points)
+        # acc → weight: 50%=0.5, 60%=1.0, 70%=1.4, 80%=1.8 (linear)
+        # Require effective n >= 5 (sum of weights) before trusting accuracy
         _out = {}
         for _gn in SIGNAL_GROUPS:
             _t = _gt[_gn]
-            if _t < 3:
+            if _t < 5.0:
                 _out[_gn] = 1.0
             else:
                 _acc = _gc[_gn] / _t
@@ -1909,9 +2034,19 @@ with st.expander("📊 2-Year Statistical Window Validation (click to run — ta
 # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
 # ═══════════════════════════════════════════════════════════════════════════════
 try:
+    # Gap = today's open − prior close.
+    # Use the SPX daily "Open" column directly — robust even when live price
+    # is unavailable (spx_price falls back to yesterday's close, making diff = 0).
+    _spx_open  = spx["Open"].squeeze()
     _spx_close = spx["Close"].squeeze()
+    if isinstance(_spx_open,  pd.DataFrame): _spx_open  = _spx_open.iloc[:,  0]
     if isinstance(_spx_close, pd.DataFrame): _spx_close = _spx_close.iloc[:, 0]
-    live_gap = round(spx_price - float(_spx_close.iloc[-2]), 1) if len(_spx_close) >= 2 else 0.0
+    if len(_spx_open) >= 2 and len(_spx_close) >= 2:
+        _today_open = float(_spx_open.iloc[-1])
+        _prev_close = float(_spx_close.iloc[-2])
+        live_gap = round(_today_open - _prev_close, 1)
+    else:
+        live_gap = 0.0
 except Exception:
     live_gap = 0.0
 _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
