@@ -2414,11 +2414,8 @@ rating, action, bias, color = ssr_meta(score)
 trade   = suggest_trade(score, levels)
 cur_win, cur_bias, cur_start, cur_end = get_current_window()
 
-# Projected SPX open = last close + implied gap
+# Projected SPX open = last close + implied gap (fallback if overnight anchor not yet computed)
 _proj_spx_open = round(levels["current"] + _implied_gap, 1) if _pre_market and live["es_price"] else None
-# _es_rth_anchor is computed later (after live_gap + ORB vars are ready).
-# Initialize here so the pre-market banner (which runs before that block) never hits NameError.
-_es_rth_anchor = None
 
 # Countdown to next 6 PM ES open (shown pre-market)
 _next_open_dt = next_es_open(datetime.now(EST))
@@ -2518,6 +2515,10 @@ _mc4_vc  = "#f59e0b" if _opex_week else "#94a3b8"
 _mc4_sc  = "#f59e0b" if _opex_friday else ("#64748b" if _opex_week else "#475569")
 
 # ── Pre-market banner: implied gap + countdown when outside RTH ──────────
+# _es_rth_anchor (overnight-drift-adjusted projected open) is computed ~260 lines
+# below after live_gap and ORB vars are ready. Reserve a placeholder here so the
+# banner stays visually above the metrics tiles; fill it after anchor is known.
+_banner_placeholder = st.empty()
 if _pre_market and live["es_price"]:
     _gap_color  = "#f87171" if _implied_gap < -GAP_THRESHOLD else ("#4ade80" if _implied_gap > GAP_THRESHOLD else "#f59e0b")
     _gap_regime_lbl = ("GAP DOWN" if _implied_gap < -GAP_THRESHOLD
@@ -2526,7 +2527,6 @@ if _pre_market and live["es_price"]:
     _now_est_pm = datetime.now(EST)
     _is_es_trading_now = is_es_active(_now_est_pm)
     if _is_es_trading_now:
-        # Compute minutes to next 9:30 AM RTH open
         _next_rth = _now_est_pm.replace(hour=9, minute=30, second=0, microsecond=0)
         if _now_est_pm >= _next_rth or _now_est_pm.weekday() >= 5:
             _next_rth += timedelta(days=1)
@@ -2537,25 +2537,6 @@ if _pre_market and live["es_price"]:
     else:
         _open_label = (f"{_mins_to_open}m to ES Open" if _mins_to_open > 0
                        else "ES Session Active")
-    st.markdown(
-        f'<div style="background:#0d1117;border:1px solid {_gap_color};border-radius:8px;'
-        f'padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'
-        f'<div>'
-        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase">PRE-MARKET MODE</span>'
-        f'<div style="font-size:15px;font-weight:800;color:{_gap_color};margin-top:2px">'
-        f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
-        f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
-        f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
-        f'Projected RTH open: <b style="color:{_gap_color}">{(_es_rth_anchor or _proj_spx_open):,.1f}</b> · '
-        f'{"Gap-down override: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No override threshold crossed"}'
-        f'</div>'
-        f'</div>'
-        f'<div style="text-align:right">'
-        f'<div style="font-size:22px;font-weight:800;color:#64748b">⏳</div>'
-        f'<div style="font-size:12px;color:#64748b">{_open_label}</div>'
-        f'</div>'
-        f'</div>',
-        unsafe_allow_html=True)
 
 for col, lbl, val, sub, vc, sc, fsize in [
     (mc1, "Pre-Mkt SSR" if _pre_market else "Live-Adj SSR", str(score), f"Core: {_core_ssr} &nbsp;·&nbsp; {rating.split()[0]}",  color,  "#94a3b8", "22px"),
@@ -2812,6 +2793,28 @@ if _pre_market and live["es_price"] and _es_rows_precomp:
             if _ei > 0:
                 _es_rth_anchor = _es_rows_precomp[_ei - 1]["price"]
             break
+# Now fill the pre-market banner placeholder with the overnight-adjusted anchor.
+if _pre_market and live["es_price"]:
+    _proj_open_display = _es_rth_anchor if _es_rth_anchor is not None else _proj_spx_open
+    _banner_placeholder.markdown(
+        f'<div style="background:#0d1117;border:1px solid {_gap_color};border-radius:8px;'
+        f'padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'
+        f'<div>'
+        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase">PRE-MARKET MODE</span>'
+        f'<div style="font-size:15px;font-weight:800;color:{_gap_color};margin-top:2px">'
+        f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
+        f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
+        f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
+        f'Projected RTH open: <b style="color:{_gap_color}">{_proj_open_display:,.1f}</b> · '
+        f'{"Gap-down override: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No override threshold crossed"}'
+        f'</div>'
+        f'</div>'
+        f'<div style="text-align:right">'
+        f'<div style="font-size:22px;font-weight:800;color:#64748b">⏳</div>'
+        f'<div style="font-size:12px;color:#64748b">{_open_label}</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True)
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
