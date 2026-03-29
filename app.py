@@ -90,7 +90,7 @@ SIGNAL_GROUPS = {
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
-                   "VIX 3d Spike",               # 3-day VIX surge = fear expansion = bear
+                   "VIX No Spike",               # no 3-day VIX surge = calm context (inverted: 0 when spike)
                    "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
                    "Overnight Upper Third"],      # ES in top 1/3 of overnight range: strong bull lean
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
@@ -851,11 +851,12 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         _vix_3d_chg = (float(vix_c.iloc[-1]) - float(vix_c.iloc[-4])) / max(float(vix_c.iloc[-4]), 1)
         # Fear unwinding: VIX down >8% over 3 days = relief rally context = bull
         sigs["VIX 3d Relief"]  = int(_vix_3d_chg < -0.08)
-        # Fear spike: VIX up >15% over 3 days = fear expansion = bear context
-        sigs["VIX 3d Spike"]   = int(_vix_3d_chg > 0.15)
+        # VIX No Spike: INVERTED — fires 1 when no fear spike (calm = bull), 0 when spike (fear = bear).
+        # This matches convention: 1=bullish, 0=bearish. VIX 3d spike threshold: >15% in 3 days.
+        sigs["VIX No Spike"]   = int(_vix_3d_chg <= 0.15)
     else:
         sigs["VIX 3d Relief"]  = 0
-        sigs["VIX 3d Spike"]   = 0
+        sigs["VIX No Spike"]   = 1   # default: assume calm if insufficient history
 
     # VIX 1d Down: pure day-over-day VIX decline with no market-open gate.
     # Complements "VIX Falling" (which is disabled when market is closed).
