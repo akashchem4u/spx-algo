@@ -1959,6 +1959,21 @@ with cR:
             unsafe_allow_html=True
         )
 
+# ── Compute live_gap and ORB status at module level (used in Why This Bias
+#    and again inside _tab_live for projections — must be defined before tabs)
+try:
+    _spx_open_  = spx["Open"].squeeze()
+    _spx_close_ = spx["Close"].squeeze()
+    if isinstance(_spx_open_,  pd.DataFrame): _spx_open_  = _spx_open_.iloc[:,  0]
+    if isinstance(_spx_close_, pd.DataFrame): _spx_close_ = _spx_close_.iloc[:, 0]
+    if len(_spx_open_) >= 2 and len(_spx_close_) >= 2:
+        live_gap = round(float(_spx_open_.iloc[-1]) - float(_spx_close_.iloc[-2]), 1)
+    else:
+        live_gap = 0.0
+except Exception:
+    live_gap = 0.0
+_orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2107,24 +2122,8 @@ with _tab_research:
 with _tab_live:
     # ═══════════════════════════════════════════════════════════════════════════════
     # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
+    # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
-    try:
-        # Gap = today's open − prior close.
-        # Use the SPX daily "Open" column directly — robust even when live price
-        # is unavailable (spx_price falls back to yesterday's close, making diff = 0).
-        _spx_open  = spx["Open"].squeeze()
-        _spx_close = spx["Close"].squeeze()
-        if isinstance(_spx_open,  pd.DataFrame): _spx_open  = _spx_open.iloc[:,  0]
-        if isinstance(_spx_close, pd.DataFrame): _spx_close = _spx_close.iloc[:, 0]
-        if len(_spx_open) >= 2 and len(_spx_close) >= 2:
-            _today_open = float(_spx_open.iloc[-1])
-            _prev_close = float(_spx_close.iloc[-2])
-            live_gap = round(_today_open - _prev_close, 1)
-        else:
-            live_gap = 0.0
-    except Exception:
-        live_gap = 0.0
-    _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
     es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
     spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
 
