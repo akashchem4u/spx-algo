@@ -301,7 +301,14 @@ _NEWS_IMPACTS = [
       "military option iran","us deployment iran","rubio iran",
       "signals deployment","troop deployments coming","ground troops",
       "boots on ground","send troops","sending troops","deploy forces",
-      "carrier strike group iran","fifth fleet iran","centcom iran"],
+      "carrier strike group iran","fifth fleet iran","centcom iran",
+      "b-52 iran","f-35 iran","b-2 iran","stealth bomber iran",
+      "warship iran","destroyer iran","guided missile iran",
+      "us airstrike iran","airstrike iran","airstrikes iran",
+      "us air force iran","strike package iran","iran strike order",
+      "authorization to strike","authorized strike iran",
+      "military escalat iran","us escalat iran","reagan iran",
+      "uss iran","strike imminent","attack imminent iran"],
      "US_IRAN_WAR", 4.5, "any", "bear",
      "US direct military engagement with Iran → Hormuz closure + oil spike + war premium → sharply bearish"),
 
@@ -311,14 +318,22 @@ _NEWS_IMPACTS = [
       "israel strikes iran","israel bombs iran","idf iran",
       "idf evacuation","evacuation tehran","strike tehran","attack tehran",
       "tehran strike","tehran evacuat","idf issues","iranian drone",
-      "iranian ballistic","iranian hypersonic","iran launch"],
+      "iranian ballistic","iranian hypersonic","iran launch",
+      "iran closes strait","strait closed","hormuz closed",
+      "tanker seized","iran seizes","iran fires","iran shoots down",
+      "revolutionary guard","irgc attack","irgc seize","irgc fires",
+      "iran nuclear site","fordow","natanz attack","nuclear facility struck"],
      "IRAN_ESCALATION", 3.5, "any", "bear",
      "Iran/Israel conflict → Hormuz risk + oil spike + safe-haven flows → bearish"),
 
     (["iran deal","iran nuclear deal","iran sanction lift","iran ceasefire",
       "iran agreement","iran us talks","iran diplomacy","iran negotiat",
       "iran peace","iran nuclear framework","us iran diplomacy",
-      "iran withdraw","iran comply"],
+      "iran withdraw","iran comply","iran backs down","iran stands down",
+      "iran agrees","iran accepts","iran suspends","iran pauses",
+      "hormuz open","strait reopened","tanker released","iran releases",
+      "iran halts","iran stops","iran ceases","iran freeze",
+      "direct talks iran","negotiations iran","iran compromise"],
      "IRAN_DEESCALATION", 3.0, "any", "bull",
      "Iran de-escalation → Hormuz open + oil supply relief + war premium unwind → bullish"),
 
@@ -2299,21 +2314,27 @@ spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:
 # ── Pre-market implied gap (ES futures vs SPX last close) ─────────────────
 # Outside RTH (before 9:30, after 16:00, weekend): SPX open hasn't happened.
 # Implied gap = ES price − last SPX close. Feeds projections + gap overrides.
-_is_rth = (datetime.now(EST).weekday() < 5 and
-           datetime.now(EST).hour >= 9 and
-           not (datetime.now(EST).hour == 9 and datetime.now(EST).minute < 30) and
-           datetime.now(EST).hour < 16)
 _implied_gap     = round(es_price - levels["current"], 1) if live["es_price"] else 0.0
 _implied_gap_pct = round(_implied_gap / levels["current"] * 100, 2) if levels["current"] else 0.0
-# Use implied gap for projections when pre-market; live_gap (RTH open-prev_close) when in session
-if not _is_rth and live["es_price"]:
+_pre_market      = not _is_rth_now
+# Use implied gap for projections + SSR when pre-market
+if _pre_market and live["es_price"]:
     live_gap = _implied_gap
+    # Inject implied gap into Gap/ATR Normal signal so pre-market SSR reflects tonight's gap
+    _daily_atr_val = levels["atr"]
+    if _daily_atr_val > 0:
+        _impl_gap_atr = _implied_gap / _daily_atr_val
+        signals["Gap/ATR Normal"] = int(0.0 <= _impl_gap_atr < 0.5)
+        # Recompute buys/sells to include the override
+        buys  = sum(1 for v in signals.values() if v == 1)
+        sells = sum(1 for v in signals.values() if v == 0)
+
+# Projected SPX open = last close + implied gap
+_proj_spx_open = round(levels["current"] + _implied_gap, 1) if _pre_market and live["es_price"] else None
 
 # Countdown to next 6 PM ES open (shown pre-market)
-_now_est      = datetime.now(EST)
-_next_open_dt = next_es_open(_now_est)
-_mins_to_open = int((_next_open_dt - _now_est).total_seconds() / 60)
-_pre_market   = not _is_rth
+_next_open_dt = next_es_open(datetime.now(EST))
+_mins_to_open = int((_next_open_dt - datetime.now(EST)).total_seconds() / 60)
 
 # Key level proximity — warn when SPX is within 15 pts of a major level
 _watch_levels = {
@@ -2424,7 +2445,8 @@ if _pre_market and live["es_price"]:
         f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
         f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
         f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
-        f'{"Gap-down override active: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override active: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No gap override threshold crossed"}'
+        f'Projected RTH open: <b style="color:{_gap_color}">{_proj_spx_open:,.1f}</b> · '
+        f'{"Gap-down override: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No override threshold crossed"}'
         f'</div>'
         f'</div>'
         f'<div style="text-align:right">'
@@ -2435,7 +2457,7 @@ if _pre_market and live["es_price"]:
         unsafe_allow_html=True)
 
 for col, lbl, val, sub, vc, sc, fsize in [
-    (mc1, "Live-Adj SSR", str(score),      f"Core: {_core_ssr} &nbsp;·&nbsp; {rating.split()[0]}",  color,  "#94a3b8", "22px"),
+    (mc1, "Pre-Mkt SSR" if _pre_market else "Live-Adj SSR", str(score), f"Core: {_core_ssr} &nbsp;·&nbsp; {rating.split()[0]}",  color,  "#94a3b8", "22px"),
     (mc2, "SSR Action",   _act_dir,        f"<span style='font-size:9px;letter-spacing:.5px'>{_act_conv}</span>&nbsp; {buys}✅{sells}❌", color, "#64748b", "20px"),
     (mc3, "ES Futures",   es_display,      chg_str(live["es_change"],live["es_pct"]),  "#f1f5f9", es_chg_color,  "18px"),
     (mc4, _mc4_lbl,       _mc4_val,        _mc4_sub,                                  _mc4_vc,  _mc4_sc,       "13px"),
