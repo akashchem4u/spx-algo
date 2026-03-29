@@ -2910,6 +2910,29 @@ with _tab_research:
                     f'</tr></thead><tbody>{_tbl_html}</tbody></table></div>',
                     unsafe_allow_html=True)
                 st.caption("✅ = signal adds edge  ⚠️ = may be noise  ➖ = neutral  |  delta >±1pp is meaningful at n≥50")
+                # Auto-write ablation summary to Codex/ for the other agent to read
+                try:
+                    _rpt_lines = [
+                        f"# Signal Ablation Report",
+                        f"Generated: {now_est.strftime('%Y-%m-%d %H:%M')} ET  "
+                        f"· Baseline accuracy: {_ha2['baseline_hits']}/{_ha2['baseline_total']} "
+                        f"({int(_ha2['baseline_hits']/_ha2['baseline_total']*100) if _ha2['baseline_total'] else 0}%)\n",
+                        "| Signal | Group | Acc w/ | Acc w/o | Delta | N | Verdict |",
+                        "|--------|-------|--------|---------|-------|---|---------|",
+                    ]
+                    for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows:
+                        _verdict = "✅ adds edge" if _dlt > 1 else ("⚠️ may be noise" if _dlt < -1 else "➖ neutral")
+                        _sign = "+" if _dlt >= 0 else ""
+                        _rpt_lines.append(f"| {_sig} | {_grp} | {_acc_a}% | {_acc_e}% | {_sign}{_dlt}pp | {_n} | {_verdict} |")
+                    _rpt_lines.append("\n**Signals with negative delta (noise candidates):**")
+                    _noisy = [f"- {_sig} ({_grp}) delta={_dlt}pp n={_n}"
+                              for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows if _dlt < -1]
+                    _rpt_lines += (_noisy if _noisy else ["- None identified"])
+                    os.makedirs("Codex", exist_ok=True)
+                    with open("Codex/ablation-report.md", "w") as _rf:
+                        _rf.write("\n".join(_rpt_lines) + "\n")
+                except Exception:
+                    pass  # silently skip if filesystem not writable
 
 
 with _tab_live:
@@ -3561,7 +3584,14 @@ with _tab_research:
                       "13:00","13:30","14:00","14:30","15:00","15:30","16:00"]
             # live_gap = today's daily Open − prior Close (computed once at page load,
             # reused here so window_bias_at() sees the same gap regime as projections do)
-            _slot_atr   = levels["atr"] / 6.5
+            # Adaptive per-slot ATR fractions — front-loaded morning volatility,
+            # matching the projection function profile (avoids flat 1/6.5 fallback
+            # which over-classifies morning moves as "chop" and afternoon as "directional").
+            _live_slot_atr_fracs = {
+                "09:30": 0.28, "10:00": 0.18, "10:30": 0.12, "11:00": 0.10, "11:30": 0.09,
+                "12:00": 0.09, "13:00": 0.09, "13:30": 0.11, "14:00": 0.10, "14:30": 0.09,
+                "15:00": 0.08, "15:30": 0.05, "16:00": 0.05,
+            }
 
             _today_results = []
             # Anchor first slot direction comparison against prior session close
@@ -3573,7 +3603,10 @@ with _tab_research:
                 if _actual is None:
                     continue
                 _actual_dir = "bull" if _actual > _prev_actual else ("bear" if _actual < _prev_actual else "chop")
-                _chop_t     = _slot_atr * min(0.6, 0.30 * max(1.0, vix_now / 20.0))
+                # Adaptive per-slot ATR: morning slots get larger threshold (0.28× daily ATR),
+                # afternoon slots get smaller (0.05–0.09×). Avoids inflating morning accuracy.
+                _s_atr  = levels["atr"] * _live_slot_atr_fracs.get(_sl, 0.077)
+                _chop_t = _s_atr * min(0.6, 0.30 * max(1.0, vix_now / 20.0))
                 _flat       = abs(_actual - _prev_actual) < _chop_t
                 _correct    = ((_wb == "bear" and _actual_dir == "bear") or
                                (_wb == "bull" and _actual_dir == "bull") or
