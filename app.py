@@ -67,7 +67,10 @@ def fetch_data():
     vix = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
     sectors = {}
     for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
-        sectors[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+        try:
+            sectors[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+        except Exception:
+            sectors[t] = pd.DataFrame()
     old_err = sys.stderr; sys.stderr = io.StringIO()
     try:
         pcr = yf.download("^CPC", period="10d", interval="1d", progress=False, auto_adjust=True)
@@ -82,27 +85,31 @@ def fetch_live():
     """Live ES futures + SPX — refreshes every 60 seconds."""
     results = {"es_price": None, "es_change": None, "es_pct": None, "es_ts": None,
                "spx_price": None, "spx_change": None, "spx_pct": None, "spx_ts": None}
+    def _close_scalar(df, idx=-1):
+        """Safely extract a scalar close value handling MultiIndex columns."""
+        c = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+        c = c.squeeze()
+        if isinstance(c, pd.DataFrame): c = c.iloc[:, 0]
+        return float(c.iloc[idx])
+
     try:
-        # Use 1-minute bar — most reliable source for actual last trade
         es_df = yf.download("ES=F", period="2d", interval="1m", progress=False, auto_adjust=True)
         if not es_df.empty:
-            results["es_price"] = round(float(es_df["Close"].iloc[-1]), 2)
-            prev_close = float(es_df["Close"].iloc[-2]) if len(es_df) > 1 else results["es_price"]
+            results["es_price"] = round(_close_scalar(es_df, -1), 2)
+            prev_close = _close_scalar(es_df, -2) if len(es_df) > 1 else results["es_price"]
             results["es_change"] = round(results["es_price"] - prev_close, 2)
             results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2)
-            ts = es_df.index[-1]
-            results["es_ts"] = ts.astimezone(EST).strftime("%I:%M %p EST")
+            results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
     except Exception:
         pass
     try:
         spx_df = yf.download("^GSPC", period="2d", interval="1m", progress=False, auto_adjust=True)
         if not spx_df.empty:
-            results["spx_price"] = round(float(spx_df["Close"].iloc[-1]), 2)
-            prev_close = float(spx_df["Close"].iloc[-2]) if len(spx_df) > 1 else results["spx_price"]
+            results["spx_price"] = round(_close_scalar(spx_df, -1), 2)
+            prev_close = _close_scalar(spx_df, -2) if len(spx_df) > 1 else results["spx_price"]
             results["spx_change"] = round(results["spx_price"] - prev_close, 2)
             results["spx_pct"]    = round((results["spx_change"] / prev_close) * 100, 2)
-            ts = spx_df.index[-1]
-            results["spx_ts"] = ts.astimezone(EST).strftime("%I:%M %p EST")
+            results["spx_ts"]     = spx_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
     except Exception:
         pass
     return results
@@ -116,7 +123,7 @@ def rsi(series, n=14):
     d = series.diff()
     g = d.clip(lower=0).rolling(n).mean()
     l = (-d.clip(upper=0)).rolling(n).mean()
-    return 100 - (100 / (1 + g / l))
+    return 100 - (100 / (1 + g / (l + 1e-10)))
 
 
 def macd(series, f=12, s=26, sig=9):
@@ -139,7 +146,8 @@ def compute_ssr(spx, vix, pcr, sectors):
     sma200= close.rolling(200).mean(); ema9 = close.ewm(span=9).mean()
     bb_mid= close.rolling(20).mean(); bb_std = close.rolling(20).std()
     bb_upper = bb_mid + 2*bb_std; bb_lower = bb_mid - 2*bb_std
-    stoch_k = 100*(close-low.rolling(14).min())/(high.rolling(14).max()-low.rolling(14).min())
+    _stoch_denom = (high.rolling(14).max() - low.rolling(14).min()).replace(0, 1e-10)
+    stoch_k = 100 * (close - low.rolling(14).min()) / _stoch_denom
     stoch_d = stoch_k.rolling(3).mean()
     c = close.iloc[-1]; c1 = close.iloc[-2]; c5 = close.iloc[-6]
 
@@ -165,13 +173,21 @@ def compute_ssr(spx, vix, pcr, sectors):
     sigs["Above BB Mid"]          = int(c > bb_mid.iloc[-1])
     sigs["Above BB Lower"]        = int(c > bb_lower.iloc[-1])
     sigs["Not at BB Upper"]       = int(c < bb_upper.iloc[-1] * 0.995)
-    sigs["ATR Expanding"]         = int(atr_v.iloc[-1] > atr_v.iloc[-5])
+    sigs["ATR Expanding"]         = int(len(atr_v.dropna()) >= 5 and atr_v.iloc[-1] > atr_v.iloc[-5])
     sigs["Volume Above Average"]  = int(vol.iloc[-1] > vol.rolling(20).mean().iloc[-1])
 
-    above   = sum(1 for t,df in sectors.items()
-                  if not df.empty and len(df["Close"].squeeze())>=50
-                  and df["Close"].squeeze().iloc[-1] > df["Close"].squeeze().rolling(50).mean().iloc[-1])
-    total_s = sum(1 for t,df in sectors.items() if not df.empty and len(df["Close"].squeeze())>=50)
+    # Compute sector breadth — pre-extract close series to avoid repeated MultiIndex access
+    _sec_closes = {}
+    for t, df in sectors.items():
+        if df.empty: continue
+        try:
+            _c = df["Close"].squeeze()
+            if isinstance(_c, pd.DataFrame): _c = _c.iloc[:, 0]
+            if len(_c) >= 50: _sec_closes[t] = _c
+        except Exception:
+            pass
+    above   = sum(1 for _c in _sec_closes.values() if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
+    total_s = len(_sec_closes)
     if total_s:
         br = above / total_s
         sigs["Sector Breadth ≥ 30%"] = int(br >= 0.3)
@@ -192,8 +208,18 @@ def compute_ssr(spx, vix, pcr, sectors):
 
 def compute_levels(spx):
     close = spx["Close"].squeeze(); high = spx["High"].squeeze(); low = spx["Low"].squeeze()
+    if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
+    if isinstance(high,  pd.DataFrame): high  = high.iloc[:, 0]
+    if isinstance(low,   pd.DataFrame): low   = low.iloc[:, 0]
+    if len(close) < 6:
+        return {k: 0.0 for k in ["current","atr","pivot","resistance_1","resistance_2",
+                                   "resistance_3","support_1","support_2","support_3",
+                                   "target_up_1","target_up_2","target_down_1","target_down_2",
+                                   "week_high","week_low","prev_high","prev_low","rsi"]}
     c = close.iloc[-1]; ph = high.iloc[-2]; pl = low.iloc[-2]; pc = close.iloc[-2]
-    pivot = (ph+pl+pc)/3; atr14 = atr(spx).iloc[-1]
+    pivot = (ph+pl+pc)/3
+    atr14_raw = atr(spx).iloc[-1]
+    atr14 = float(atr14_raw) if not pd.isna(atr14_raw) else float(high.iloc[-1] - low.iloc[-1])
     return {
         "current":       round(c,1),   "atr":           round(atr14,1),
         "pivot":         round(pivot,1),
@@ -852,7 +878,12 @@ with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell  (click t
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
 # ═══════════════════════════════════════════════════════════════════════════════
-live_gap = round(spx_price - float(spx["Close"].squeeze().iloc[-2]), 1) if len(spx) >= 2 else 0.0
+try:
+    _spx_close = spx["Close"].squeeze()
+    if isinstance(_spx_close, pd.DataFrame): _spx_close = _spx_close.iloc[:, 0]
+    live_gap = round(spx_price - float(_spx_close.iloc[-2]), 1) if len(_spx_close) >= 2 else 0.0
+except Exception:
+    live_gap = 0.0
 es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap)
 spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap)
 
@@ -1001,7 +1032,10 @@ def load_backtest_data():
     vix_d = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
     sectors_d = {}
     for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
-        sectors_d[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+        try:
+            sectors_d[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+        except Exception:
+            sectors_d[t] = pd.DataFrame()
 
     # period="20d" gives ~20 trading days of 5-min bars → covers 2 full weeks
     spx_5m = yf.download("^GSPC", period="20d", interval="5m", progress=False, auto_adjust=True)
@@ -1059,9 +1093,11 @@ def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily
         idx    = slots.index(p["slot"])
         prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
         actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
-        correct = (p["bias"] in ("bear","chop") and actual_dir == "bear") or \
+        # Chop = flat/indeterminate — counts correct only if actual move < 0.3×ATR (slot-level)
+        _flat = abs(actual - prev_a) < slot_atr * 0.3
+        correct = (p["bias"] == "bear" and actual_dir == "bear") or \
                   (p["bias"] == "bull" and actual_dir == "bull") or \
-                  (p["bias"] == "chop")
+                  (p["bias"] == "chop" and _flat)
         results.append({**p, "actual": actual, "actual_dir": actual_dir,
                         "correct": correct, "err": round(actual - p["proj"], 1)})
 
