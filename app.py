@@ -77,9 +77,12 @@ VIX_CALM_THRESHOLD = 18.0   # low vol  → bear windows soften, chop is more lik
 #                            than "RSI Not Overbought" which fires even at RSI=51.
 SIGNAL_GROUPS = {
     "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
-    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish"],
-    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting"],
-    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive"],
+    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish",
+                   "RSI Strong Trend"],          # RSI 60-75: strong momentum, not extreme
+    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
+                   "VIX Below 15"],              # ultra-calm: second tier for gradient
+    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
+                   "Sector Breadth ≥ 70%"],      # strong breadth: second tier for gradient
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
@@ -786,6 +789,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     sigs["RSI Above 50"]      = int(rsi_v.iloc[-1] > 50)
     sigs["MACD Bullish"]      = int(macd_l.iloc[-1] > macd_s.iloc[-1])
 
+    # RSI Strong Trend: RSI 60-75 = strong momentum without overbought extreme.
+    # Pairs with "RSI Above 50" to create a gradient: 50-60 fires one signal,
+    # 60-75 fires both, giving the Momentum group a natural 2-tier RSI score.
+    sigs["RSI Strong Trend"]  = int(60 <= rsi_v.iloc[-1] <= 75)
+
     # ── Volatility group ─────────────────────────────────────────────────────
     sigs["VIX Below 20"]      = int(vix_c.iloc[-1] < 20)
     # VIX Falling: use as_of_dt when provided (backtest) so we don't leak
@@ -798,6 +806,9 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
                            if (len(vix_c) >= 2 and _mkt_open) else 0)
     # ATR Contracting: need >= 20 bars for ATR(14) to stabilize + 5 for comparison
     sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 20 and atr_v.iloc[-1] < atr_v.iloc[-5])
+    # VIX Below 15: ultra-calm regime tier. Pairs with "VIX Below 20" for gradient:
+    # VIX 16-20 fires one signal; VIX <15 fires both — stronger low-vol bull context.
+    sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15)
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: confirmed only when price is also higher (accumulation),
@@ -820,6 +831,9 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         _above = sum(1 for _c in _sec_closes.values()
                      if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
         sigs["Sector Breadth ≥ 50%"] = int((_above / _total_s) >= 0.5)
+        # Strong breadth tier: ≥70% of sectors above 50-SMA.
+        # Pairs with ≥50% to give Breadth group a 2-tier gradient.
+        sigs["Sector Breadth ≥ 70%"] = int((_above / _total_s) >= 0.7)
 
     # ── Extremes group ───────────────────────────────────────────────────────
     sigs["Stoch Bullish"]   = int(stoch_k.iloc[-1] > stoch_d.iloc[-1])
@@ -1124,11 +1138,29 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             # the daily conviction (SSR) agrees with it.
             _dir_conf = min(1.0, abs(direction) + 0.15)   # 0→0.15, 0.6→0.75, 1→1.0
 
+            # Regime-aware blend: how much SSR direction vs window bias drives the move.
+            # High-VIX trending days: direction dominates (windows are noisy).
+            # Low-VIX range days: window timing is more reliable.
+            # Large gap days: gap direction pressure lifts SSR weight.
+            # OpEx: balanced (gamma pins both SSR and window edge).
+            if vix > VIX_FEAR_THRESHOLD:
+                _dir_w, _win_w = 0.70, 0.30
+            elif 0 < vix < VIX_CALM_THRESHOLD:
+                _dir_w, _win_w = 0.40, 0.60
+            elif gap < -GAP_THRESHOLD:
+                _dir_w, _win_w = 0.65, 0.35
+            elif gap > GAP_THRESHOLD:
+                _dir_w, _win_w = 0.60, 0.40
+            elif opex:
+                _dir_w, _win_w = 0.50, 0.50
+            else:
+                _dir_w, _win_w = 0.55, 0.45
+
             # Outside-hours slots: no window bias, SSR direction drives overnight drift
             if win_bias == "neutral":
                 move = satr * direction * 0.60 * _dir_conf
             else:
-                move = satr * (direction * 0.55 + wf * 0.45) * _dir_conf
+                move = satr * (direction * _dir_w + wf * _win_w) * _dir_conf
 
             # Mean-reversion dampener: as price drifts far from base, gentle pull-back
             # prevents runaway projections. 1.5% reversion per point of drift.
@@ -1205,7 +1237,20 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         _revert     = -_drift * 0.015
         # Adaptive slot ATR: front-loaded to match real intraday vol distribution
         _slot_atr   = daily_atr * _atr_profile[min(idx, len(_atr_profile)-1)] * _vx * _opex_factor
-        move        = _slot_atr * (direction * 0.55 + win_factor * 0.45) * _dir_conf + _revert
+        # Regime-aware blend (mirrors ES logic above)
+        if vix > VIX_FEAR_THRESHOLD:
+            _dir_w, _win_w = 0.70, 0.30
+        elif 0 < vix < VIX_CALM_THRESHOLD:
+            _dir_w, _win_w = 0.40, 0.60
+        elif gap < -GAP_THRESHOLD:
+            _dir_w, _win_w = 0.65, 0.35
+        elif gap > GAP_THRESHOLD:
+            _dir_w, _win_w = 0.60, 0.40
+        elif opex:
+            _dir_w, _win_w = 0.50, 0.50
+        else:
+            _dir_w, _win_w = 0.55, 0.45
+        move        = _slot_atr * (direction * _dir_w + win_factor * _win_w) * _dir_conf + _revert
         price = round(price + move, 1)
         day_label = session_date.strftime("%a") if all_future else ""
         rows.append({
@@ -1658,7 +1703,9 @@ def compute_group_weights():
                 _eb  = {k: v.iloc[:-_off] if _off > 0 else v for k, v in _sec_d.items()}
                 _ds  = _day_s.get(_day)
                 if _ds is None or len(_ds) < 2: continue
-                _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb)
+                # Pass historical noon datetime so VIX Falling doesn't use today's clock
+                _as_of = EST.localize(datetime(_day.year, _day.month, _day.day, 12, 0))
+                _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb, as_of_dt=_as_of)
                 _act = 1 if float(_ds.iloc[-1]) > float(_ds.iloc[0]) else -1
                 for _gn, _gs in SIGNAL_GROUPS.items():
                     _pr = [_sigs.get(k, 0) for k in _gs if k in _sigs]
