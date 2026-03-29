@@ -3293,10 +3293,10 @@ with _tab_live:
     # ═══════════════════════════════════════════════════════════════════════════════
     # Reuse the ES rows pre-computed at module level.
     es_rows = _es_rows_precomp
-    # SPX anchor = current implied open (ES price ≈ where SPX will open at RTH).
-    # This keeps the gap-up/down visible in the SPX table rather than absorbing
-    # overnight drift into the starting price.
-    _spx_proj_base = (_proj_spx_open if (_pre_market and live["es_price"] and _proj_spx_open)
+    # SPX anchor = ES projected price at last overnight slot (just before RTH).
+    # This aligns the SPX RTH open row with the ES table's 9:30 AM slot so
+    # both tables show the same price at the RTH open boundary.
+    _spx_proj_base = (_es_rth_anchor if (_es_rth_anchor is not None and _pre_market and live["es_price"])
                       else spx_price)
     spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
