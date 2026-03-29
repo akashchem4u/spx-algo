@@ -548,22 +548,27 @@ def get_event_types_today():
     today_str = date.today().strftime("%Y-%m-%d")
     return {e[2] for e in _ECON_CAL if e[0] == today_str}
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=90)
 def load_news(vix_now=0.0):
     """
     Fetch real-time market news with causal-chain sentiment scoring.
     Each article is scored using _NEWS_IMPACTS taxonomy with domain weights.
     Composite score is weighted by article impact weight (not just recency).
+    TTL=90s — refreshes ~every 1.5 min; use the manual Refresh button for instant updates.
 
     Priority:
-      1. Financial Juice RSS (real-time breaking market news, free)
-      2. CNBC Markets RSS  (reliable, free)
-      3. Alpha Vantage News Sentiment (if AV_KEY set — pre-scored)
-      4. yfinance headlines (fallback)
+      1. Financial Juice RSS   (breaking market news, real-time)
+      2. Forexlive RSS         (macro + geopolitical, fast)
+      3. Reuters World News RSS (geopolitical depth)
+      4. CNBC Markets RSS      (broad market coverage)
+      5. Al Jazeera RSS        (Middle East / geopolitical)
+      6. Alpha Vantage News Sentiment (if AV_KEY set — pre-scored)
+      7. yfinance headlines (last-resort fallback)
     Returns: {articles: [...], composite_score: float, label: str,
-              top_impact: {category, note, weight}}
+              top_impact: {category, note, weight}, fetched_at: str}
     """
     articles = []
+    _fetched_at = datetime.now(EST).strftime("%I:%M:%S %p EST")
 
     def _parse_rss(url, source_name, max_items=12):
         items = []
@@ -589,11 +594,26 @@ def load_news(vix_now=0.0):
             pass
         return items
 
-    articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice")
-    if len(articles) < 8:
-        articles += _parse_rss(
-            "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
-            "CNBC")
+    # Tier 1: Breaking market + geopolitical news — always fetch all feeds
+    articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice", max_items=15)
+    articles += _parse_rss("https://www.forexlive.com/feed/news", "ForexLive", max_items=12)
+    # Reuters world news — strong for Iran/Middle East/geopolitical
+    articles += _parse_rss("https://feeds.reuters.com/reuters/worldNews", "Reuters", max_items=12)
+    # CNBC — broad market coverage
+    articles += _parse_rss(
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        "CNBC", max_items=10)
+    # Al Jazeera — Middle East depth (Iran, oil, regional)
+    articles += _parse_rss("https://www.aljazeera.com/xml/rss/all.xml", "AlJazeera", max_items=10)
+    # Deduplicate by title prefix to avoid same headline from multiple feeds
+    _seen = set()
+    _deduped = []
+    for _a in articles:
+        _key = _a["title"][:60].lower().strip()
+        if _key not in _seen:
+            _seen.add(_key)
+            _deduped.append(_a)
+    articles = _deduped
 
     if _AV_KEY and len(articles) < 5:
         try:
@@ -637,7 +657,7 @@ def load_news(vix_now=0.0):
 
     if not articles:
         return {"articles": [], "composite_score": 0.0, "label": "⚪ Unavailable",
-                "bull_pct": 0, "bear_pct": 0, "top_impact": None}
+                "bull_pct": 0, "bear_pct": 0, "top_impact": None, "fetched_at": _fetched_at}
 
     # ── Composite score: impact-weighted (high-weight articles matter more) ──
     # Weight = impact_weight × recency (most recent = position 0 = weight 1.0/(0+1)=1.0)
@@ -664,12 +684,13 @@ def load_news(vix_now=0.0):
                   "weight": top["impact_weight"], "title": top["title"][:80]} if top["score"] != 0 else None
 
     return {
-        "articles":        articles[:12],
+        "articles":        articles[:18],   # show up to 18 with 5 feeds
         "composite_score": round(comp, 3),
         "label":           label,
         "bull_pct":        bull_pct,
         "bear_pct":        bear_pct,
         "top_impact":      top_impact,
+        "fetched_at":      _fetched_at,
     }
 
 
@@ -3418,34 +3439,51 @@ with _tab_live:
 
         # Category → display label + color
         _CAT_DISPLAY = {
-            "OIL_SUPPLY_SHOCK": ("🛢️ OIL SHOCK",   "#f59e0b"),
-            "OIL_DROP":         ("🛢️ OIL DROP",    "#4ade80"),
-            "OIL_SPIKE":        ("🛢️ OIL SPIKE",   "#f87171"),
-            "IRAN_ESCALATION":  ("⚔️ IRAN",         "#f87171"),
-            "IRAN_DEESCALATION":("🕊️ IRAN DEAL",    "#4ade80"),
-            "RUSSIA_GEO":       ("⚔️ RUSSIA",        "#f87171"),
-            "CHINA_TAIWAN":     ("⚔️ TAIWAN",        "#f87171"),
-            "GEO_DEESCALATION": ("🕊️ DE-ESCAL",     "#4ade80"),
-            "TARIFF_BEARISH":   ("🚧 TARIFF",        "#f87171"),
-            "TARIFF_BULLISH":   ("🤝 TRADE DEAL",    "#4ade80"),
-            "FED_DOVISH":       ("🏦 FED DOVE",      "#4ade80"),
-            "FED_HAWKISH":      ("🏦 FED HAWK",      "#f87171"),
-            "CPI_HOT":          ("📊 CPI HOT",       "#f87171"),
-            "CPI_COOL":         ("📊 CPI COOL",      "#4ade80"),
-            "JOBS_STRONG":      ("👷 JOBS+",         "#f59e0b"),
-            "JOBS_WEAK":        ("👷 JOBS−",         "#f59e0b"),
-            "BANK_CRISIS":      ("🏦 BANK CRISIS",   "#b91c1c"),
-            "CREDIT_DOWNGRADE": ("📉 DOWNGRADE",     "#f87171"),
-            "FISCAL_CRISIS":    ("🏛️ FISCAL",        "#f87171"),
-            "FISCAL_RESOLUTION":("🏛️ FISCAL OK",    "#4ade80"),
-            "YIELD_SPIKE":      ("📈 YIELD↑",        "#f87171"),
-            "YIELD_DROP":       ("📈 YIELD↓",        "#4ade80"),
-            "EARNINGS_BEAT":    ("💹 EARN BEAT",     "#4ade80"),
-            "EARNINGS_MISS":    ("💹 EARN MISS",     "#f87171"),
-            "RECESSION_FEAR":   ("🔻 RECESSION",     "#f87171"),
-            "GROWTH_STRONG":    ("📈 GROWTH",        "#4ade80"),
-            "GENERIC":          ("",                 "#475569"),
+            "OIL_SUPPLY_SHOCK":           ("🛢️ OIL SHOCK",      "#f59e0b"),
+            "OIL_DROP":                   ("🛢️ OIL DROP",       "#4ade80"),
+            "OIL_SPIKE":                  ("🛢️ OIL SPIKE",      "#f87171"),
+            "OIL_DEMAND_DROP":            ("🛢️ OIL DEMAND↓",    "#f87171"),
+            "OIL_DEMAND_SURGE":           ("🛢️ OIL DEMAND↑",    "#4ade80"),
+            "US_IRAN_WAR":                ("🚨 US-IRAN WAR",     "#b91c1c"),
+            "IRAN_ESCALATION":            ("⚔️ IRAN",            "#f87171"),
+            "IRAN_DEESCALATION":          ("🕊️ IRAN DEAL",       "#4ade80"),
+            "RUSSIA_GEO":                 ("⚔️ RUSSIA",          "#f87171"),
+            "CHINA_TAIWAN":               ("⚔️ TAIWAN",          "#f87171"),
+            "PAKISTAN_MEDIATION_PROGRESS":("🕊️ PAK MEDIATION",  "#4ade80"),
+            "GEO_DEESCALATION":           ("🕊️ DE-ESCAL",        "#4ade80"),
+            "TARIFF_BEARISH":             ("🚧 TARIFF",          "#f87171"),
+            "TARIFF_BULLISH":             ("🤝 TRADE DEAL",      "#4ade80"),
+            "FED_DOVISH":                 ("🏦 FED DOVE",        "#4ade80"),
+            "FED_HAWKISH":                ("🏦 FED HAWK",        "#f87171"),
+            "CPI_HOT":                    ("📊 CPI HOT",         "#f87171"),
+            "CPI_COOL":                   ("📊 CPI COOL",        "#4ade80"),
+            "JOBS_STRONG":                ("👷 JOBS+",           "#f59e0b"),
+            "JOBS_WEAK":                  ("👷 JOBS−",           "#f59e0b"),
+            "BANK_CRISIS":                ("🏦 BANK CRISIS",     "#b91c1c"),
+            "CREDIT_DOWNGRADE":           ("📉 DOWNGRADE",       "#f87171"),
+            "FISCAL_CRISIS":              ("🏛️ FISCAL",          "#f87171"),
+            "FISCAL_RESOLUTION":          ("🏛️ FISCAL OK",       "#4ade80"),
+            "YIELD_SPIKE":                ("📈 YIELD↑",          "#f87171"),
+            "YIELD_DROP":                 ("📈 YIELD↓",          "#4ade80"),
+            "EARNINGS_BEAT":              ("💹 EARN BEAT",       "#4ade80"),
+            "EARNINGS_MISS":              ("💹 EARN MISS",       "#f87171"),
+            "RECESSION_FEAR":             ("🔻 RECESSION",       "#f87171"),
+            "GROWTH_STRONG":              ("📈 GROWTH",          "#4ade80"),
+            "GENERIC":                    ("",                   "#475569"),
         }
+        # Manual refresh button — clears news cache for instant update
+        _fetched_at = news_data.get("fetched_at", "")
+        _ncol1, _ncol2 = st.columns([3, 1])
+        with _ncol1:
+            st.markdown(
+                f'<div style="font-size:10px;color:#475569;margin-bottom:4px">'
+                f'Last fetched: {_fetched_at} · auto-refresh every 90s · '
+                f'{len(articles)} articles from FinancialJuice / ForexLive / Reuters / CNBC / AlJazeera</div>',
+                unsafe_allow_html=True)
+        with _ncol2:
+            if st.button("🔄 Refresh News", key="news_refresh", use_container_width=True):
+                load_news.clear()
+                st.rerun()
 
         rows_html = ""
         for a in articles[:10]:
