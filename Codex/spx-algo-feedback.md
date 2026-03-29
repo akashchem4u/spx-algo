@@ -1,11 +1,11 @@
 # SPX Algo Feedback
 
-Updated: 2026-03-29 (morning session — all original items resolved)
+Updated: 2026-03-29 (morning session finalized)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
 
-## Session Commits (effbdaf → b181c3f)
+## Session Commits (effbdaf → 812aeaf)
 
 | Commit | Change |
 |--------|--------|
@@ -23,6 +23,8 @@ Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 | 51c1b91 | Codex feedback file updated |
 | 0dda8b8 | Fix backtest: use 5m Open for day_open; adaptive chop threshold |
 | b181c3f | Tighten research scope labels (items 1-3 resolved) |
+| 4457b1b | Fix `_orb_range_atr` / `_orb_distance_atr` NameError by hoisting before Key Levels card |
+| 812aeaf | Guard against zero-ATR flat projections when daily data download fails |
 
 ---
 
@@ -66,6 +68,12 @@ The group score breakdown also makes it visible which signals are live-only.
    classification threshold only, not projection math. Acceptable as-is.
 2. `Gap/ATR Normal` in prior-eve SSR uses prior-day gap. Requires `session_gap` param refactor.
 3. ORB width/distance not available in 2-yr hourly backtest (requires intraday ORB reconstruction).
+
+## Final Publish Status
+
+- Feedback note is current through commit `812aeaf`.
+- Repo `main` is clean and synced with `origin/main`.
+- Current handoff location remains `Codex/spx-algo-feedback.md`.
 
 ---
 
