@@ -856,7 +856,7 @@ def fetch_live():
             results["es_price"] = round(_close_scalar(es_df, -1), 2)
             prev_close = _close_scalar(es_df, -2) if len(es_df) > 1 else results["es_price"]
             results["es_change"] = round(results["es_price"] - prev_close, 2)
-            results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2)
+            results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2) if prev_close else 0.0
             results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
             # Overnight range: 4 PM yesterday → 9:30 AM today (ES pre-market)
             # Position in this range = where price sits (0=overnight low, 1=overnight high)
@@ -892,7 +892,7 @@ def fetch_live():
             results["spx_price"] = round(_close_scalar(spx_df, -1), 2)
             prev_close = _close_scalar(spx_df, -2) if len(spx_df) > 1 else results["spx_price"]
             results["spx_change"] = round(results["spx_price"] - prev_close, 2)
-            results["spx_pct"]    = round((results["spx_change"] / prev_close) * 100, 2)
+            results["spx_pct"]    = round((results["spx_change"] / prev_close) * 100, 2) if prev_close else 0.0
             results["spx_ts"]     = spx_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
     except Exception:
         pass
@@ -2167,7 +2167,7 @@ _opex_friday = is_opex_friday()
 # direction over the last 10 trading days.  Groups with >70% hit rate get
 # boosted (up to 1.8×); groups with <50% hit rate get penalised (down to 0.4×).
 @st.cache_data(ttl=3600)
-def compute_group_weights():
+def compute_group_weights(today_date=None):  # today_date busts cache at midnight even within 1h TTL
     """Derive per-group weights by correlating each group's vote with actual day direction."""
     try:
         _spx_d, _vix_d, _sec_d, _day_s, _days, _ = load_backtest_data()
@@ -2361,7 +2361,7 @@ def compute_historical_analysis():
         return {}
 
 
-_grp_weights = compute_group_weights()
+_grp_weights = compute_group_weights(today_date=now_est.date())
 # Stamp when weights were computed so the UI can show a version, not silently recalculate
 _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session (1h cache)
 
