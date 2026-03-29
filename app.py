@@ -296,14 +296,22 @@ _NEWS_IMPACTS = [
     (["us troops iran","us boots iran","us military iran","us ground troops iran",
       "us invad iran","us strikes iran","us attack iran","us bombs iran",
       "american troops iran","boots on the ground iran","us iran war",
-      "us iran conflict","us deploys iran","pentagon iran","us forces iran"],
+      "us iran conflict","us deploys iran","pentagon iran","us forces iran",
+      "troop deployment iran","troops to iran","deploy troops iran",
+      "military option iran","us deployment iran","rubio iran",
+      "signals deployment","troop deployments coming","ground troops",
+      "boots on ground","send troops","sending troops","deploy forces",
+      "carrier strike group iran","fifth fleet iran","centcom iran"],
      "US_IRAN_WAR", 4.5, "any", "bear",
      "US direct military engagement with Iran → Hormuz closure + oil spike + war premium → sharply bearish"),
 
     (["iran attack","iran missile","iran nuclear","israel iran","iran war",
       "iran strikes","iran retaliat","iran threaten","iran sanction new",
       "iran oil block","hezbollah","hamas attack","iran-backed",
-      "israel strikes iran","israel bombs iran","idf iran"],
+      "israel strikes iran","israel bombs iran","idf iran",
+      "idf evacuation","evacuation tehran","strike tehran","attack tehran",
+      "tehran strike","tehran evacuat","idf issues","iranian drone",
+      "iranian ballistic","iranian hypersonic","iran launch"],
      "IRAN_ESCALATION", 3.5, "any", "bear",
      "Iran/Israel conflict → Hormuz risk + oil spike + safe-haven flows → bearish"),
 
@@ -2241,8 +2249,13 @@ _weighted_base = round(sum(_wg_s) / sum(_wg_w) * 100) if _wg_s else _base_score
 _news_comp  = news_data.get("composite_score", 0.0)
 # Cap at ±5 pts: a single high-weight headline should not swing SSR by 10 pts.
 # ±5 is meaningful (can shift Neutral → Weak Buy/Sell) without being headline-driven.
-_news_nudge = max(-5, min(5, int(round(_news_comp * 5))))
-score       = max(0, min(100, _weighted_base + _news_nudge))
+# Cap scales with top event weight: weight ≥ 4.0 (Hormuz/US-Iran war) allows ±8 pts
+# weight ≥ 3.0 allows ±6 pts; default ±5 pts for lower-weight events
+_top_news_wt = news_data.get("top_impact", {}) or {}
+_top_wt      = _top_news_wt.get("weight", 1.0)
+_nudge_cap   = 8 if _top_wt >= 4.0 else (6 if _top_wt >= 3.0 else 5)
+_news_nudge  = max(-_nudge_cap, min(_nudge_cap, int(round(_news_comp * _nudge_cap))))
+score        = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
 # ── Core SSR: weighted score from backtestable closed-bar signals only ───────
@@ -3538,7 +3551,7 @@ with _tab_live:
                 st.rerun()
 
         rows_html = ""
-        for a in articles[:10]:
+        for a in articles[:20]:
             sc    = a["score"]
             sc_c  = "#4ade80" if sc > 0.10 else ("#f87171" if sc < -0.10 else "#64748b")
             badge = "🟢" if sc > 0.10 else ("🔴" if sc < -0.10 else "⚪")
@@ -3568,18 +3581,37 @@ with _tab_live:
         if not rows_html:
             rows_html = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">News unavailable — check connection</div>'
 
-        # Top-impact article banner
+        # Top-impact alert banner — escalates visually for weight ≥ 4.0 events
         _top = news_data.get("top_impact")
         _top_html = ""
         if _top and _top.get("note"):
-            _tc = "#f87171" if comp < -0.05 else "#4ade80" if comp > 0.05 else "#f59e0b"
-            _top_html = (
-                f'<div style="margin:6px 10px;padding:8px 10px;background:#0d1520;'
-                f'border-left:3px solid {_tc};border-radius:4px;font-size:11px">'
-                f'<span style="color:{_tc};font-weight:700">⚡ TOP IMPACT [{_top["category"]}]</span>'
-                f'<div style="color:#94a3b8;margin-top:2px">{_top["note"]}</div>'
-                f'</div>'
-            )
+            _tw  = _top.get("weight", 1.0)
+            _tc  = "#f87171" if comp < -0.05 else "#4ade80" if comp > 0.05 else "#f59e0b"
+            if _tw >= 4.0:
+                # High-severity: full-width red alert with flashing border
+                _alert_bg  = "#1a0505" if comp < 0 else "#051a05"
+                _alert_bdr = "#b91c1c" if comp < 0 else "#15803d"
+                _alert_ico = "🚨" if comp < 0 else "🟢"
+                _cat_disp  = _CAT_DISPLAY.get(_top["category"], (_top["category"], _tc))[0]
+                _top_html  = (
+                    f'<div style="margin:6px 10px 2px;padding:10px 12px;background:{_alert_bg};'
+                    f'border:2px solid {_alert_bdr};border-radius:6px">'
+                    f'<div style="font-size:12px;font-weight:800;color:{_alert_bdr};letter-spacing:0.5px">'
+                    f'{_alert_ico} HIGH-IMPACT EVENT · {_cat_disp} · weight {_tw:.1f}</div>'
+                    f'<div style="font-size:12px;color:#f1f5f9;margin-top:3px;font-weight:600">'
+                    f'{_top.get("title","")}</div>'
+                    f'<div style="font-size:10px;color:#94a3b8;margin-top:3px;font-style:italic">'
+                    f'{_top["note"]}</div>'
+                    f'</div>'
+                )
+            else:
+                _top_html = (
+                    f'<div style="margin:6px 10px;padding:8px 10px;background:#0d1520;'
+                    f'border-left:3px solid {_tc};border-radius:4px;font-size:11px">'
+                    f'<span style="color:{_tc};font-weight:700">⚡ TOP IMPACT [{_top["category"]}]</span>'
+                    f'<div style="color:#94a3b8;margin-top:2px">{_top["note"]}</div>'
+                    f'</div>'
+                )
 
         st.markdown(
             f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
