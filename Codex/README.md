@@ -11,3 +11,4 @@ Conventions:
 Current active notes:
 - `spx-algo-feedback.md`
 - `next-agent-action-plan.md`
+- `news-taxonomy-implementation-note.md`
