@@ -90,7 +90,9 @@ SIGNAL_GROUPS = {
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
-                   "VIX 3d Spike"],              # 3-day VIX surge = fear expansion = bear
+                   "VIX 3d Spike",               # 3-day VIX surge = fear expansion = bear
+                   "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
+                   "Overnight Upper Third"],      # ES in top 1/3 of overnight range: strong bull lean
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
                    "52w Range Top 20%",           # near yearly highs = momentum continuation
                    "Above BB Mid",               # above 20d BB midline = short-term bull context
@@ -646,6 +648,29 @@ def fetch_live():
             results["es_change"] = round(results["es_price"] - prev_close, 2)
             results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2)
             results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
+            # Overnight range: 4 PM yesterday → 9:30 AM today (ES pre-market)
+            # Position in this range = where price sits (0=overnight low, 1=overnight high)
+            try:
+                es_df.index = es_df.index.tz_convert(EST)
+                _today = es_df.index[-1].date()
+                _on = es_df[
+                    ((es_df.index.date == _today) & (es_df.index.hour < 9)) |
+                    ((es_df.index.date == _today) & (es_df.index.hour == 9) & (es_df.index.minute < 30)) |
+                    ((es_df.index.date < _today) & (es_df.index.hour >= 16))
+                ]
+                if len(_on) >= 4:
+                    _h = _on["High"].squeeze()
+                    _l = _on["Low"].squeeze()
+                    if isinstance(_h, pd.DataFrame): _h = _h.iloc[:, 0]
+                    if isinstance(_l, pd.DataFrame): _l = _l.iloc[:, 0]
+                    _on_high = float(_h.max()); _on_low = float(_l.min())
+                    _on_rng  = max(_on_high - _on_low, 0.1)
+                    _on_pos  = round((_close_scalar(es_df, -1) - _on_low) / _on_rng, 3)
+                    results["overnight_high"] = round(_on_high, 1)
+                    results["overnight_low"]  = round(_on_low, 1)
+                    results["overnight_pos"]  = max(0.0, min(1.0, _on_pos))
+            except Exception:
+                pass
     except Exception:
         pass
     try:
@@ -900,6 +925,14 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     if macro:
         _ad = macro.get("ad_ratio", 1.0)
         sigs["A/D Line Positive"] = int(_ad > 1.0)   # more advancing than declining = broad bull
+
+    # ── Overnight range position (from macro dict, ES pre-market) ─────────────
+    # overnight_pos: 0.0 = at overnight low, 1.0 = at overnight high.
+    # Live-only — injected from fetch_live() ES=F overnight range computation.
+    # Above 0.6 = price holding in the upper 40% of the overnight range = bull lean.
+    if macro and macro.get("overnight_pos") is not None:
+        sigs["Above Overnight Midpoint"] = int(macro["overnight_pos"] > 0.5)
+        sigs["Overnight Upper Third"]    = int(macro["overnight_pos"] > 0.67)
 
     # ── Macro / regime signals ────────────────────────────────────────────────
     # Yield Curve: 10yr − 3mo > 0 = normal (bull context); < 0 = inverted = recession warning
@@ -1764,6 +1797,12 @@ vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 # Load news with live VIX so VIX-conditional items (jobs data) score correctly
 news_data = load_news(vix_now=vix_now)
 
+# Enrich macro_data with overnight ES range position from live feed.
+# overnight_pos: 0.0 = at overnight low, 1.0 = at overnight high.
+# Live-only — not available in backtest paths (those skip macro entirely).
+if live.get("overnight_pos") is not None:
+    macro_data["overnight_pos"] = live["overnight_pos"]
+
 _base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=macro_data)
 
 # ── Intraday RSI override: replace daily RSI signals with 5-min RSI during RTH ──
@@ -2216,6 +2255,19 @@ _news_ov_txt = (f"Active: chop→{'bull' if _news_comp>0 else 'bear'} (|score|={
                 if _news_abs >= 0.25 else f"No override (|score|={_news_abs:.2f}<0.25)")
 _why_rows.append(("News", f"{_news_dir_lbl} ({_news_comp:+.3f})", _news_ov_c, _news_ov_txt))
 
+# 4b. Overnight range position (ES pre-market)
+if live.get("overnight_pos") is not None:
+    _on_pos  = live["overnight_pos"]
+    _on_high = live.get("overnight_high", "—")
+    _on_low  = live.get("overnight_low",  "—")
+    _on_pct  = round(_on_pos * 100)
+    _on_lbl  = f"{_on_pct}% of range  ({_on_low}–{_on_high})"
+    _on_c    = "#4ade80" if _on_pos > 0.67 else ("#94a3b8" if _on_pos > 0.33 else "#f87171")
+    _on_ov   = ("Upper third — bull lean" if _on_pos > 0.67
+                else "Lower third — bear lean" if _on_pos < 0.33
+                else "Mid range — no clear edge")
+    _why_rows.append(("Overnight (ES)", _on_lbl, _on_c, _on_ov))
+
 # 5. OpEx
 if _opex_friday:
     _opex_lbl, _opex_c, _opex_ov = "OpEx Friday", "#f59e0b", "EOD Trend preserved directional (gamma unwind)"
@@ -2265,7 +2317,8 @@ _tab_live, _tab_research = st.tabs(["📈 Live Signal", "🔬 Research & Validat
 with _tab_research:
     with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell", expanded=False):
         # Signals available only in live mode (no historical data for these)
-        _LIVE_ONLY_SIGS = {"A/D Line Positive", "Yield Curve Positive", "Credit Spread Calm"}
+        _LIVE_ONLY_SIGS = {"A/D Line Positive", "Yield Curve Positive", "Credit Spread Calm",
+                            "Above Overnight Midpoint", "Overnight Upper Third"}
         # Signals that are overridden by intraday data during RTH
         _INTRADAY_SIGS  = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
         bull_sigs = {k:v for k,v in signals.items() if v==1}
