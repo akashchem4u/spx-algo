@@ -2146,7 +2146,12 @@ with _tab_research:
                          unsafe_allow_html=True)
 
     with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
-        st.caption("Offline accuracy of each TIME_WINDOW bias over 2 years of 1h data by VIX regime and gap type. Research surface — not a live signal.")
+        st.caption(
+            "2-year hourly accuracy of each window bias with historical gap/VIX/event/OpEx context. "
+            "Scope: price + VIX + daily sectors. PCR, macro, news, and ORB state are not available "
+            "historically — live projections include those layers. Slots sampled at 1h bars; "
+            "quarter-hour windows (10:45, 11:15, 13:15) are not individually measured here."
+        )
         _bt = run_extended_window_backtest()
         if not _bt:
             st.warning("Backtest data unavailable — yfinance 1h data requires a valid market data connection.")
@@ -2860,7 +2865,9 @@ with _tab_research:
                     f'</tr></thead><tbody>{_rows_html}</tbody></table></div>'
                     f'{_insight}'
                     f'<div style="margin-top:8px;font-size:10px;color:#475569">'
-                    f'Partial-day sample — resets each session. For statistical validation see Research tab. Updates every 3 min.'
+                    f'Partial-day sample — resets each session. '
+                f'Slots: 09:30 10:00 10:30 11:00 11:30 12:00 13:00 13:30 14:00 14:30 15:00 15:30 16:00. '
+                f'Uses full live model (gap, VIX, events, OpEx, news, ORB). For multi-day stats see Research tab. Updates every 3 min.'
                     f'</div></div>',
                     unsafe_allow_html=True)
             else:
@@ -2870,6 +2877,11 @@ with _tab_research:
                     '</div>', unsafe_allow_html=True)
 
     with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
+        st.caption(
+            "SSR scored on price + VIX + sector data only (no PCR, macro, news, or ORB). "
+            "window_bias_at() uses historical gap, VIX, calendar events, weekday, and OpEx. "
+            "Slot grid: 09:30 10:00 10:30 10:45 11:00 11:15 11:30 12:00 13:00 13:15 13:30 14:00 14:30 15:00 15:30 16:00."
+        )
         spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
 
         last5 = trading_days_bt[-10:] if len(trading_days_bt) >= 10 else trading_days_bt
