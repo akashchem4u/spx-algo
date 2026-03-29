@@ -1329,7 +1329,13 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     # 14 PM: 2×0.055= 0.11  (PM trend)
     # 15 PM: 1×0.09 = 0.09  (power-hour close)  → total = 1.00×
     _ES_RTH_PROFILE = {9: 0.14, 10: 0.09, 11: 0.06, 12: 0.04, 13: 0.045, 14: 0.055, 15: 0.09}
-    def slot_atr(h):
+    def slot_atr(h, is_open_bell=False):
+        if is_open_bell:
+            # 6 PM opening bell = first price discovery after market close.
+            # Weekend or post-close gaps materialise here — treat like a mini open volatility.
+            # 0.07× daily_atr ≈ half the RTH 9:30 multiplier; VIX scaling amplifies further
+            # (e.g. VIX=25 → 0.07×1.35=0.095×ATR ≈ 5-6 pts on a 60-pt ATR day).
+            return daily_atr * 0.07 * _vx
         if 9 <= h < 16:  return daily_atr * _ES_RTH_PROFILE.get(h, 0.077) * _vx * _opex_factor
         if 16 <= h < 17: return daily_atr * 0.035 * _vx * _opex_factor
         return           daily_atr * 0.025 * _vx
@@ -1345,9 +1351,10 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
+            _is_open_bell = (t == open_t)  # first slot of the session
             win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
-            satr     = slot_atr(t.hour)
+            satr     = slot_atr(t.hour, is_open_bell=_is_open_bell)
 
             # Direction confidence: neutral SSR (score≈50) should produce minimal moves
             # even when a directional window is active. The window only has edge when
@@ -1379,8 +1386,13 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             if orb_distance_atr > 0.0 and orb_status in ("above", "below") and 9 <= t.hour < 16:
                 wf *= min(1.3, 1.0 + orb_distance_atr * 0.5)
 
+            # 6 PM opening bell: gap has already materialized in the price feed.
+            # SSR direction dominates — window label is "Outside Hours"/neutral here.
+            # No reversion at open (drift=0 at t=open_t).
+            if _is_open_bell:
+                move = satr * direction * _dir_conf
             # Outside-hours slots: no window bias, SSR direction drives overnight drift
-            if win_bias == "neutral":
+            elif win_bias == "neutral":
                 move = satr * direction * 0.60 * _dir_conf
             else:
                 move = satr * (direction * _dir_w + wf * _win_w) * _dir_conf
