@@ -3,7 +3,7 @@ SPX Algo — Player224 Style  |  Streamlit Web UI
 Run: streamlit run spx_app.py
 """
 
-import sys, io
+import sys, io, re, xml.etree.ElementTree as _ET
 from datetime import datetime, date, timedelta
 import pytz
 import numpy as np
@@ -11,6 +11,8 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 import streamlit.components.v1 as _components
+import urllib.request, urllib.error
+import json as _json
 
 # ─────────────────────────────────────────────────────────────────────────────
 EST = pytz.timezone("America/New_York")
@@ -65,6 +67,217 @@ SIGNAL_GROUPS = {
 }
 
 BIAS_COLOR = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWS & ECONOMIC CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Optional Alpha Vantage key for scored news sentiment (free at alphavantage.co)
+try:
+    _AV_KEY = st.secrets.get("AV_KEY", "")
+except Exception:
+    import os; _AV_KEY = os.environ.get("AV_KEY", "")
+
+# ── 2026 Economic Calendar (FOMC/CPI/NFP/PPI/GDP) ────────────────────────────
+# Source: Federal Reserve, BLS, BEA — all published months in advance
+# format: (YYYY-MM-DD, label, type, impact)
+_ECON_CAL = [
+    # FOMC Rate Decisions (announcement is second day of 2-day meeting)
+    ("2026-01-28","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-03-18","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-04-29","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-06-10","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-07-29","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-09-16","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-11-04","FOMC Rate Decision","FOMC","HIGH"),
+    ("2026-12-16","FOMC Rate Decision","FOMC","HIGH"),
+    # CPI — Consumer Price Index (BLS, ~2nd Wed each month)
+    ("2026-01-14","CPI Inflation Report","CPI","HIGH"),
+    ("2026-02-11","CPI Inflation Report","CPI","HIGH"),
+    ("2026-03-11","CPI Inflation Report","CPI","HIGH"),
+    ("2026-04-10","CPI Inflation Report","CPI","HIGH"),
+    ("2026-05-13","CPI Inflation Report","CPI","HIGH"),
+    ("2026-06-10","CPI Inflation Report","CPI","HIGH"),
+    ("2026-07-15","CPI Inflation Report","CPI","HIGH"),
+    ("2026-08-12","CPI Inflation Report","CPI","HIGH"),
+    ("2026-09-10","CPI Inflation Report","CPI","HIGH"),
+    ("2026-10-14","CPI Inflation Report","CPI","HIGH"),
+    ("2026-11-12","CPI Inflation Report","CPI","HIGH"),
+    ("2026-12-10","CPI Inflation Report","CPI","HIGH"),
+    # NFP — Non-Farm Payrolls (BLS, first Friday of month)
+    ("2026-01-09","NFP Jobs Report","NFP","HIGH"),
+    ("2026-02-06","NFP Jobs Report","NFP","HIGH"),
+    ("2026-03-06","NFP Jobs Report","NFP","HIGH"),
+    ("2026-04-03","NFP Jobs Report","NFP","HIGH"),
+    ("2026-05-01","NFP Jobs Report","NFP","HIGH"),
+    ("2026-06-05","NFP Jobs Report","NFP","HIGH"),
+    ("2026-07-10","NFP Jobs Report","NFP","HIGH"),
+    ("2026-08-07","NFP Jobs Report","NFP","HIGH"),
+    ("2026-09-04","NFP Jobs Report","NFP","HIGH"),
+    ("2026-10-02","NFP Jobs Report","NFP","HIGH"),
+    ("2026-11-06","NFP Jobs Report","NFP","HIGH"),
+    ("2026-12-04","NFP Jobs Report","NFP","HIGH"),
+    # PPI — Producer Price Index (BLS, day after CPI)
+    ("2026-01-15","PPI Report","PPI","MED"),
+    ("2026-02-12","PPI Report","PPI","MED"),
+    ("2026-03-12","PPI Report","PPI","MED"),
+    ("2026-04-11","PPI Report","PPI","MED"),
+    ("2026-05-14","PPI Report","PPI","MED"),
+    ("2026-06-11","PPI Report","PPI","MED"),
+    # GDP Advance Estimate (quarterly: Jan/Apr/Jul/Oct)
+    ("2026-01-28","GDP Advance Estimate","GDP","MED"),
+    ("2026-04-29","GDP Advance Estimate","GDP","MED"),
+    ("2026-07-29","GDP Advance Estimate","GDP","MED"),
+    ("2026-10-28","GDP Advance Estimate","GDP","MED"),
+]
+
+_EVENT_ICON  = {"FOMC":"🏦","CPI":"📊","NFP":"👷","PPI":"🏭","GDP":"📈"}
+_EVENT_COLOR = {"HIGH":"#f87171","MED":"#f59e0b"}
+
+# ── Keyword scoring weights ───────────────────────────────────────────────────
+# Trump/Policy keywords that move SPX — scored bearish/bullish
+_BEAR_KEYWORDS = {
+    "tariff":2.0,"tariffs":2.0,"trade war":2.5,"sanction":1.5,"sanctions":1.5,
+    "recession":2.0,"default":2.0,"crash":1.5,"plunge":1.5,"collapse":2.0,
+    "rate hike":1.5,"hawkish":1.5,"tighten":1.0,
+    "sell off":1.5,"selloff":1.5,"drop":1.0,"fall":1.0,"decline":1.0,
+    "miss":1.0,"below expect":1.5,"weak":1.0,"worsen":1.0,"fear":1.0,
+    "inflation":1.0,"geopolit":1.5,"war":1.5,"conflict":1.5,"attack":1.5,
+    "shutdown":1.5,"debt ceiling":2.0,"downgrade":2.0,
+}
+_BULL_KEYWORDS = {
+    "rate cut":2.0,"dovish":1.5,"easing":1.5,"stimulus":1.5,
+    "beat":1.5,"above expect":1.5,"strong":1.0,"surge":1.5,"rally":1.5,
+    "record":1.0,"recovery":1.5,"deal":1.5,"trade deal":2.0,"truce":2.0,
+    "ceasefire":1.5,"resolution":1.0,"boost":1.0,"gain":1.0,"rise":0.8,
+}
+
+def _keyword_score(text):
+    """Return sentiment score -1..+1 from headline text using weighted keywords."""
+    t = text.lower()
+    bear = sum(w for kw, w in _BEAR_KEYWORDS.items() if kw in t)
+    bull = sum(w for kw, w in _BULL_KEYWORDS.items() if kw in t)
+    total = bear + bull
+    if total == 0: return 0.0
+    return round((bull - bear) / total, 3)
+
+def get_todays_events(lookahead_days=4):
+    """Return economic events for today + next N trading days."""
+    today = date.today()
+    window = {(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(lookahead_days + 1)}
+    return [e for e in _ECON_CAL if e[0] in window]
+
+def get_event_types_today():
+    """Return set of event types happening today."""
+    today_str = date.today().strftime("%Y-%m-%d")
+    return {e[2] for e in _ECON_CAL if e[0] == today_str}
+
+@st.cache_data(ttl=300)
+def load_news():
+    """
+    Fetch real-time market news with sentiment scoring.
+    Priority:
+      1. Financial Juice RSS (real-time breaking market news, free)
+      2. CNBC Markets RSS  (reliable, free)
+      3. Alpha Vantage News Sentiment (if AV_KEY set — pre-scored)
+      4. yfinance headlines (fallback)
+    Returns: {articles: [...], composite_score: float, label: str}
+    """
+    articles = []
+
+    def _parse_rss(url, source_name, max_items=12):
+        """Parse RSS feed, return list of {title, time, score, label}."""
+        items = []
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                raw = r.read().decode("utf-8", errors="ignore")
+            root = _ET.fromstring(raw)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            # Handle both RSS and Atom feeds
+            entries = root.findall(".//item") or root.findall(".//atom:entry", ns)
+            for entry in entries[:max_items]:
+                title_el = entry.find("title")
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                if not title: continue
+                pub_el = entry.find("pubDate") or entry.find("published")
+                pub    = (pub_el.text or "")[:25] if pub_el is not None else ""
+                score  = _keyword_score(title)
+                label  = "🟢 Bullish" if score > 0.1 else ("🔴 Bearish" if score < -0.1 else "⚪ Neutral")
+                items.append({"title": title, "source": source_name,
+                               "time": pub, "score": score, "label": label})
+        except Exception:
+            pass
+        return items
+
+    # 1. Financial Juice — real-time market-moving news feed
+    articles += _parse_rss(
+        "https://www.financialjuice.com/feed.aspx?q=market",
+        "FinancialJuice")
+
+    # 2. CNBC Breaking News (markets)
+    if len(articles) < 8:
+        articles += _parse_rss(
+            "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+            "CNBC")
+
+    # 3. Alpha Vantage scored sentiment (better labels)
+    if _AV_KEY and len(articles) < 5:
+        try:
+            url = (f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT"
+                   f"&tickers=SPY,QQQ&topics=financial_markets,economy_macro"
+                   f"&sort=LATEST&limit=15&apikey={_AV_KEY}")
+            with urllib.request.urlopen(url, timeout=8) as r:
+                data = _json.loads(r.read())
+            for item in data.get("feed", [])[:10]:
+                sc = float(item.get("overall_sentiment_score", 0))
+                lbl = "🟢 Bullish" if sc > 0.15 else ("🔴 Bearish" if sc < -0.15 else "⚪ Neutral")
+                articles.append({
+                    "title":  item.get("title",""),
+                    "source": item.get("source","AV"),
+                    "time":   item.get("time_published","")[:8],
+                    "score":  round(sc, 3),
+                    "label":  lbl,
+                })
+        except Exception:
+            pass
+
+    # 4. yfinance fallback
+    if not articles:
+        try:
+            for item in (yf.Ticker("^GSPC").news or [])[:10]:
+                title = item.get("title","")
+                sc    = _keyword_score(title)
+                ts    = item.get("providerPublishTime", 0)
+                lbl   = "🟢 Bullish" if sc > 0.1 else ("🔴 Bearish" if sc < -0.1 else "⚪ Neutral")
+                articles.append({
+                    "title":  title,
+                    "source": item.get("publisher","yf"),
+                    "time":   datetime.fromtimestamp(ts).strftime("%I:%M %p") if ts else "",
+                    "score":  sc, "label": lbl,
+                })
+        except Exception:
+            pass
+
+    if not articles:
+        return {"articles": [], "composite_score": 0.0, "label": "⚪ Unavailable",
+                "bull_pct": 0, "bear_pct": 0}
+
+    # Composite: recency-weighted average (most recent headline = highest weight)
+    scores  = [a["score"] for a in articles]
+    weights = [1.0 / (i + 1) for i in range(len(scores))]
+    comp    = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+    label   = "🟢 Bullish" if comp > 0.10 else ("🔴 Bearish" if comp < -0.10 else "⚪ Neutral")
+    bull_pct = int(sum(1 for a in articles if a["score"] > 0.1) / len(articles) * 100)
+    bear_pct = int(sum(1 for a in articles if a["score"] < -0.1) / len(articles) * 100)
+
+    return {
+        "articles":        articles[:12],
+        "composite_score": round(comp, 3),
+        "label":           label,
+        "bull_pct":        bull_pct,
+        "bear_pct":        bear_pct,
+    }
 
 
 def to_ampm(hhmm):
@@ -313,6 +526,19 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0):
             if vix > 0 and vix < VIX_CALM_THRESHOLD and bias == "bear":
                 if label not in ("EOD Trend", "Bear Window / Peak"):
                     return "chop", label + " (lo-VIX→chop)"
+
+            # ── Economic event overrides ────────────────────────────────────
+            _today_events = get_event_types_today()
+            if "FOMC" in _today_events:
+                # Pre-2PM: everyone waits → forced chop
+                if "09:30" <= hhmm < "14:00":
+                    return "chop", label + " (FOMC-wait)"
+                # 2PM-3PM: violent move post-announcement — amplify direction
+                if "14:00" <= hhmm < "15:00":
+                    return bias, label + " ⚡FOMC"
+            if ("CPI" in _today_events or "NFP" in _today_events) and "09:30" <= hhmm < "10:00":
+                # First 30 min after data release: knee-jerk then reversal — treat as chop
+                return "chop", label + " (CPI/NFP reversal zone)"
 
             return bias, label
     return "neutral", "Outside Hours"
@@ -671,6 +897,8 @@ now_hhmm = now_est.strftime("%H:%M")
 
 with st.spinner("Fetching market data..."):
     spx, vix, pcr, sectors = fetch_data()
+    news_data   = load_news()
+    today_events = get_todays_events(lookahead_days=4)
     live = fetch_live()
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
@@ -730,7 +958,7 @@ win_icon = BIAS_COLOR.get(cur_bias, "⚪")
 ts1 = live.get("es_ts") or "delayed"
 ts2 = live.get("spx_ts") or "delayed"
 
-mc1,mc2,mc3,mc4,mc5,mc6,mc7,mc8 = st.columns(8)
+mc1,mc2,mc3,mc4,mc5,mc6,mc7,mc8,mc9 = st.columns(9)
 
 # SSR Action: split into short direction + conviction subtitle
 # e.g. "HIGH CONVICTION PUTS" → big="PUTS", conv="HIGH CONVICTION"
@@ -749,6 +977,10 @@ else:
     _act_dir  = action
     _act_conv = ""
 
+_news_lbl = news_data["label"].split()[-1]   # "Bullish" / "Bearish" / "Neutral"
+_news_vc  = "#4ade80" if "Bullish" in news_data["label"] else ("#f87171" if "Bearish" in news_data["label"] else "#94a3b8")
+_news_sub = f'{news_data["bull_pct"]}% bull · {news_data["bear_pct"]}% bear'
+
 for col, lbl, val, sub, vc, sc, fsize in [
     (mc1, "SSR Score",    str(score),      f"{rating.split()[0]} {rating.split()[1] if len(rating.split())>1 else ''}",  color,  "#94a3b8", "22px"),
     (mc2, "SSR Action",   _act_dir,        f"<span style='font-size:9px;letter-spacing:.5px'>{_act_conv}</span>&nbsp; {buys}✅{sells}❌", color, "#64748b", "20px"),
@@ -757,7 +989,8 @@ for col, lbl, val, sub, vc, sc, fsize in [
     (mc5, "SPX",          spx_display,     chg_str(live["spx_change"],live["spx_pct"]),"#f1f5f9", spx_chg_color, "18px"),
     (mc6, "VIX",          str(vix_now),    "Fear Index",                               "#f59e0b" if vix_now>20 else "#4ade80", "#64748b", "22px"),
     (mc7, "ATR (14d)",    str(levels['atr']), f"RSI: {levels['rsi']}",                 "#94a3b8", "#64748b",     "18px"),
-    (mc8, "Now",          win_icon,        cur_win[:18],                               BIAS_TEXT.get(cur_bias,"#94a3b8"), "#64748b", "24px"),
+    (mc8, "News",         _news_lbl,       _news_sub,                                  _news_vc,  "#64748b",     "16px"),
+    (mc9, "Now",          win_icon,        cur_win[:18],                               BIAS_TEXT.get(cur_bias,"#94a3b8"), "#64748b", "24px"),
 ]:
     with col:
         st.markdown(f'<div class="metric-tile"><div class="metric-label">{lbl}</div>'
@@ -1277,6 +1510,100 @@ def render_backtest_day(bt, uw_data):
             f'</div></div>',
             unsafe_allow_html=True)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEWS & ECONOMIC CALENDAR PANEL
+# ═══════════════════════════════════════════════════════════════════════════════
+_nc1, _nc2 = st.columns([1.6, 1])
+
+with _nc1:
+    # ── Breaking News Feed ──────────────────────────────────────────────────
+    articles = news_data.get("articles", [])
+    comp     = news_data.get("composite_score", 0.0)
+    comp_lbl = news_data.get("label", "⚪ Neutral")
+    comp_c   = "#4ade80" if comp > 0.10 else ("#f87171" if comp < -0.10 else "#94a3b8")
+
+    rows_html = ""
+    for a in articles[:10]:
+        sc    = a["score"]
+        sc_c  = "#4ade80" if sc > 0.10 else ("#f87171" if sc < -0.10 else "#64748b")
+        badge = "🟢" if sc > 0.10 else ("🔴" if sc < -0.10 else "⚪")
+        src   = a.get("source","")[:14]
+        t     = a.get("time","")[:16]
+        # Flag Trump/tariff/policy headlines
+        title_lower = a["title"].lower()
+        is_macro = any(k in title_lower for k in
+                       ["trump","tariff","fed ","fomc","powell","rate","inflation",
+                        "cpi","nfp","jobs","gdp","recession","trade war","sanction"])
+        macro_tag = ' <span style="background:#3b1d08;color:#f59e0b;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700">MACRO</span>' if is_macro else ""
+        rows_html += (
+            f'<div style="padding:6px 8px;border-bottom:1px solid #1a1f33;display:flex;gap:8px;align-items:flex-start">'
+            f'<span style="font-size:14px;flex-shrink:0;margin-top:1px">{badge}</span>'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-size:12px;color:#e2e8f0;line-height:1.3">{a["title"][:120]}{macro_tag}</div>'
+            f'<div style="font-size:10px;color:#475569;margin-top:2px">{src} · {t}</div>'
+            f'</div>'
+            f'<span style="font-size:11px;color:{sc_c};font-weight:700;flex-shrink:0">{sc:+.2f}</span>'
+            f'</div>'
+        )
+    if not rows_html:
+        rows_html = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">News unavailable — check connection</div>'
+
+    st.markdown(
+        f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 6px">'
+        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📰 Market News · Financial Juice + CNBC</span>'
+        f'<span style="font-size:12px;font-weight:700;color:{comp_c}">Composite: {comp_lbl} ({comp:+.3f})</span>'
+        f'</div>'
+        f'<div style="overflow-y:auto;max-height:320px">{rows_html}</div>'
+        f'</div>',
+        unsafe_allow_html=True)
+
+with _nc2:
+    # ── Economic Calendar ───────────────────────────────────────────────────
+    today_str = date.today().strftime("%Y-%m-%d")
+    cal_rows  = ""
+    for (ev_date, ev_label, ev_type, ev_impact) in today_events:
+        d = datetime.strptime(ev_date, "%Y-%m-%d").date()
+        days_away = (d - date.today()).days
+        if days_away == 0:
+            day_tag = '<span style="background:#7f1d1d;color:#fca5a5;font-size:9px;padding:1px 6px;border-radius:3px;font-weight:700">TODAY</span>'
+        elif days_away == 1:
+            day_tag = '<span style="background:#1c1917;color:#f59e0b;font-size:9px;padding:1px 6px;border-radius:3px">TOMORROW</span>'
+        else:
+            day_tag = f'<span style="color:#64748b;font-size:10px">{d.strftime("%a %b %d")}</span>'
+        icon    = _EVENT_ICON.get(ev_type, "📌")
+        imp_c   = _EVENT_COLOR.get(ev_impact, "#94a3b8")
+        cal_rows += (
+            f'<div style="padding:8px 12px;border-bottom:1px solid #1a1f33;display:flex;gap:10px;align-items:center">'
+            f'<span style="font-size:18px">{icon}</span>'
+            f'<div style="flex:1">'
+            f'<div style="font-size:12px;color:#e2e8f0;font-weight:600">{ev_label}</div>'
+            f'<div style="margin-top:3px">{day_tag}</div>'
+            f'</div>'
+            f'<span style="font-size:10px;color:{imp_c};font-weight:700">{ev_impact}</span>'
+            f'</div>'
+        )
+    if not cal_rows:
+        cal_rows = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">No major events this week</div>'
+
+    # Today's event impact on trading
+    today_types = {e[2] for e in today_events if e[0] == today_str}
+    event_note  = ""
+    if "FOMC" in today_types:
+        event_note = '<div style="margin:8px 12px;padding:8px;background:#2d1b00;border-radius:6px;font-size:11px;color:#f59e0b">⚡ <b>FOMC Day</b> — Windows 9:30–2:00 PM forced to CHOP. Expect explosion after 2 PM announcement.</div>'
+    elif "CPI" in today_types:
+        event_note = '<div style="margin:8px 12px;padding:8px;background:#1a1233;border-radius:6px;font-size:11px;color:#a78bfa">📊 <b>CPI Day</b> — First 30 min unreliable (knee-jerk reversal common). Wait for 10:00 AM re-test.</div>'
+    elif "NFP" in today_types:
+        event_note = '<div style="margin:8px 12px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">👷 <b>NFP Day</b> — First 30 min is noise. True direction sets after 10:00 AM.</div>'
+
+    st.markdown(
+        f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
+        f'<div style="padding:10px 14px 6px;font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📅 Economic Calendar — Next 5 Days</div>'
+        f'{event_note}'
+        f'<div style="overflow-y:auto;max-height:280px">{cal_rows}</div>'
+        f'</div>',
+        unsafe_allow_html=True)
 
 def aggregate_window_stats(all_bt_results):
     """
