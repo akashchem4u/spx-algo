@@ -1,11 +1,11 @@
 # SPX Algo Feedback
 
-Updated: 2026-03-29 (morning session finalized)
+Updated: 2026-03-29 (360° audit session complete)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
 
-## Session Commits (effbdaf → 812aeaf)
+## Session Commits (effbdaf → ebad8e3)
 
 | Commit | Change |
 |--------|--------|
@@ -23,61 +23,77 @@ Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 | 51c1b91 | Codex feedback file updated |
 | 0dda8b8 | Fix backtest: use 5m Open for day_open; adaptive chop threshold |
 | b181c3f | Tighten research scope labels (items 1-3 resolved) |
-| 4457b1b | Fix `_orb_range_atr` / `_orb_distance_atr` NameError by hoisting before Key Levels card |
+| 4457b1b | Fix NameError: _orb_range_atr/_orb_distance_atr hoisted before Key Levels card |
 | 812aeaf | Guard against zero-ATR flat projections when daily data download fails |
+| 9cfa9e3 | Update Codex feedback to final session state; add README |
+| ebad8e3 | 360° audit fixes: signal correctness + investor UX enhancements |
 
 ---
 
-## Re-review Response (2026-03-29, re: Codex 02:40 CT items)
+## 360° Audit Fixes (ebad8e3)
+
+### Signal Correctness
+
+**VIX No Spike threshold tightened**
+- Was: `_vix_3d_chg <= 0.15` — VIX rising 15% still voted "calm/bullish"
+- Now: `_vix_3d_chg <= 0.08` — matches actual fear threshold (VIX +8% = building fear)
+
+**Gap/ATR Normal direction-sensitive**
+- Was: fires `1` when `abs(gap) < 0.5 ATR` — small down-gaps voted bullish
+- Now: fires `1` only when `0 ≤ signed_gap < 0.5 ATR` — down gaps and flat opens get 0
+
+**VIX scaling smooth interpolation**
+- Was: step function with 35% cliff-edge at VIX=25/30/35
+- Now: `np.interp([0,20,25,30,35,100], [1.0,1.15,1.35,1.60,2.0,2.0])` — continuous scaling
+- Applied in `generate_es_projections`, `generate_spx_projections`, and `generate_weekly_projections`
+
+### Weekly Projection Enhancements
+
+**VIX regime scaling added**
+- Weekly ATR now scales by VIX: `np.interp(..., [1.0,1.10,1.25,1.45,1.75,1.75])`
+- VIX=35 week → 1.75× wider daily ranges; VIX=15 week → 1.0× (unchanged)
+
+**Exhaustion model VIX gate**
+- Was: always tried to mean-revert extreme SSR scores by day 5
+- Now: `ssr_extreme = 0.0 if vix > 25` — regime-driven crashes/squeezes not faded
+
+### Investor UX Additions (SSR card)
+
+**Score driver narrative**
+- `▲ Top drivers: Volatility (83%) · Momentum (60%)` — explains WHY score is high/low
+- `▼ Drag: Breadth (25%)` — shows what's holding back the score
+
+**Data quality badges**
+- `⚠ PCR unavailable` when `^CPC` download fails silently
+- `⚠ Sectors: 9/11` when sector ETF downloads fail
+
+**Key level proximity alert**
+- `⚡ 8.5 pts from R1 (6,376)` amber warning when SPX within 15 pts of R1/R2/Pivot/S1/S2
+
+---
+
+## Re-review Response (prior items, all resolved)
 
 ### Item 1: Day backtest session open — FIXED (0dda8b8)
-`load_backtest_data()` now stores `day_open_series` = first 5m bar's Open.
-`run_backtest_for_day()` uses `day_open_series[target_date]` for `day_open` and gap math.
-First Close used as fallback only if Open data not available.
-
 ### Item 2: Adaptive chop threshold — FIXED (0dda8b8)
-`_chop_thresh` now uses `p["slot_atr"]` (adaptive per-slot ATR from `_bt_atr_profile`)
-instead of flat `slot_atr = bt_atr / 6.5`. Early-session slots are judged correctly.
-
 ### Item 3: Research scope labels — FIXED (b181c3f)
-Both the 2-yr window validation and 10-day backtest captions now explicitly list:
-"Not validated: ORB width/distance, news sentiment, intraday RSI, PCR, macro, A/D, overnight range.
-Live projections layer all of these on top."
-
-### Item 4: Same-session signals in prior-eve backtest score — ACKNOWLEDGED, not fixed
-
-Context:
-- `Gap/ATR Normal`, `Above Prior Day High`, `Above Pivot`, `Above 5d High` are computed
-  using `close.iloc[-1]` (yesterday) relative to prior data when called in backtest context.
-- This is technically consistent — they compute yesterday's context, not today's.
-- The naming "today's gap" in comments is misleading but the math is correct for backtest context.
-
-Decision: not fixing now. Proper fix requires passing an explicit `session_gap` param to
-`compute_ssr()` (similar to `as_of_dt`) and changing Gap/ATR Normal to use it.
-This is a medium-priority refactor — the current behavior is defensible but confusing.
-
-Action taken: added note to the day backtest caption: "SSR scored as of prior evening..."
-The group score breakdown also makes it visible which signals are live-only.
+### Item 4: Same-session signals in prior-eve score — ACKNOWLEDGED (not fixing now)
 
 ---
 
 ## Open Items
 
-**Low priority:**
-1. `_slot_atr` in live accuracy section is flat (`levels["atr"] / 6.5`) — used for chop
-   classification threshold only, not projection math. Acceptable as-is.
-2. `Gap/ATR Normal` in prior-eve SSR uses prior-day gap. Requires `session_gap` param refactor.
+**Low priority (no action needed now):**
+1. `_slot_atr` in live accuracy section is flat (`levels["atr"] / 6.5`) — chop classification only, not projection math.
+2. `Gap/ATR Normal` in prior-eve backtest SSR still uses prior-day gap. Requires `session_gap` param refactor.
 3. ORB width/distance not available in 2-yr hourly backtest (requires intraday ORB reconstruction).
-
-## Final Publish Status
-
-- Feedback note is current through commit `812aeaf`.
-- Repo `main` is clean and synced with `origin/main`.
-- Current handoff location remains `Codex/spx-algo-feedback.md`.
+4. Backtest SSR scored at prior close — hit rates on gap days may be 5–10% inflated vs. true open-anchor accuracy.
+5. Trade suggestion strike selection uses dumb round-down to nearest 25 — not ATM-optimal.
+6. Window live win-rate not yet surfaced on live projection cards (research tab has it; live tab doesn't).
 
 ---
 
-## Signal Inventory (as of b181c3f)
+## Signal Inventory (as of ebad8e3)
 
 ```
 Trend (4):      Above 20/50/200 SMA, 20 SMA > 50 SMA
