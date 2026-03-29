@@ -44,6 +44,26 @@ TIME_WINDOWS = [
 # Gap thresholds (points) for conditional window overrides
 GAP_THRESHOLD = 25.0
 
+# VIX regime thresholds for window bias overrides
+VIX_FEAR_THRESHOLD = 25.0   # high fear → chop windows trend bear, bull windows soften
+VIX_CALM_THRESHOLD = 18.0   # low vol  → bear windows soften, chop is more likely real chop
+
+# Signal groups for weighted SSR scoring — each group gets equal weight regardless of
+# how many sub-signals are in it. Prevents VIX (4 signals) from outweighing MACD (1 signal).
+SIGNAL_GROUPS = {
+    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA",
+                   "Above 9 EMA", "20 SMA > 50 SMA"],
+    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)",
+                   "RSI Above 50", "MACD Bullish", "MACD Rising"],
+    "Extremes":   ["RSI Not Overbought", "RSI Not Oversold",
+                   "Stoch Bullish", "Stoch Not Overbought", "Not at BB Upper"],
+    "Volatility": ["VIX Below 20", "VIX Below 25", "VIX Falling",
+                   "VIX Below 10d Avg", "ATR Expanding"],
+    "Breadth":    ["Above BB Mid", "Above BB Lower", "Volume Above Average",
+                   "Sector Breadth ≥ 30%", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 70%"],
+    "Options":    ["Put/Call Ratio < 1", "Put/Call Falling"],
+}
+
 BIAS_COLOR = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
 
 
@@ -201,8 +221,17 @@ def compute_ssr(spx, vix, pcr, sectors):
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
-    total = buys + sells
-    score = round((buys / total) * 100) if total > 0 else 50
+
+    # Weighted group score — each category contributes equally to the final SSR.
+    # Prevents over-represented categories (VIX has 4 signals, MACD has 1) from
+    # dominating the raw buys/total ratio.
+    group_scores = []
+    for grp_signals in SIGNAL_GROUPS.values():
+        present = [sigs[k] for k in grp_signals if k in sigs]
+        if present:
+            group_scores.append(sum(present) / len(present))
+    score = round(sum(group_scores) / len(group_scores) * 100) if group_scores else round((buys / (buys + sells)) * 100) if (buys + sells) > 0 else 50
+
     return score, buys, sells, sigs
 
 
@@ -251,22 +280,40 @@ def get_current_window():
     return "Outside Market Hours", "neutral", "--", "--"
 
 
-def window_bias_at(hhmm, gap=0.0):
+def window_bias_at(hhmm, gap=0.0, vix=0.0):
     """
     Return (bias, label) for a given HH:MM.
     gap = today's open − prior close (positive = gap-up, negative = gap-down).
-    Gap-conditional overrides based on 20-day backtest data:
-      • Pre-Bull Fade 9:40–10:00  → chop on gap-up  (was 17% as bear; 100% on gap-down)
-      • Afternoon Trend 2:00–3:00 → chop on gap-up  (was 33% as bear; 65-70% on gap-down)
+    vix = current VIX reading (0 = unknown / skip VIX override).
+
+    Override hierarchy (highest priority first):
+      1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
+      2. VIX > 25 (fear) → chop windows become bear; bull windows become chop
+      3. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
     """
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
-            # Gap-up override: Pre-Bull Fade → chop
+            # ── Gap-conditional overrides ──────────────────────────────────
             if label == "Pre-Bull Fade" and gap > GAP_THRESHOLD:
                 return "chop", label + " (gap-up→chop)"
-            # Gap-up override: Afternoon Trend → chop
             if label == "Afternoon Trend" and gap > GAP_THRESHOLD:
                 return "chop", label + " (gap-up→chop)"
+
+            # ── VIX fear regime (VIX > 25) ─────────────────────────────────
+            # In high-fear trending markets, intraday "chop" rarely materialises;
+            # selling pressure bleeds through. Bull windows lose reliability.
+            if vix > VIX_FEAR_THRESHOLD and label not in ("Open Volatility", "AH Bull Window (ES)"):
+                if bias == "chop":
+                    return "bear", label + " (hi-VIX→bear)"
+                if bias == "bull":
+                    return "chop", label + " (hi-VIX→chop)"
+
+            # ── VIX calm regime (VIX < 18) ─────────────────────────────────
+            # Low-vol rangebound: bear windows tend to mean-revert instead of trend.
+            if vix > 0 and vix < VIX_CALM_THRESHOLD and bias == "bear":
+                if label not in ("EOD Trend", "Bear Window / Peak"):
+                    return "chop", label + " (lo-VIX→chop)"
+
             return bias, label
     return "neutral", "Outside Hours"
 
@@ -315,7 +362,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
@@ -336,7 +383,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0):
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
-            win_bias, win_label = window_bias_at(hhmm, gap=gap)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
             move     = satr * (direction * 0.55 + wf * 0.45)
@@ -367,7 +414,7 @@ def next_trading_day(from_date):
     return d
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
     slot_atr  = daily_atr / 6.5
@@ -391,7 +438,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0):
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix)
         win_factor = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         move  = slot_atr * (direction * 0.55 + win_factor * 0.45)
         price = round(price + move, 1)
@@ -884,8 +931,8 @@ try:
     live_gap = round(spx_price - float(_spx_close.iloc[-2]), 1) if len(_spx_close) >= 2 else 0.0
 except Exception:
     live_gap = 0.0
-es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap)
-spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap)
+es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now)
+spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now)
 
 colA, colB = st.columns(2)
 
@@ -1064,6 +1111,12 @@ def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily
     bt_atr = float(tr.rolling(14).mean().iloc[-1])
     slot_atr = bt_atr / 6.5
 
+    # VIX on this day — used for VIX regime window overrides
+    try:
+        vix_on_day = float(vix_base["Close"].squeeze().iloc[-1])
+    except Exception:
+        vix_on_day = 0.0
+
     # Compute actual gap for this day (open − prior close) to drive gap-conditional windows
     day_open  = float(day_5m.iloc[0])
     day_gap   = round(day_open - prev_close, 1)
@@ -1074,7 +1127,7 @@ def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily
     proj_price = day_open if abs(day_gap) > 20 else prev_close
     projections = []
     for s in slots:
-        win_bias, win_label = window_bias_at(s, gap=day_gap)
+        win_bias, win_label = window_bias_at(s, gap=day_gap, vix=vix_on_day)
         wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
         move = slot_atr * (bt_direction * 0.55 + wf * 0.45)
         proj_price = round(proj_price + move, 1)
@@ -1112,6 +1165,7 @@ def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily
         "day_move": round(float(day_5m.iloc[-1]) - float(day_5m.iloc[0]), 1),
         "day_gap": day_gap,
         "date_label": target_date.strftime("%A %B %d, %Y"),
+        "vix_on_day": round(vix_on_day, 1),
         "results": results, "dir_acc": round(dir_acc,1), "avg_err": round(avg_err,1),
     }
 
@@ -1224,6 +1278,57 @@ def render_backtest_day(bt, uw_data):
             unsafe_allow_html=True)
 
 
+def aggregate_window_stats(all_bt_results):
+    """
+    Aggregate per-window directional accuracy across all backtest days,
+    broken down by VIX regime and gap regime.
+    Returns dict: label → {bias, correct, total, vix_low, vix_mid, vix_high, gap_up, gap_flat, gap_down}
+    """
+    stats = {}
+    for bt in all_bt_results:
+        if bt is None:
+            continue
+        vix_day = bt.get("vix_on_day", 0.0)
+        gap_day = bt.get("day_gap", 0.0)
+        vix_key = "vix_high" if vix_day > VIX_FEAR_THRESHOLD else ("vix_low" if vix_day < VIX_CALM_THRESHOLD else "vix_mid")
+        gap_key = "gap_up"   if gap_day > 10 else ("gap_down" if gap_day < -10 else "gap_flat")
+
+        for r in bt["results"]:
+            lbl = r["label"].split(" (")[0]   # strip regime suffix like "(hi-VIX→bear)"
+            if lbl not in stats:
+                stats[lbl] = {
+                    "bias": r["bias"], "correct": 0, "total": 0,
+                    "vix_low":  {"c": 0, "t": 0},
+                    "vix_mid":  {"c": 0, "t": 0},
+                    "vix_high": {"c": 0, "t": 0},
+                    "gap_up":   {"c": 0, "t": 0},
+                    "gap_flat": {"c": 0, "t": 0},
+                    "gap_down": {"c": 0, "t": 0},
+                }
+            s = stats[lbl]
+            s["total"] += 1
+            if r["correct"]:
+                s["correct"] += 1
+            s[vix_key]["t"] += 1
+            if r["correct"]:
+                s[vix_key]["c"] += 1
+            s[gap_key]["t"] += 1
+            if r["correct"]:
+                s[gap_key]["c"] += 1
+    return stats
+
+
+def _pct(d):
+    """Format accuracy dict {c,t} as percentage string."""
+    if d["t"] == 0: return "—"
+    return f"{int(d['c']/d['t']*100)}%"
+
+def _acc_color(d):
+    if d["t"] == 0: return "#64748b"
+    v = d["c"] / d["t"] * 100
+    return "#4ade80" if v >= 65 else ("#f59e0b" if v >= 45 else "#f87171")
+
+
 with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
     spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
 
@@ -1275,16 +1380,110 @@ with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", ex
 
     st.markdown("<hr style='border:1px solid #1e2130;margin:12px 0'>", unsafe_allow_html=True)
 
+    # Pre-compute all day results (needed for calibration table)
+    all_bt_results = []
+    for td in last5:
+        all_bt_results.append(
+            run_backtest_for_day(td, day_series_bt, spx_d_bt, vix_d_bt,
+                                 sectors_d_bt, daily_dates_list, offsets.get(td, 1))
+        )
+
     # Per-day tabs
     tab_labels = [td.strftime("%a %b %d") for td in last5]
     tabs = st.tabs(tab_labels)
-    for tab, td in zip(tabs, last5):
+    for tab, td, bt_day in zip(tabs, last5, all_bt_results):
         with tab:
-            bt_day = run_backtest_for_day(
-                td, day_series_bt, spx_d_bt, vix_d_bt, sectors_d_bt,
-                daily_dates_list, offsets.get(td, 1))
             uw_day = load_uw_market_tide(td.strftime("%Y-%m-%d"))
             render_backtest_day(bt_day, uw_day)
+
+    # ── Algorithm Calibration Table ──────────────────────────────────────────
+    st.markdown("<hr style='border:1px solid #1e2130;margin:18px 0'>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px;color:#64748b;letter-spacing:1.4px;"
+        "text-transform:uppercase;margin-bottom:10px'>📐 Window Calibration — Accuracy by VIX Regime & Gap</div>",
+        unsafe_allow_html=True)
+
+    w_stats = aggregate_window_stats(all_bt_results)
+
+    if w_stats:
+        # Overall accuracy across all windows
+        total_c = sum(s["correct"] for s in w_stats.values())
+        total_t = sum(s["total"]   for s in w_stats.values())
+        overall_acc = int(total_c / total_t * 100) if total_t else 0
+        overall_c   = "#4ade80" if overall_acc >= 65 else ("#f59e0b" if overall_acc >= 45 else "#f87171")
+
+        st.markdown(
+            f'<div style="margin-bottom:10px;font-size:13px;color:#94a3b8">'
+            f'Overall directional accuracy across all windows & days: '
+            f'<b style="color:{overall_c};font-size:16px">{overall_acc}%</b> '
+            f'({total_c}/{total_t} correct)</div>',
+            unsafe_allow_html=True)
+
+        BIAS_ICON = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
+        header = (
+            '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#f1f5f9">'
+            '<thead><tr style="background:#0f1117">'
+            '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">WINDOW</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">BIAS</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">OVERALL</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&lt;18</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX 18-25</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&gt;25</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP UP</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">FLAT</th>'
+            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP DOWN</th>'
+            '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">INSIGHT</th>'
+            '</tr></thead><tbody>'
+        )
+        rows_html = ""
+        for lbl, s in w_stats.items():
+            ov_pct = int(s["correct"]/s["total"]*100) if s["total"] else 0
+            ov_c   = "#4ade80" if ov_pct >= 65 else ("#f59e0b" if ov_pct >= 45 else "#f87171")
+            bias_icon = BIAS_ICON.get(s["bias"], "⚪")
+
+            # Auto-generate insight
+            insight = ""
+            if s["vix_high"]["t"] >= 3:
+                vh = int(s["vix_high"]["c"]/s["vix_high"]["t"]*100)
+                if vh < 45 and s["bias"] != "bear":
+                    insight = f'⚠️ Only {vh}% on VIX>25 — consider bear override'
+                elif vh >= 70 and s["bias"] == "bear":
+                    insight = f'✅ Strong {vh}% bear hit on VIX>25'
+            if not insight and s["gap_up"]["t"] >= 3:
+                gu = int(s["gap_up"]["c"]/s["gap_up"]["t"]*100)
+                if gu < 40:
+                    insight = f'⚠️ Only {gu}% on gap-up days'
+            if not insight and ov_pct >= 70:
+                insight = "✅ Reliable"
+            if not insight and ov_pct < 40 and s["total"] >= 5:
+                insight = "🔴 Flip or skip this window"
+
+            rows_html += (
+                f'<tr style="border-bottom:1px solid #1a1f33">'
+                f'<td style="padding:5px 10px;font-size:12px">{lbl}</td>'
+                f'<td style="padding:5px 8px;text-align:center">{bias_icon} {s["bias"]}</td>'
+                f'<td style="padding:5px 8px;text-align:center;font-weight:700;color:{ov_c}">{ov_pct}% <span style="font-size:10px;color:#475569">({s["correct"]}/{s["total"]})</span></td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_low"])}">{_pct(s["vix_low"])}</td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_mid"])}">{_pct(s["vix_mid"])}</td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_high"])}">{_pct(s["vix_high"])}</td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_up"])}">{_pct(s["gap_up"])}</td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_flat"])}">{_pct(s["gap_flat"])}</td>'
+                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_down"])}">{_pct(s["gap_down"])}</td>'
+                f'<td style="padding:5px 10px;font-size:11px;color:#94a3b8">{insight}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;'
+            f'border:1px solid #2d3250;overflow-x:auto">'
+            f'{header}{rows_html}</tbody></table></div>',
+            unsafe_allow_html=True)
+
+        st.markdown(
+            '<div style="font-size:10px;color:#475569;margin-top:6px">'
+            '🟢 ≥65% accurate &nbsp;·&nbsp; 🟡 45-64% &nbsp;·&nbsp; 🔴 &lt;45% &nbsp;·&nbsp; '
+            'VIX&lt;18 = calm/range-bound &nbsp;·&nbsp; VIX&gt;25 = fear/trending &nbsp;·&nbsp; '
+            'Minimum 3 samples shown per cell</div>',
+            unsafe_allow_html=True)
 
 
 st.markdown("""
