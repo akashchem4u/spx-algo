@@ -771,19 +771,21 @@ def get_current_window():
     return "Outside Market Hours", "neutral", "--", "--"
 
 
-def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0):
+def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
     """
     Return (bias, label) for a given HH:MM.
     gap        = today's open − prior close (positive = gap-up, negative = gap-down).
     vix        = current VIX reading (0 = unknown / skip VIX override).
     news_score = composite news sentiment −1..+1 (from load_news composite_score).
+    orb_status = "above" | "below" | "inside" (Opening Range Breakout status).
 
     Override hierarchy (highest priority first):
       1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
       2. VIX > 25 (fear) → chop windows become bear; bull windows become chop
       3. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
       4. Economic event  → FOMC/CPI/NFP time-of-day overrides
-      5. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
+      5. ORB breakout    → price outside opening range shifts chop→directional (post 10 AM)
+      6. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
     """
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
@@ -820,6 +822,16 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0):
             if ("CPI" in _today_events or "NFP" in _today_events) and "09:30" <= hhmm < "10:00":
                 # First 30 min after data release: knee-jerk then reversal — treat as chop
                 return "chop", label + " (CPI/NFP reversal zone)"
+
+            # ── ORB breakout override ───────────────────────────────────────
+            # Only applies post 10:00 AM — opening volatility (9:30–10:00) is
+            # too noisy for ORB confirmation. After 10 AM, price outside the
+            # 9:30–9:45 range is a statistically meaningful breakout.
+            if hhmm >= "10:00" and bias == "chop":
+                if orb_status == "above":
+                    return "bull", label + " (ORB↑ bull)"
+                if orb_status == "below":
+                    return "bear", label + " (ORB↓ bear)"
 
             # ── News sentiment override (lowest priority) ───────────────────
             # Strong news flow shifts "chop" windows into directional.
@@ -879,7 +891,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
@@ -907,7 +919,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
 
@@ -953,7 +965,7 @@ def next_trading_day(from_date):
     return d
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
     # VIX regime scaling — same thresholds as ES projections
@@ -983,7 +995,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -1124,6 +1136,158 @@ def change_html(val, pct):
     return f'<span style="color:{color};font-size:14px;font-weight:600">{sign}{val} ({sign}{pct}%)</span>'
 
 
+@st.cache_data(ttl=60)
+def compute_orb():
+    """
+    Opening Range Breakout — first 15 minutes (9:30–9:45 AM EST).
+    The ORB high/low act as intraday breakout levels: price sustaining above ORB high
+    after 10 AM = bull bias; below ORB low = bear bias; inside = chop/neutral.
+    """
+    try:
+        df = yf.download("^GSPC", period="1d", interval="5m", progress=False, auto_adjust=True)
+        if df.empty: return {"valid": False}
+        df.index = df.index.tz_convert(EST)
+        today = df.index[0].date()
+        # Only today's bars
+        df = df[df.index.date == today]
+        # ORB = 9:30–9:44 (first 15 min — 3 × 5-min bars)
+        orb = df[(df.index.hour == 9) & (df.index.minute < 45)]
+        if len(orb) < 2: return {"valid": False}
+        h = orb["High"].squeeze(); l = orb["Low"].squeeze()
+        if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+        if isinstance(l, pd.DataFrame): l = l.iloc[:, 0]
+        orb_high = round(float(h.max()), 1)
+        orb_low  = round(float(l.min()), 1)
+        # Current close
+        cur_c = df["Close"].squeeze()
+        if isinstance(cur_c, pd.DataFrame): cur_c = cur_c.iloc[:, 0]
+        current = round(float(cur_c.iloc[-1]), 1)
+        if current > orb_high:
+            status = "above"
+        elif current < orb_low:
+            status = "below"
+        else:
+            status = "inside"
+        return {"valid": True, "high": orb_high, "low": orb_low,
+                "current": current, "status": status,
+                "range_pts": round(orb_high - orb_low, 1)}
+    except Exception:
+        return {"valid": False}
+
+
+@st.cache_data(ttl=86400)
+def run_extended_window_backtest():
+    """
+    2-year hourly SPX backtest — validates each TIME_WINDOW bias against actual
+    hourly direction, broken down by VIX regime and gap type.
+    Uses 1-hour bars (max ~730 days on yfinance).
+    Returns dict: window_label → {bias, total, correct, vix_low, vix_mid, vix_high,
+                                   gap_up, gap_flat, gap_down, suggested_bias}
+    """
+    try:
+        spx_1h = yf.download("^GSPC", period="2y", interval="1h",
+                              progress=False, auto_adjust=True)
+        if spx_1h.empty: return {}
+        spx_1h.index = spx_1h.index.tz_convert(EST)
+
+        # Daily VIX for regime tagging
+        vix_d  = yf.download("^VIX",  period="2y", interval="1d",
+                              progress=False, auto_adjust=True)
+        vix_c  = vix_d["Close"].squeeze()
+        if isinstance(vix_c, pd.DataFrame): vix_c = vix_c.iloc[:, 0]
+        vix_map = {d.date(): float(v) for d, v in zip(vix_d.index, vix_c) if not pd.isna(v)}
+
+        # Daily gap = open − prior close
+        spx_d  = yf.download("^GSPC", period="2y", interval="1d",
+                              progress=False, auto_adjust=True)
+        _dc    = spx_d["Close"].squeeze()
+        _do    = spx_d["Open"].squeeze()
+        if isinstance(_dc, pd.DataFrame): _dc = _dc.iloc[:, 0]
+        if isinstance(_do, pd.DataFrame): _do = _do.iloc[:, 0]
+        gap_map = {spx_d.index[i].date(): round(float(_do.iloc[i]) - float(_dc.iloc[i-1]), 1)
+                   for i in range(1, len(spx_d))}
+
+        # Extract 1h close series
+        close_1h = spx_1h["Close"].squeeze()
+        if isinstance(close_1h, pd.DataFrame): close_1h = close_1h.iloc[:, 0]
+
+        stats = {}
+        for i in range(1, len(spx_1h)):
+            try:
+                ts   = spx_1h.index[i]
+                dt   = ts.date()
+                hhmm = ts.strftime("%H:%M")
+                # RTH only
+                if not (9 <= ts.hour < 16): continue
+
+                # Match window
+                mlabel = mbias = None
+                for s, e, lbl, b in TIME_WINDOWS:
+                    if s <= hhmm < e:
+                        mlabel, mbias = lbl, b; break
+                if mlabel is None: continue
+
+                vix_val = vix_map.get(dt, 20.0)
+                gap_val = gap_map.get(dt, 0.0)
+                vix_key = ("vix_high" if vix_val > VIX_FEAR_THRESHOLD
+                           else "vix_low" if vix_val < VIX_CALM_THRESHOLD
+                           else "vix_mid")
+                gap_key = ("gap_up"   if gap_val > 10 else
+                           "gap_down" if gap_val < -10 else "gap_flat")
+
+                prev_c = float(close_1h.iloc[i-1])
+                curr_c = float(close_1h.iloc[i])
+                diff   = curr_c - prev_c
+                # Chop threshold: 20% of hourly ATR proxy (spread × 2)
+                hourly_atr_proxy = abs(diff) * 4 if abs(diff) > 0 else 2.0
+                _flat = abs(diff) < hourly_atr_proxy * 0.2
+
+                if   mbias == "bull":  correct = diff > 0
+                elif mbias == "bear":  correct = diff < 0
+                elif mbias == "chop":  correct = _flat
+                else: continue
+
+                if mlabel not in stats:
+                    stats[mlabel] = {
+                        "bias": mbias, "correct": 0, "total": 0,
+                        "vix_low":  {"c": 0, "t": 0},
+                        "vix_mid":  {"c": 0, "t": 0},
+                        "vix_high": {"c": 0, "t": 0},
+                        "gap_up":   {"c": 0, "t": 0},
+                        "gap_flat": {"c": 0, "t": 0},
+                        "gap_down": {"c": 0, "t": 0},
+                    }
+                s = stats[mlabel]
+                s["total"] += 1
+                if correct: s["correct"] += 1
+                s[vix_key]["t"] += 1
+                if correct: s[vix_key]["c"] += 1
+                s[gap_key]["t"] += 1
+                if correct: s[gap_key]["c"] += 1
+            except Exception:
+                continue
+
+        # Add data-driven bias suggestion per window
+        for lbl, s in stats.items():
+            t = s["total"]
+            if t < 20:
+                s["suggested_bias"] = s["bias"]
+                s["flip"] = False
+                continue
+            acc = s["correct"] / t
+            # If accuracy < 40%, the current bias is likely wrong — suggest flip
+            if acc < 0.40:
+                flip_map = {"bull": "bear", "bear": "bull", "chop": "chop"}
+                s["suggested_bias"] = flip_map.get(s["bias"], s["bias"])
+                s["flip"] = True
+            else:
+                s["suggested_bias"] = s["bias"]
+                s["flip"] = False
+        return stats
+    except Exception:
+        return {}
+
+
 def windows_html(now_hhmm):
     rows = []
     for s, e, lbl, b in TIME_WINDOWS:
@@ -1221,6 +1385,7 @@ with st.spinner("Fetching market data..."):
     spx, vix, pcr, sectors = fetch_data()
     today_events = get_todays_events(lookahead_days=4)
     live = fetch_live()
+    orb_data = compute_orb()
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 
@@ -1499,6 +1664,13 @@ with cR:
           {lrow("Week Low",  levels['week_low'])}
           {lrow("Prev High", levels['prev_high'])}
           {lrow("Prev Low",  levels['prev_low'])}
+          <hr class="divider">
+          <h3 style="margin-bottom:6px">ORB (9:30–9:44)</h3>
+          {(lambda o: lrow("ORB High", o["high"], "#f87171") + lrow("ORB Low", o["low"], "#4ade80") +
+            lrow("Status",
+                 f'{"↑ Above" if o["status"]=="above" else "↓ Below" if o["status"]=="below" else "Inside"}',
+                 "#4ade80" if o["status"]=="above" else "#f87171" if o["status"]=="below" else "#94a3b8")
+          )(orb_data) if orb_data.get("valid") else lrow("ORB", "Pre-market / unavailable", "#475569")}
         </div>
       </div>
     </div>
@@ -1557,6 +1729,60 @@ with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell  (click t
                      unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ROW 3b — 2-YEAR STATISTICAL WINDOW VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
+    _bt = run_extended_window_backtest()
+    if not _bt:
+        st.warning("Backtest data unavailable — yfinance 1h data requires a valid market data connection.")
+    else:
+        # Convert dict → flat DataFrame rows with sub-breakdowns
+        _bt_rows = []
+        for _wlbl, _ws in _bt.items():
+            _tot = _ws["total"]
+            _acc = round(_ws["correct"] / _tot * 100, 1) if _tot else 0
+            # Overall row
+            _bt_rows.append({
+                "Window": _wlbl,
+                "Bias": _ws["bias"],
+                "Acc%": f"{_acc}%",
+                "n": _tot,
+                "VIX Low": (f'{round(_ws["vix_low"]["c"]/_ws["vix_low"]["t"]*100,1)}%'
+                            if _ws["vix_low"]["t"] else "—"),
+                "VIX Mid": (f'{round(_ws["vix_mid"]["c"]/_ws["vix_mid"]["t"]*100,1)}%'
+                            if _ws["vix_mid"]["t"] else "—"),
+                "VIX High": (f'{round(_ws["vix_high"]["c"]/_ws["vix_high"]["t"]*100,1)}%'
+                             if _ws["vix_high"]["t"] else "—"),
+                "Gap↑": (f'{round(_ws["gap_up"]["c"]/_ws["gap_up"]["t"]*100,1)}%'
+                         if _ws["gap_up"]["t"] else "—"),
+                "Gap→": (f'{round(_ws["gap_flat"]["c"]/_ws["gap_flat"]["t"]*100,1)}%'
+                         if _ws["gap_flat"]["t"] else "—"),
+                "Gap↓": (f'{round(_ws["gap_down"]["c"]/_ws["gap_down"]["t"]*100,1)}%'
+                         if _ws["gap_down"]["t"] else "—"),
+                "Suggested": _ws.get("suggested_bias", _ws["bias"]),
+                "Flag": "⚠️ FLIP" if _ws.get("flip") else "",
+            })
+        _bt_df = pd.DataFrame(_bt_rows)
+
+        # Flip warnings at top
+        _flips_df = _bt_df[_bt_df["Flag"] == "⚠️ FLIP"]
+        if not _flips_df.empty:
+            st.markdown("#### ⚠️ Bias Flip Suggestions (accuracy < 40% — current bias may be wrong)")
+            for _, _row in _flips_df.iterrows():
+                st.markdown(
+                    f'<div style="background:#450a0a;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:12px">'
+                    f'<b style="color:#f87171">{_row["Window"]}</b>'
+                    f' &nbsp;·&nbsp; current: <b>{_row["Bias"]}</b>'
+                    f' &nbsp;→&nbsp; suggested: <b style="color:#4ade80">{_row["Suggested"]}</b>'
+                    f' &nbsp;·&nbsp; accuracy: <b style="color:#f87171">{_row["Acc%"]}</b>'
+                    f' &nbsp;·&nbsp; n={_row["n"]} bars'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+        st.markdown("#### Full Window Accuracy by VIX Regime & Gap Type")
+        st.dataframe(_bt_df, use_container_width=True, hide_index=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
 # ═══════════════════════════════════════════════════════════════════════════════
 try:
@@ -1565,8 +1791,9 @@ try:
     live_gap = round(spx_price - float(_spx_close.iloc[-2]), 1) if len(_spx_close) >= 2 else 0.0
 except Exception:
     live_gap = 0.0
-es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp)
-spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp)
+_orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
+es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status)
+spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status)
 
 colA, colB = st.columns(2)
 
