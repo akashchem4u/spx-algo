@@ -81,7 +81,8 @@ SIGNAL_GROUPS = {
                    "RSI Strong Trend"],          # RSI 60-75: strong momentum, not extreme
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15",              # ultra-calm tier for gradient
-                   "VIX 3d Relief"],             # 3-day VIX decline = fear unwinding = bull
+                   "VIX 3d Relief",              # 3-day VIX decline = fear unwinding = bull
+                   "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
                    "Sector Breadth ≥ 70%"],      # strong breadth: second tier for gradient
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
@@ -91,7 +92,8 @@ SIGNAL_GROUPS = {
                    "VIX 3d Spike"],              # 3-day VIX surge = fear expansion = bear
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
                    "52w Range Top 20%",           # near yearly highs = momentum continuation
-                   "Above BB Mid"],              # above 20d BB midline = short-term bull context
+                   "Above BB Mid",               # above 20d BB midline = short-term bull context
+                   "Above Prior Day High"],       # current close > PDH = trend continuation / breakout
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -827,6 +829,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         sigs["VIX 3d Relief"]  = 0
         sigs["VIX 3d Spike"]   = 0
 
+    # VIX 1d Down: pure day-over-day VIX decline with no market-open gate.
+    # Complements "VIX Falling" (which is disabled when market is closed).
+    # Fires in backtest paths and after-hours, giving a more stable vol-direction signal.
+    sigs["VIX 1d Down"] = int(len(vix_c) >= 2 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-2]))
+
     # Gap/ATR ratio: is today's gap large relative to recent volatility?
     # A gap > 0.5× daily ATR is high-conviction and should amplify window bias.
     # We use Open vs prior Close from the daily DataFrame when available.
@@ -919,6 +926,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
 
     # Bollinger Band position: price above midline = mild bull context
     sigs["Above BB Mid"]         = int(c > bb_mid.iloc[-1])
+
+    # Above Prior Day High: today's close exceeds yesterday's intraday high.
+    # Signals trend continuation / breakout above prior resistance.
+    # ph and pl are defined earlier: ph = high.iloc[-2], pl = low.iloc[-2]
+    sigs["Above Prior Day High"] = int(c > float(high.iloc[-2])) if len(high) >= 2 else 0
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
@@ -1013,14 +1025,16 @@ def is_opex_friday(ref_date=None):
 
 
 def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False,
-                   event_types=None, weekday=None):
+                   event_types=None, weekday=None, orb_range_atr=0.0):
     """
     Return (bias, label) for a given HH:MM.
-    gap        = today's open − prior close (positive = gap-up, negative = gap-down).
-    vix        = current VIX reading (0 = unknown / skip VIX override).
-    news_score = composite news sentiment −1..+1 (from load_news composite_score).
-    orb_status = "above" | "below" | "inside" (Opening Range Breakout status).
-    opex       = True if current week is standard monthly options expiration week.
+    gap           = today's open − prior close (positive = gap-up, negative = gap-down).
+    vix           = current VIX reading (0 = unknown / skip VIX override).
+    news_score    = composite news sentiment −1..+1 (from load_news composite_score).
+    orb_status    = "above" | "below" | "inside" (Opening Range Breakout status).
+    opex          = True if current week is standard monthly options expiration week.
+    orb_range_atr = ORB width / daily ATR. When > 0 and < 0.12, the ORB is too narrow
+                    to be a reliable breakout signal — override is suppressed.
 
     Override hierarchy (highest priority first):
       1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
@@ -1087,7 +1101,11 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
             # Only applies post 10:00 AM — opening volatility (9:30–10:00) is
             # too noisy for ORB confirmation. After 10 AM, price outside the
             # 9:30–9:45 range is a statistically meaningful breakout.
-            if hhmm >= "10:00" and bias == "chop":
+            # Narrow ORB guard: if ORB width < 0.12× daily ATR (e.g. ATR=40pts → ORB<4.8pts),
+            # the range is too tight for the breakout to mean anything — skip override.
+            # orb_range_atr=0.0 (unknown) passes through as before.
+            _orb_wide_enough = (orb_range_atr == 0.0 or orb_range_atr >= 0.12)
+            if hhmm >= "10:00" and bias == "chop" and _orb_wide_enough:
                 if orb_status == "above":
                     return "bull", label + " (ORB↑ bull)"
                 if orb_status == "below":
@@ -1151,7 +1169,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
@@ -1183,7 +1201,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
 
@@ -1251,7 +1269,7 @@ def next_trading_day(from_date):
     return d  # fallback
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
     # VIX regime scaling — same thresholds as ES projections
@@ -1286,7 +1304,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -2091,6 +2109,10 @@ except Exception:
     live_gap             = 0.0
     _session_prior_close = spx_price
 _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
+# ORB width / daily ATR — used to guard narrow ORB breakout signals.
+# 0.0 when ORB is not valid (before 9:45 or on errors).
+_orb_range_atr = (round(orb_data["range_pts"] / max(levels["atr"], 1), 3)
+                  if orb_data.get("valid") and levels.get("atr", 0) > 0 else 0.0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
@@ -2149,7 +2171,8 @@ _why_rows.append(("OpEx", _opex_lbl, _opex_c, _opex_ov))
 
 # 6. Current window actual bias (show what fired)
 _bias_fired, _bias_label = window_bias_at(now_hhmm, gap=live_gap, vix=vix_now,
-                                          news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+                                          news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
+                                          orb_range_atr=_orb_range_atr)
 _bias_fired_c = BIAS_TEXT.get(_bias_fired, "#94a3b8")
 
 _why_html = "".join(
@@ -2354,8 +2377,8 @@ with _tab_live:
     # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
-    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
-    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
+    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
 
     colA, colB = st.columns(2)
 
@@ -2984,7 +3007,7 @@ with _tab_research:
             # (same reference the day backtest uses), not the 9:30 bar's own close.
             _prev_actual   = _session_prior_close
             for _sl in _slots:
-                _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+                _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
                 _actual  = _snap_at(_sl)
                 if _actual is None:
                     continue
