@@ -2475,9 +2475,10 @@ with _tab_research:
 
     with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
         st.caption(
-            "2-year hourly accuracy of each window bias with historical gap/VIX/event/OpEx context. "
-            "Scope: price + VIX + daily sectors. PCR, macro, news, and ORB state are not available "
-            "historically — live projections include those layers. Slots sampled at 1h bars; "
+            "2-year hourly accuracy of each window bias — validated with historical gap/VIX/event/OpEx context. "
+            "Scope: gap/VIX/calendar events/weekday/OpEx window overrides only. "
+            "Not backfilled: ORB width/distance, news sentiment, intraday RSI, PCR, macro, A/D, overnight range. "
+            "Live projections layer all of these on top. Slots sampled at 1h bars; "
             "quarter-hour windows (10:45, 11:15, 13:15) are not individually measured here."
         )
         _bt = run_extended_window_backtest()
@@ -3248,8 +3249,9 @@ with _tab_research:
 
     with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
         st.caption(
-            "SSR scored on price + VIX + sector data only (no PCR, macro, news, or ORB). "
-            "window_bias_at() uses historical gap, VIX, calendar events, weekday, and OpEx. "
+            "SSR: price + VIX + sector data only (no PCR, macro, A/D, or overnight signals). "
+            "Window bias: historical gap, VIX, calendar events (FOMC/CPI/NFP), weekday, OpEx. "
+            "Not validated: ORB width/distance, news sentiment, intraday RSI override (live-only features). "
             "Slot grid: 09:30 10:00 10:30 10:45 11:00 11:15 11:30 12:00 13:00 13:15 13:30 14:00 14:30 15:00 15:30 16:00."
         )
         spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt, day_open_series_bt = load_backtest_data()
