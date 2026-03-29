@@ -1831,7 +1831,7 @@ _opex_friday = is_opex_friday()
 def compute_group_weights():
     """Derive per-group weights by correlating each group's vote with actual day direction."""
     try:
-        _spx_d, _vix_d, _sec_d, _day_s, _days = load_backtest_data()
+        _spx_d, _vix_d, _sec_d, _day_s, _days, _ = load_backtest_data()
         if not _days: return {g: 1.0 for g in SIGNAL_GROUPS}
         _dl = list(_spx_d.index.date); _td = len(_spx_d)
         # Weighted counts: recent 30 days count 2× older days (regime decay)
@@ -2345,13 +2345,14 @@ with _tab_research:
                          unsafe_allow_html=True)
         st.caption("(live-only) = macro/flow data not available historically · (5m) = replaced by intraday 5-min RSI during RTH")
 
-        # Group score breakdown — shows each category's contribution to the weighted SSR
+        # Group score breakdown — shows each category's score + adaptive weight
         _grp_rows = []
         for _gn, _gs in SIGNAL_GROUPS.items():
             _gpresent = [signals[k] for k in _gs if k in signals]
             if _gpresent:
                 _gscore = sum(_gpresent) / len(_gpresent)
-                _grp_rows.append((_gn, _gscore))
+                _gw     = _grp_weights.get(_gn, 1.0)
+                _grp_rows.append((_gn, _gscore, _gw))
         if _grp_rows:
             _grp_html = "".join(
                 f'<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px">'
@@ -2361,12 +2362,16 @@ with _tab_research:
                 f'</div>'
                 f'<span style="color:{"#22c55e" if gs >= 0.5 else "#ef4444"};min-width:35px;text-align:right">'
                 f'{int(gs*100)}%</span>'
+                f'<span style="color:#475569;font-size:9px;min-width:38px;text-align:right">'
+                f'w={gw:.2f}</span>'
                 f'</div>'
-                for gn, gs in _grp_rows
+                for gn, gs, gw in _grp_rows
             )
             st.markdown(
                 f'<div style="background:#111827;border-radius:8px;padding:10px 14px;margin-top:8px">'
-                f'<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">Group Score Breakdown</div>'
+                f'<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">'
+                f'Group Score Breakdown &nbsp;·&nbsp; '
+                f'<span style="color:#475569">w= adaptive weight from {_grp_weights_ts} calibration</span></div>'
                 f'{_grp_html}</div>',
                 unsafe_allow_html=True
             )
@@ -2671,11 +2676,24 @@ with _tab_live:
         spx_5m = yf.download("^GSPC", period="20d", interval="5m", progress=False, auto_adjust=True)
         spx_5m.index = spx_5m.index.tz_convert(EST)
         trading_days  = sorted(set(spx_5m.index.date))
-        day_series    = {d: spx_5m[spx_5m.index.date == d]["Close"].squeeze() for d in trading_days}
-        return spx_d, vix_d, sectors_d, day_series, trading_days
+        # Store both Close (for slot outcome scoring) and Open (for gap/day_open accuracy).
+        # day_series stores Close; day_open_series stores the first 5m bar's Open.
+        day_series      = {d: spx_5m[spx_5m.index.date == d]["Close"].squeeze() for d in trading_days}
+        day_open_series = {}
+        for d in trading_days:
+            _ddf = spx_5m[spx_5m.index.date == d]
+            try:
+                _o = _ddf["Open"].squeeze()
+                if isinstance(_o, pd.DataFrame): _o = _o.iloc[:, 0]
+                day_open_series[d] = float(_o.iloc[0])
+            except Exception:
+                # fallback: use first Close if Open not available
+                _c = day_series.get(d)
+                day_open_series[d] = float(_c.iloc[0]) if _c is not None and len(_c) else 0.0
+        return spx_d, vix_d, sectors_d, day_series, trading_days, day_open_series
 
 
-    def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end):
+    def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end, day_open_series=None):
         day_5m = day_series.get(target_date)
         if day_5m is None or len(day_5m) == 0:
             return None
@@ -2709,8 +2727,13 @@ with _tab_live:
         except Exception:
             vix_on_day = 0.0
 
-        # Compute actual gap for this day (open − prior close) to drive gap-conditional windows
-        day_open  = float(day_5m.iloc[0])
+        # Compute actual gap for this day (open − prior close) to drive gap-conditional windows.
+        # Use the first 5-minute bar's Open price if available (more accurate than Close).
+        # Falls back to first Close if Open data wasn't stored (older cache entries).
+        if day_open_series and target_date in day_open_series:
+            day_open = day_open_series[target_date]
+        else:
+            day_open = float(day_5m.iloc[0])
         day_gap   = round(day_open - prev_close, 1)
 
         slots = ["09:30","10:00","10:30","10:45","11:00","11:15","11:30","12:00",
@@ -2759,10 +2782,12 @@ with _tab_live:
             idx    = slots.index(p["slot"])
             prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
             actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
-            # Chop = flat/indeterminate — threshold scales with VIX.
-            # High-VIX days have larger noise, so a "flat" move can be larger.
+            # Chop = flat/indeterminate — threshold scales with VIX and per-slot ATR.
+            # Use adaptive per-slot ATR (front-loaded morning vol) so early-session
+            # slots are judged with larger thresholds, not the flat fallback.
             # VIX=20 → 0.30× ATR; VIX=30 → 0.45× ATR; VIX=40 → 0.60× ATR.
-            _chop_thresh = slot_atr * min(0.6, 0.30 * max(1.0, vix_on_day / 20.0))
+            _slot_atr_for_chop = p.get("slot_atr", slot_atr)  # use adaptive if available
+            _chop_thresh = _slot_atr_for_chop * min(0.6, 0.30 * max(1.0, vix_on_day / 20.0))
             _flat = abs(actual - prev_a) < _chop_thresh
             correct = (p["bias"] == "bear" and actual_dir == "bear") or \
                       (p["bias"] == "bull" and actual_dir == "bull") or \
@@ -3227,7 +3252,7 @@ with _tab_research:
             "window_bias_at() uses historical gap, VIX, calendar events, weekday, and OpEx. "
             "Slot grid: 09:30 10:00 10:30 10:45 11:00 11:15 11:30 12:00 13:00 13:15 13:30 14:00 14:30 15:00 15:30 16:00."
         )
-        spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
+        spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt, day_open_series_bt = load_backtest_data()
 
         last5 = trading_days_bt[-10:] if len(trading_days_bt) >= 10 else trading_days_bt
         daily_dates_list = list(spx_d_bt.index.date)
@@ -3282,7 +3307,8 @@ with _tab_research:
         for td in last5:
             all_bt_results.append(
                 run_backtest_for_day(td, day_series_bt, spx_d_bt, vix_d_bt,
-                                     sectors_d_bt, daily_dates_list, offsets.get(td, 1))
+                                     sectors_d_bt, daily_dates_list, offsets.get(td, 1),
+                                     day_open_series=day_open_series_bt)
             )
 
         # Per-day tabs
