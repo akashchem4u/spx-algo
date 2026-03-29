@@ -2416,6 +2416,9 @@ cur_win, cur_bias, cur_start, cur_end = get_current_window()
 
 # Projected SPX open = last close + implied gap
 _proj_spx_open = round(levels["current"] + _implied_gap, 1) if _pre_market and live["es_price"] else None
+# _es_rth_anchor is computed later (after live_gap + ORB vars are ready).
+# Initialize here so the pre-market banner (which runs before that block) never hits NameError.
+_es_rth_anchor = None
 
 # Countdown to next 6 PM ES open (shown pre-market)
 _next_open_dt = next_es_open(datetime.now(EST))
