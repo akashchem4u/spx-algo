@@ -2279,7 +2279,7 @@ def compute_historical_analysis():
                 # Gap regime (today open vs prior close)
                 if _i > 0:
                     _gp = float(_open.iloc[_i]) - float(_close.iloc[_i - 1])
-                    _gk = "up" if _gp > 10 else ("down" if _gp < -10 else "flat")
+                    _gk = "up" if _gp > GAP_THRESHOLD else ("down" if _gp < -GAP_THRESHOLD else "flat")
                     _regime["gap"][_gk]["t"] += 1
                     if _correct: _regime["gap"][_gk]["h"] += 1
 
