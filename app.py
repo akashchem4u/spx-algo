@@ -852,8 +852,9 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         # Fear unwinding: VIX down >8% over 3 days = relief rally context = bull
         sigs["VIX 3d Relief"]  = int(_vix_3d_chg < -0.08)
         # VIX No Spike: INVERTED — fires 1 when no fear spike (calm = bull), 0 when spike (fear = bear).
-        # This matches convention: 1=bullish, 0=bearish. VIX 3d spike threshold: >15% in 3 days.
-        sigs["VIX No Spike"]   = int(_vix_3d_chg <= 0.15)
+        # Threshold 8%: VIX rising 8%+ over 3 days (e.g. 18→19.4) signals building fear.
+        # Prior 15% threshold was too permissive — let VIX rise 15% and still voted "calm".
+        sigs["VIX No Spike"]   = int(_vix_3d_chg <= 0.08)
     else:
         sigs["VIX 3d Relief"]  = 0
         sigs["VIX No Spike"]   = 1   # default: assume calm if insufficient history
@@ -874,9 +875,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
             _day_gap_pts = float(_open_s.iloc[-1]) - float(close.iloc[-2])
             _daily_atr   = float(atr_v.dropna().iloc[-1])
             _gap_atr_ratio = abs(_day_gap_pts) / max(_daily_atr, 1)
-    # Gap/ATR Normal: gap < 0.5 ATR = low-conviction open → window timing more reliable
-    # A large gap (>0.5 ATR) gets 0 here = sell vote → reduces overall bull score on big-gap days
-    sigs["Gap/ATR Normal"]     = int(_gap_atr_ratio < 0.5)
+    # Gap/ATR Normal: fires 1 only on small POSITIVE gap (0 to +0.5 ATR).
+    # Direction-sensitive: a small down gap or flat open is NOT a bull signal.
+    # Large gaps (>0.5 ATR) or negative gaps get 0 — reduces bull score on those days.
+    _signed_gap_atr = _day_gap_pts / max(_daily_atr, 1) if _daily_atr > 0 else 0.0
+    sigs["Gap/ATR Normal"]     = int(0.0 <= _signed_gap_atr < 0.5)
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: confirmed only when price is also higher (accumulation),
@@ -1229,12 +1232,8 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
         daily_atr = round(base_price * 0.010, 1)
     direction = ssr_direction(score)
 
-    # VIX regime scaling — high VIX = larger per-slot swings (fear = bigger moves)
-    if   vix >= 35: _vx = 2.0
-    elif vix >= 30: _vx = 1.6
-    elif vix >= 25: _vx = 1.35
-    elif vix >= 20: _vx = 1.15
-    else:           _vx = 1.0
+    # VIX regime scaling — smoothly interpolated to avoid cliff-edge jumps at 20/25/30/35
+    _vx = float(np.interp(vix, [0, 20, 25, 30, 35, 100], [1.0, 1.15, 1.35, 1.60, 2.0, 2.0]))
 
     # OpEx gamma-pinning compression: mid-week RTH ranges ~15% tighter
     # (market makers hold price near max-pain strike, suppressing ATR)
@@ -1337,12 +1336,8 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
     if not daily_atr or daily_atr < 1.0:
         daily_atr = round(base_price * 0.010, 1)
     direction = ssr_direction(score)
-    # VIX regime scaling — same thresholds as ES projections
-    if   vix >= 35: _vx = 2.0
-    elif vix >= 30: _vx = 1.6
-    elif vix >= 25: _vx = 1.35
-    elif vix >= 20: _vx = 1.15
-    else:           _vx = 1.0
+    # VIX regime scaling — smoothly interpolated to avoid cliff-edge jumps at 20/25/30/35
+    _vx = float(np.interp(vix, [0, 20, 25, 30, 35, 100], [1.0, 1.15, 1.35, 1.60, 2.0, 2.0]))
     _opex_factor = 0.85 if opex else 1.0
 
     # Adaptive intraday ATR profile: market open is front-loaded (~30% of day's ATR
@@ -1423,20 +1418,28 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
 _DOW_TENDENCY = {0: -0.18, 1: 0.12, 2: -0.10, 3: 0.08, 4: -0.22}
 
 
-def generate_weekly_projections(base_price, daily_atr, score):
+def generate_weekly_projections(base_price, daily_atr, score, vix=0.0):
     """
     Daily projections for the next 5 trading days with:
       • Day-of-week tendency (Mon/Wed/Fri mean-revert; Tue/Thu continue)
       • Exhaustion dampener: extreme SSR fades toward neutral over the week
+        (disabled when VIX > 25 — regime-driven moves don't mean-revert in 5 days)
+      • VIX regime scaling on daily ATR (same interpolation as intraday projections)
       • Per-day directional confidence (not just magnitude decay)
     """
     if not daily_atr or daily_atr < 1.0:
         daily_atr = round(base_price * 0.010, 1)
+    # Scale ATR by VIX regime so high-fear weeks show wider daily ranges
+    _vx_weekly = float(np.interp(vix, [0, 20, 25, 30, 35, 100], [1.0, 1.10, 1.25, 1.45, 1.75, 1.75]))
+    daily_atr = round(daily_atr * _vx_weekly, 1)
+
     base_dir = ssr_direction(score)
 
     # Exhaustion factor [0–1]: kicks in beyond ±15 SSR units from 50
     # Score 50 → 0.0 (no exhaustion), score 20 or 80 → ~1.0 (full reversion expected)
-    ssr_extreme = max(0.0, min(1.0, (abs(score - 50) - 15) / 35.0))
+    # GATE: when VIX > 25 the market is in a fear/momentum regime — exhaustion doesn't apply.
+    # Forced multi-day moves (crash / squeeze) should not be faded by the weekly model.
+    ssr_extreme = 0.0 if vix > 25 else max(0.0, min(1.0, (abs(score - 50) - 15) / 35.0))
 
     # How much exhaustion pressure accumulates each successive day (day 0 = none, day 4 = strong)
     _exhaust_weight = [0.0, 0.10, 0.30, 0.60, 0.90]
@@ -1804,6 +1807,11 @@ with st.spinner("Fetching market data..."):
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 
+# Data quality flags — shown as badges in the UI so traders know which signals are live
+_pcr_ok       = not pcr.empty
+_sector_count = sum(1 for df in sectors.values() if not df.empty)
+_sector_total = len(sectors)  # 11
+
 # Load news with live VIX so VIX-conditional items (jobs data) score correctly
 news_data = load_news(vix_now=vix_now)
 
@@ -1906,6 +1914,20 @@ _news_nudge = max(-5, min(5, int(round(_news_comp * 5))))
 score       = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
+# ── Score driver narrative: top 2 bullish drivers + top drag group ────────
+_grp_pct = {}
+for _gn, _gs in SIGNAL_GROUPS.items():
+    _pr = [signals.get(k, 0) for k in _gs if k in signals]
+    if _pr:
+        _grp_pct[_gn] = round(sum(_pr) / len(_pr) * 100)
+# Sort by weighted contribution (score% × group_weight)
+_grp_sorted = sorted(_grp_pct.items(),
+                     key=lambda x: x[1] * _grp_weights.get(x[0], 1.0), reverse=True)
+_top_drivers  = [f"{g} ({p}%)" for g, p in _grp_sorted[:2] if p >= 50]
+_top_drags    = [f"{g} ({p}%)" for g, p in reversed(_grp_sorted) if p < 40][:1]
+_driver_line  = ("Top drivers: " + " · ".join(_top_drivers)) if _top_drivers else ""
+_drag_line    = ("Drag: " + ", ".join(_top_drags)) if _top_drags else ""
+
 levels  = compute_levels(spx)
 rating, action, bias, color = ssr_meta(score)
 trade   = suggest_trade(score, levels)
@@ -1915,6 +1937,19 @@ es_price   = live["es_price"]  or levels["current"]
 spx_price  = live["spx_price"] or levels["current"]
 es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
+
+# Key level proximity — warn when SPX is within 15 pts of a major level
+_watch_levels = {
+    "R2": levels["resistance_2"], "R1": levels["resistance_1"],
+    "Pivot": levels["pivot"],
+    "S1": levels["support_1"],   "S2": levels["support_2"],
+}
+_nearest_name, _nearest_val = min(_watch_levels.items(),
+                                   key=lambda x: abs(spx_price - x[1]))
+_nearest_dist = round(abs(spx_price - _nearest_val), 1)
+_proximity_alert = (
+    _nearest_dist <= 15 and spx_price > 0 and _nearest_val > 0
+)
 
 BIAS_BG   = {"bull":"#14532d","bear":"#7f1d1d","chop":"#1e293b","neutral":"#1e293b"}
 BIAS_TEXT = {"bull":"#4ade80","bear":"#f87171","chop":"#94a3b8","neutral":"#94a3b8"}
@@ -2037,6 +2072,13 @@ with cL:
         News: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
         &nbsp;·&nbsp; Final: <b style="color:{color}">{score}</b>
       </div>
+      {(f'<div style="font-size:10px;color:#4ade80;margin-bottom:3px">▲ {_driver_line}</div>') if _driver_line else ''}
+      {(f'<div style="font-size:10px;color:#f87171;margin-bottom:3px">▼ {_drag_line}</div>') if _drag_line else ''}
+      <div style="font-size:9px;margin-bottom:5px;display:flex;gap:5px;flex-wrap:wrap">
+        {'' if _pcr_ok else '<span style="background:#7f1d1d;color:#fca5a5;padding:1px 5px;border-radius:3px;font-size:9px">⚠ PCR unavailable</span>'}
+        {'' if _sector_count == _sector_total else f'<span style="background:#1c1f2e;color:#f59e0b;padding:1px 5px;border-radius:3px;font-size:9px">⚠ Sectors: {_sector_count}/{_sector_total}</span>'}
+      </div>
+      {(f'<div style="background:#1c1408;border:1px solid #854d0e;border-radius:5px;padding:4px 8px;font-size:10px;color:#fbbf24;margin-bottom:6px">⚡ {_nearest_dist} pts from <b>{_nearest_name}</b> ({_nearest_val:,})</div>') if _proximity_alert else ''}
       {("" if not (_intra_rsi is not None and _is_rth_now) else
         f'<div style="font-size:9px;color:{"#4ade80" if _intra_rsi>50 else "#f87171"};margin-bottom:4px">'
         f'📡 Intraday RSI (5m): {_intra_rsi} — live signal active</div>')}
@@ -2609,7 +2651,7 @@ with _tab_live:
     st.markdown("<h4 style='margin:6px 0 10px;color:#94a3b8'>📅 Weekly Projection — Next 5 Trading Days</h4>",
                 unsafe_allow_html=True)
 
-    weekly = generate_weekly_projections(spx_price, levels["atr"], score)
+    weekly = generate_weekly_projections(spx_price, levels["atr"], score, vix=vix_now)
 
     week_cols = st.columns(5)
     for i, (col, r) in enumerate(zip(week_cols, weekly)):
