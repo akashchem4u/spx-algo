@@ -389,3 +389,28 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 - Most of the older measurement-integrity issues are fixed.
 - The biggest remaining issue is now live-score consistency in pre-market mode.
 - After that, the main weakness is the news pipeline: duplicate counting and pseudo-recency can still distort market judgment.
+
+### Audit 4 Re-Verification (commit 405c821 — 2026-03-29)
+
+- `Pre-market implied-gap SSR`:
+  - Fixed.
+  - The implied-gap injection now runs before `_weighted_base`, `score`, and `_core_ssr` are computed in `app.py:2299-2349`.
+
+- `News dedupe after GNews / AV / fallback`:
+  - Fixed.
+  - A final all-feed dedupe pass now runs in `app.py:737-747`.
+
+- `News recency weighting`:
+  - Partially fixed, but not fully robust yet.
+  - The app now sorts before applying recency weights in `app.py:749-759`.
+  - Remaining issue: RSS timestamps are still stored as raw `pubDate` fragments in `app.py:626-627`, while `_ts_sort_key()` only parses ISO-ish formats.
+  - Result: many RSS items will still fall into the "unknown time" bucket and be treated as oldest, so the recency model is improved but not yet reliable across all feeds.
+
+- `Window strip regime-specific accuracy`:
+  - Still open.
+  - `run_extended_window_backtest()` has gap/VIX-specific stats, but `windows_html()` still renders only a single average badge in `app.py:1944-1965`.
+
+### Current Pending Issues
+
+1. Make news timestamp normalization robust across RSS `pubDate`, ISO strings, and vendor-specific formats before recency weighting.
+2. Show current-regime window hit rate in the live strip instead of only the all-regime average.
