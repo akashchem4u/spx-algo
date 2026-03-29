@@ -171,12 +171,28 @@ _NEWS_IMPACTS = [
      "OIL_SUPPLY_SHOCK", 3.5, "any", "bear",
      "Oil supply shock → oil spike → CPI surge → Fed hawkish → bearish"),
 
+    # Supply-surplus driven drop: OPEC hike, glut, oversupply → inflation relief → BULLISH
     (["oil drops","oil falls","oil tumble","oil plunge","oil collaps","crude falls",
       "crude drops","crude plunge","oil prices fall","opec increas output",
       "opec produc hike","oil glut","oil oversupply","oil supply surge",
       "oil below","wti drops","brent drops"],
      "OIL_DROP", 2.5, "any", "bull",
-     "Oil drop → deflation relief → rate cut room → multiple expansion → bullish"),
+     "Supply-surplus oil drop → deflation relief → rate cut room → multiple expansion → bullish"),
+
+    # Demand-driven drop: recession signals, China slowdown, global growth collapse → BEARISH
+    # (different from OIL_DROP which is supply-surplus; demand destruction = recession)
+    (["oil demand falls","oil demand drop","oil demand weak","demand-driven oil",
+      "china oil demand weak","china demand slows","oil demand destruction",
+      "global oil demand slows","recession oil demand","weak oil demand",
+      "oil demand concern","demand recession","oil demand contract"],
+     "OIL_DEMAND_DROP", 2.5, "any", "bear",
+     "Demand-driven oil drop → recession/growth fear → earnings revisions down → bearish"),
+
+    # Demand-driven surge: global recovery, China reopening → risk-on BULLISH
+    (["oil demand surge","strong oil demand","china oil demand strong","china demand recover",
+      "oil demand recover","global oil demand rise","oil demand boom","demand-driven oil rally"],
+     "OIL_DEMAND_SURGE", 1.5, "any", "bull",
+     "Demand-driven oil strength → global growth recovery + risk-on → bullish"),
 
     (["oil spike","oil surges","oil jumps","crude surges","oil hits","crude jumps",
       "oil prices rise","oil prices surge","wti rises","brent rises","oil rally"],
@@ -610,6 +626,30 @@ def fetch_live():
     return results
 
 
+@st.cache_data(ttl=180)
+def fetch_intraday_rsi():
+    """
+    14-period RSI computed on 5-minute SPX bars (last 5 trading days).
+    Replaces daily RSI for "RSI Above 50" and "RSI Trend Zone" during RTH —
+    daily RSI is hours stale by mid-session; 5-min RSI reflects live momentum.
+    Returns float RSI value, or None on failure.
+    """
+    try:
+        df = yf.download("^GSPC", period="5d", interval="5m",
+                         progress=False, auto_adjust=True)
+        if df.empty or len(df) < 20: return None
+        c = df["Close"].squeeze()
+        if isinstance(c, pd.DataFrame): c = c.iloc[:, 0]
+        d   = c.diff()
+        g   = d.clip(lower=0).rolling(14).mean()
+        l   = (-d.clip(upper=0)).rolling(14).mean()
+        _rv = 100 - (100 / (1 + g / (l + 1e-10)))
+        val = float(_rv.iloc[-1])
+        return round(val, 1) if not pd.isna(val) else None
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # INDICATORS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -771,21 +811,54 @@ def get_current_window():
     return "Outside Market Hours", "neutral", "--", "--"
 
 
-def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
+def get_opex_friday(ref_date=None):
+    """Return the 3rd Friday (standard monthly OpEx) for the month of ref_date."""
+    if ref_date is None:
+        ref_date = datetime.now(EST).date()
+    first = ref_date.replace(day=1)
+    # weekday() 4 = Friday
+    offset = (4 - first.weekday()) % 7
+    return first + timedelta(days=offset + 14)   # first Friday + 2 weeks = 3rd Friday
+
+
+def is_opex_week(ref_date=None):
+    """
+    True if the current week contains the 3rd Friday of the month (standard monthly OpEx).
+    OpEx weeks see gamma pinning (range compression mid-week) and sharp directional
+    unwinds into Friday close as market makers delta-hedge expiring positions.
+    """
+    if ref_date is None:
+        ref_date = datetime.now(EST).date()
+    third_fri = get_opex_friday(ref_date)
+    week_start = ref_date - timedelta(days=ref_date.weekday())   # Monday
+    week_end   = week_start + timedelta(days=4)                  # Friday
+    return week_start <= third_fri <= week_end
+
+
+def is_opex_friday(ref_date=None):
+    """True if today IS the 3rd Friday (EOD unwind day)."""
+    if ref_date is None:
+        ref_date = datetime.now(EST).date()
+    return ref_date == get_opex_friday(ref_date)
+
+
+def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
     """
     Return (bias, label) for a given HH:MM.
     gap        = today's open − prior close (positive = gap-up, negative = gap-down).
     vix        = current VIX reading (0 = unknown / skip VIX override).
     news_score = composite news sentiment −1..+1 (from load_news composite_score).
     orb_status = "above" | "below" | "inside" (Opening Range Breakout status).
+    opex       = True if current week is standard monthly options expiration week.
 
     Override hierarchy (highest priority first):
       1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
       2. VIX > 25 (fear) → chop windows become bear; bull windows become chop
       3. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
       4. Economic event  → FOMC/CPI/NFP time-of-day overrides
-      5. ORB breakout    → price outside opening range shifts chop→directional (post 10 AM)
-      6. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
+      5. OpEx week       → mid-session chop reinforced; EOD Trend directional preserved
+      6. ORB breakout    → price outside opening range shifts chop→directional (post 10 AM)
+      7. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
     """
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
@@ -822,6 +895,19 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
             if ("CPI" in _today_events or "NFP" in _today_events) and "09:30" <= hhmm < "10:00":
                 # First 30 min after data release: knee-jerk then reversal — treat as chop
                 return "chop", label + " (CPI/NFP reversal zone)"
+
+            # ── OpEx week overrides ──────────────────────────────────────────
+            # Monthly options expiration (3rd Friday) creates two patterns:
+            #   1. Gamma pinning mid-week (Tue-Thu): price pinned near strikes →
+            #      reinforce any "chop" windows as genuinely choppy (don't upscale)
+            #   2. EOD Friday: gamma unwind + delta hedge = directional — preserve
+            #      EOD Trend bias regardless of VIX softening.
+            if opex:
+                if bias == "chop" and "10:45" <= hhmm <= "14:00":
+                    return "chop", label + " (OpEx pin)"
+                if label == "EOD Trend":
+                    # Override any VIX-based softening — EOD Trend stays directional on OpEx
+                    return bias, label + " (OpEx unwind)"
 
             # ── ORB breakout override ───────────────────────────────────────
             # Only applies post 10:00 AM — opening volatility (9:30–10:00) is
@@ -891,7 +977,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
@@ -902,11 +988,15 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     elif vix >= 20: _vx = 1.15
     else:           _vx = 1.0
 
-    # ATR per 30 minutes by session type — scaled by VIX regime
+    # OpEx gamma-pinning compression: mid-week RTH ranges ~15% tighter
+    # (market makers hold price near max-pain strike, suppressing ATR)
+    _opex_factor = 0.85 if opex else 1.0
+
+    # ATR per 30 minutes by session type — scaled by VIX regime + OpEx compression
     def slot_atr(h):
-        if 9 <= h < 16:  return daily_atr * 0.09  * _vx   # RTH ~30-min slice
-        if 16 <= h < 17: return daily_atr * 0.035 * _vx   # AH
-        return           daily_atr * 0.025 * _vx           # Overnight
+        if 9 <= h < 16:  return daily_atr * 0.09  * _vx * _opex_factor
+        if 16 <= h < 17: return daily_atr * 0.035 * _vx * _opex_factor
+        return           daily_atr * 0.025 * _vx
 
     now    = datetime.now(EST)
     open_t = next_es_open(now)        # next 6:00 PM opening bell
@@ -919,7 +1009,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
 
@@ -965,7 +1055,7 @@ def next_trading_day(from_date):
     return d
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside"):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
     # VIX regime scaling — same thresholds as ES projections
@@ -974,7 +1064,8 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
     elif vix >= 25: _vx = 1.35
     elif vix >= 20: _vx = 1.15
     else:           _vx = 1.0
-    slot_atr  = (daily_atr / 6.5) * _vx
+    _opex_factor = 0.85 if opex else 1.0
+    slot_atr  = (daily_atr / 6.5) * _vx * _opex_factor
     slots     = ["09:30","10:30","11:30","12:30","13:30","14:30","15:30","16:00"]
     now       = datetime.now(EST)
 
@@ -995,7 +1086,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -1394,6 +1485,23 @@ news_data = load_news(vix_now=vix_now)
 
 _base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors)
 
+# ── Intraday RSI override: replace daily RSI signals with 5-min RSI during RTH ──
+# Daily RSI is computed on close-to-close bars; by mid-afternoon it reflects
+# yesterday's close and is hours stale. 5-min RSI captures live momentum.
+_intra_rsi = fetch_intraday_rsi()
+_is_rth_now = (now_est.weekday() < 5 and
+               (9 <= now_est.hour < 16 or (now_est.hour == 16 and now_est.minute == 0)))
+if _intra_rsi is not None and _is_rth_now:
+    signals["RSI Above 50"]   = int(_intra_rsi > 50)
+    signals["RSI Trend Zone"] = int(45 <= _intra_rsi <= 65)
+    # Recompute buys/sells to reflect override
+    buys  = sum(1 for v in signals.values() if v == 1)
+    sells = sum(1 for v in signals.values() if v == 0)
+
+# ── OpEx detection ────────────────────────────────────────────────────────────
+_opex_week   = is_opex_week()
+_opex_friday = is_opex_friday()
+
 # ── Data-driven SSR group weights from recent backtest performance ───────────
 # Each signal group is weighted by how well it correlated with actual SPX
 # direction over the last 10 trading days.  Groups with >70% hit rate get
@@ -1407,7 +1515,7 @@ def compute_group_weights():
         _dl = list(_spx_d.index.date); _td = len(_spx_d)
         _gc = {g: 0 for g in SIGNAL_GROUPS}
         _gt = {g: 0 for g in SIGNAL_GROUPS}
-        for _day in _days[-10:]:
+        for _day in _days[-252:]:
             try:
                 _pos = _dl.index(_day)
                 _off = _td - _pos
@@ -1538,14 +1646,26 @@ _news_lbl = news_data["label"].split()[-1]   # "Bullish" / "Bearish" / "Neutral"
 _news_vc  = "#4ade80" if "Bullish" in news_data["label"] else ("#f87171" if "Bearish" in news_data["label"] else "#94a3b8")
 _news_sub = f'{news_data["bull_pct"]}% bull · {news_data["bear_pct"]}% bear'
 
+# Intraday RSI display: show 5-min RSI during RTH, fall back to daily
+_rsi_display = f"{_intra_rsi}" if (_intra_rsi is not None and _is_rth_now) else str(levels['rsi'])
+_rsi_label   = "RSI (5m)" if (_intra_rsi is not None and _is_rth_now) else "RSI (1d)"
+_rsi_vc      = "#4ade80" if float(_rsi_display) > 55 else ("#f87171" if float(_rsi_display) < 45 else "#94a3b8")
+
+# OpEx: replace "ES Last Tick" tile with OpEx context when active
+_mc4_lbl = "OpEx Week" if _opex_week else "ES Last Tick"
+_mc4_val = ("3rd Fri" if _opex_friday else "Active") if _opex_week else ts1
+_mc4_sub = "⚡ Exp. Friday" if _opex_friday else ("Pin + Unwind" if _opex_week else "ES=F  24×5")
+_mc4_vc  = "#f59e0b" if _opex_week else "#94a3b8"
+_mc4_sc  = "#f59e0b" if _opex_friday else ("#64748b" if _opex_week else "#475569")
+
 for col, lbl, val, sub, vc, sc, fsize in [
     (mc1, "SSR Score",    str(score),      f"{rating.split()[0]} {rating.split()[1] if len(rating.split())>1 else ''}",  color,  "#94a3b8", "22px"),
     (mc2, "SSR Action",   _act_dir,        f"<span style='font-size:9px;letter-spacing:.5px'>{_act_conv}</span>&nbsp; {buys}✅{sells}❌", color, "#64748b", "20px"),
     (mc3, "ES Futures",   es_display,      chg_str(live["es_change"],live["es_pct"]),  "#f1f5f9", es_chg_color,  "18px"),
-    (mc4, "ES Last Tick", ts1,             "ES=F  24×5",                               "#94a3b8", "#475569",     "13px"),
+    (mc4, _mc4_lbl,       _mc4_val,        _mc4_sub,                                  _mc4_vc,  _mc4_sc,       "13px"),
     (mc5, "SPX",          spx_display,     chg_str(live["spx_change"],live["spx_pct"]),"#f1f5f9", spx_chg_color, "18px"),
     (mc6, "VIX",          str(vix_now),    "Fear Index",                               "#f59e0b" if vix_now>20 else "#4ade80", "#64748b", "22px"),
-    (mc7, "ATR (14d)",    str(levels['atr']), f"RSI: {levels['rsi']}",                 "#94a3b8", "#64748b",     "18px"),
+    (mc7, _rsi_label,     _rsi_display,    f"ATR: {levels['atr']}",                   _rsi_vc,   "#64748b",     "22px"),
     (mc8, "News",         _news_lbl,       _news_sub,                                  _news_vc,  "#64748b",     "16px"),
     (mc9, "Now",          win_icon,        cur_win[:18],                               BIAS_TEXT.get(cur_bias,"#94a3b8"), "#64748b", "24px"),
 ]:
@@ -1579,6 +1699,9 @@ with cL:
         News: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
         &nbsp;·&nbsp; Final: <b style="color:{color}">{score}</b>
       </div>
+      {("" if not (_intra_rsi is not None and _is_rth_now) else
+        f'<div style="font-size:9px;color:{"#4ade80" if _intra_rsi>50 else "#f87171"};margin-bottom:4px">'
+        f'📡 Intraday RSI (5m): {_intra_rsi} — live signal active</div>')}
       <div style="font-size:9px;color:#374151;margin-bottom:8px">
         {"&nbsp;".join(f'<span style="color:{"#4ade80" if w>=1.2 else "#f87171" if w<=0.6 else "#64748b"}">{g[:4]}:{w}×</span>'
           for g, w in _grp_weights.items())}
@@ -1792,8 +1915,8 @@ try:
 except Exception:
     live_gap = 0.0
 _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
-es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status)
-spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status)
+es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
 
 colA, colB = st.columns(2)
 
@@ -2386,7 +2509,7 @@ with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (cl
         _today_results = []
         _prev_actual   = _5m_open
         for _sl in _slots:
-            _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp)
+            _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
             _actual  = _snap_at(_sl)
             if _actual is None:
                 continue
