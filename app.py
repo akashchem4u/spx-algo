@@ -734,8 +734,32 @@ def load_news(vix_now=0.0):
         return {"articles": [], "composite_score": 0.0, "label": "⚪ Unavailable",
                 "bull_pct": 0, "bear_pct": 0, "top_impact": None, "fetched_at": _fetched_at}
 
+    # ── Final dedupe pass across ALL feeds (RSS + GNews + AV + yf) ───────────
+    # First pass deduped only the RSS block; GNews/AV/fallback could still add duplicates.
+    # Use lowercased 60-char title prefix as the dedup key.
+    _seen2 = set()
+    _deduped2 = []
+    for _a in articles:
+        _k = _a["title"][:60].lower().strip()
+        if _k not in _seen2:
+            _seen2.add(_k)
+            _deduped2.append(_a)
+    articles = _deduped2
+
+    # ── Sort by timestamp before recency weighting so earlier feeds don't ────
+    # structurally dominate. Articles with parseable ISO timestamps are sorted
+    # newest-first; articles with no timestamp go to the end (lowest recency weight).
+    def _ts_sort_key(a):
+        t = a.get("time", "")
+        try:
+            # Accept ISO-ish strings: "2026-03-29 18:45" or "2026-03-29T18:45:00Z"
+            return -int(t.replace("T","").replace(":","").replace("-","").replace("Z","").replace(" ","")[:14])
+        except Exception:
+            return 0   # unknown time → treat as oldest (lowest recency)
+    articles.sort(key=_ts_sort_key)
+
     # ── Composite score: impact-weighted (high-weight articles matter more) ──
-    # Weight = impact_weight × recency (most recent = position 0 = weight 1.0/(0+1)=1.0)
+    # Recency weight now reflects true time order after the sort above.
     scores   = [a["score"]         for a in articles]
     imp_wts  = [a["impact_weight"] for a in articles]
     rec_wts  = [1.0 / (i + 1)      for i in range(len(scores))]
@@ -2267,7 +2291,30 @@ _grp_weights = compute_group_weights()
 # Stamp when weights were computed so the UI can show a version, not silently recalculate
 _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session (1h cache)
 
-# Re-score SSR using data-driven group weights
+# ── Levels and price feeds needed before scoring ─────────────────────────────
+levels  = compute_levels(spx)
+es_price   = live["es_price"]  or levels["current"]
+spx_price  = live["spx_price"] or levels["current"]
+
+# ── Pre-market implied gap injection (MUST happen before SSR scoring) ────────
+# Outside RTH (before 9:30, after 16:00, weekend): SPX open hasn't happened.
+# Implied gap = ES price − last SPX close. Feeds projections + gap overrides.
+_implied_gap     = round(es_price - levels["current"], 1) if live["es_price"] else 0.0
+_implied_gap_pct = round(_implied_gap / levels["current"] * 100, 2) if levels["current"] else 0.0
+_pre_market      = not _is_rth_now
+# Inject implied gap into Gap/ATR Normal BEFORE scoring so score is gap-aware.
+# A small gap-up (<0.5 ATR) fires 1; a large gap-up or any gap-down fires 0.
+if _pre_market and live["es_price"]:
+    live_gap = _implied_gap
+    _daily_atr_val = levels["atr"]
+    if _daily_atr_val > 0:
+        _impl_gap_atr = _implied_gap / _daily_atr_val
+        signals["Gap/ATR Normal"] = int(0.0 <= _impl_gap_atr < 0.5)
+        buys  = sum(1 for v in signals.values() if v == 1)
+        sells = sum(1 for v in signals.values() if v == 0)
+
+# ── Re-score SSR using data-driven group weights ─────────────────────────────
+# (Gap/ATR Normal is now correctly set before this block runs)
 _wg_s, _wg_w = [], []
 for _gn, _gs in SIGNAL_GROUPS.items():
     _pr = [signals.get(k, 0) for k in _gs if k in signals]
@@ -2278,12 +2325,8 @@ for _gn, _gs in SIGNAL_GROUPS.items():
 _weighted_base = round(sum(_wg_s) / sum(_wg_w) * 100) if _wg_s else _base_score
 
 # ── News sentiment nudge: causal-chain weighted composite → ±10 SSR pts ─────
-# Higher-weight news events (OIL_SUPPLY_SHOCK, BANK_CRISIS) move score more.
 _news_comp  = news_data.get("composite_score", 0.0)
-# Cap at ±5 pts: a single high-weight headline should not swing SSR by 10 pts.
-# ±5 is meaningful (can shift Neutral → Weak Buy/Sell) without being headline-driven.
 # Cap scales with top event weight: weight ≥ 4.0 (Hormuz/US-Iran war) allows ±8 pts
-# weight ≥ 3.0 allows ±6 pts; default ±5 pts for lower-weight events
 _top_news_wt = news_data.get("top_impact", {}) or {}
 _top_wt      = _top_news_wt.get("weight", 1.0)
 _nudge_cap   = 8 if _top_wt >= 4.0 else (6 if _top_wt >= 3.0 else 5)
@@ -2319,33 +2362,12 @@ _top_drags    = [f"{g} ({p}%)" for g, p in reversed(_grp_sorted) if p < 40][:1]
 _driver_line  = ("Top drivers: " + " · ".join(_top_drivers)) if _top_drivers else ""
 _drag_line    = ("Drag: " + ", ".join(_top_drags)) if _top_drags else ""
 
-levels  = compute_levels(spx)
-rating, action, bias, color = ssr_meta(score)
-trade   = suggest_trade(score, levels)
-cur_win, cur_bias, cur_start, cur_end = get_current_window()
-
-es_price   = live["es_price"]  or levels["current"]
-spx_price  = live["spx_price"] or levels["current"]
 es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
 
-# ── Pre-market implied gap (ES futures vs SPX last close) ─────────────────
-# Outside RTH (before 9:30, after 16:00, weekend): SPX open hasn't happened.
-# Implied gap = ES price − last SPX close. Feeds projections + gap overrides.
-_implied_gap     = round(es_price - levels["current"], 1) if live["es_price"] else 0.0
-_implied_gap_pct = round(_implied_gap / levels["current"] * 100, 2) if levels["current"] else 0.0
-_pre_market      = not _is_rth_now
-# Use implied gap for projections + SSR when pre-market
-if _pre_market and live["es_price"]:
-    live_gap = _implied_gap
-    # Inject implied gap into Gap/ATR Normal signal so pre-market SSR reflects tonight's gap
-    _daily_atr_val = levels["atr"]
-    if _daily_atr_val > 0:
-        _impl_gap_atr = _implied_gap / _daily_atr_val
-        signals["Gap/ATR Normal"] = int(0.0 <= _impl_gap_atr < 0.5)
-        # Recompute buys/sells to include the override
-        buys  = sum(1 for v in signals.values() if v == 1)
-        sells = sum(1 for v in signals.values() if v == 0)
+rating, action, bias, color = ssr_meta(score)
+trade   = suggest_trade(score, levels)
+cur_win, cur_bias, cur_start, cur_end = get_current_window()
 
 # Projected SPX open = last close + implied gap
 _proj_spx_open = round(levels["current"] + _implied_gap, 1) if _pre_market and live["es_price"] else None
@@ -3236,6 +3258,20 @@ with _tab_live:
 
     with colB:
         spx_rows_html = ""
+        # Pre-market: prepend an anchor row showing the projected RTH open price.
+        # This makes clear that the model starts from _proj_spx_open (e.g. 6,412.3),
+        # not from the first slot's end price (e.g. 6,371.5 after open volatility move).
+        if _pre_market and _proj_spx_open is not None:
+            _gap_c_row = "#4ade80" if _implied_gap >= 0 else "#f87171"
+            _gap_sign  = "+" if _implied_gap >= 0 else ""
+            spx_rows_html += f"""
+            <tr style="background:#0a1a0a;border-bottom:2px solid #1e3a1e">
+              <td style="padding:5px 10px;color:#64748b;font-size:11px">RTH Open (proj)</td>
+              <td style="padding:5px 10px;font-weight:800;font-size:14px;color:{_gap_c_row}">{_proj_spx_open:,}</td>
+              <td style="padding:5px 8px;font-size:11px;color:{_gap_c_row}">{_gap_sign}{_implied_gap:.1f}</td>
+              <td style="padding:5px 8px;font-size:10px;color:#475569">implied gap</td>
+              <td style="padding:5px 10px;font-size:10px;color:#475569">ES {es_price:,.1f} vs close {levels['current']:,.1f}</td>
+            </tr>"""
         for r in spx_rows:
             bg   = "#111827" if r["past"] else BIAS_BG.get(r["win_bias"], "#1e293b")
             tc   = "#374151" if r["past"] else BIAS_TEXT.get(r["win_bias"], "#94a3b8")
