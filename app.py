@@ -4286,11 +4286,21 @@ with _tab_research:
                                   or int(r.get("live_adj_ssr",50)) <= 44))
             _ldg_acc   = int(_hits_c / _tot_known * 100) if _tot_known else 0
             _ldg_c     = "#4ade80" if _ldg_acc >= 60 else ("#f59e0b" if _ldg_acc >= 45 else "#f87171")
+            # Extra breakdown counts
+            _flat_count    = sum(1 for r in _recent if r.get("actual_dir","") == "flat")
+            _neutral_count = sum(1 for r in _recent
+                                 if r.get("actual_dir","") in ("bull","bear")
+                                 and not (int(r.get("live_adj_ssr",50)) >= 55
+                                          or int(r.get("live_adj_ssr",50)) <= 44))
             if _tot_known:
                 st.markdown(
-                    f'<div style="font-size:13px;color:#94a3b8;margin-bottom:10px">'
-                    f'Forward accuracy (last {_tot_known} sessions): '
-                    f'<b style="color:{_ldg_c};font-size:16px">{_ldg_acc}%</b></div>',
+                    f'<div style="font-size:13px;color:#94a3b8;margin-bottom:6px">'
+                    f'Forward accuracy (directional calls only): '
+                    f'<b style="color:{_ldg_c};font-size:16px">{_ldg_acc}%</b> '
+                    f'<span style="font-size:11px">({_hits_c}/{_tot_known} sessions)</span>'
+                    f'</div>'
+                    f'<div style="font-size:11px;color:#475569;margin-bottom:10px">'
+                    f'Flat days excluded: {_flat_count} · Neutral SSR excluded: {_neutral_count}</div>',
                     unsafe_allow_html=True)
             _ldg_rows_html = ""
             for _lr in _recent:
@@ -4301,16 +4311,30 @@ with _tab_research:
                 _cs_c = "#4ade80" if _cs >= 55 else "#ef4444" if _cs <= 44 else "#94a3b8"
                 _ls_c = "#4ade80" if _ls >= 55 else "#ef4444" if _ls <= 44 else "#94a3b8"
                 _ad_c = "#4ade80" if _ad == "bull" else "#ef4444" if _ad == "bear" else "#64748b"
+                # Model call from live-adj SSR
+                _model_call = "bull" if _ls >= 55 else ("bear" if _ls <= 44 else "neutral")
+                _mc_c = "#4ade80" if _model_call == "bull" else "#ef4444" if _model_call == "bear" else "#64748b"
+                # Result: ✅ correct / ❌ wrong / ⚪ flat or neutral call / — unknown
+                if not _ad:
+                    _result = "—"
+                elif _ad == "flat" or _model_call == "neutral":
+                    _result = "⚪"
+                elif _ad == _model_call:
+                    _result = "✅"
+                else:
+                    _result = "❌"
                 _ldg_rows_html += (
                     f'<tr style="border-bottom:1px solid #1a1f33">'
                     f'<td style="padding:4px 8px;font-size:11px;color:#64748b">{_lr["date"]}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;color:{_cs_c};font-weight:700">{_cs}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;color:{_ls_c};font-weight:700">{_ls}</td>'
+                    f'<td style="padding:4px 8px;font-size:11px;color:{_mc_c}">{_model_call}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("vix","")}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("gap_pts","")}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:#64748b">{_lr.get("event_flags","")}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:{_ad_c}">{_ad or "—"}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:{_ad_c}">{_ap or "—"}</td>'
+                    f'<td style="padding:4px 8px;font-size:13px;text-align:center">{_result}</td>'
                     f'</tr>'
                 )
             st.markdown(
@@ -4320,11 +4344,13 @@ with _tab_research:
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px;text-align:left">DATE</th>'
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px">CORE</th>'
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px">LIVE-ADJ</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">CALL</th>'
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px">VIX</th>'
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px">GAP</th>'
                 f'<th style="padding:5px 8px;color:#64748b;font-size:10px">EVENTS</th>'
-                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">ACTUAL DIR</th>'
-                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">SPX Δ pts</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">ACTUAL</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">SPX Δ</th>'
+                f'<th style="padding:5px 8px;color:#64748b;font-size:10px">RESULT</th>'
                 f'</tr></thead><tbody>{_ldg_rows_html}</tbody></table></div>',
                 unsafe_allow_html=True)
         else:
