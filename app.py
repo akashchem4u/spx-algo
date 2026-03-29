@@ -4,7 +4,7 @@ Run: streamlit run spx_app.py
 """
 
 import sys, io, re, os, csv, xml.etree.ElementTree as _ET
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import pytz
 import numpy as np
 import pandas as pd
@@ -853,11 +853,18 @@ def fetch_live():
     try:
         es_df = yf.download("ES=F", period="2d", interval="1m", progress=False, auto_adjust=True)
         if not es_df.empty:
-            results["es_price"] = round(_close_scalar(es_df, -1), 2)
-            prev_close = _close_scalar(es_df, -2) if len(es_df) > 1 else results["es_price"]
-            results["es_change"] = round(results["es_price"] - prev_close, 2)
-            results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2) if prev_close else 0.0
-            results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
+            _last_bar_ts = es_df.index[-1]
+            if _last_bar_ts.tzinfo is None:
+                _last_bar_ts = _last_bar_ts.tz_localize("UTC")
+            _staleness = (datetime.now(timezone.utc) - _last_bar_ts).total_seconds()
+            if _staleness > 300:  # >5 min stale — don't show as live price
+                pass
+            else:
+                results["es_price"] = round(_close_scalar(es_df, -1), 2)
+                prev_close = _close_scalar(es_df, -2) if len(es_df) > 1 else results["es_price"]
+                results["es_change"] = round(results["es_price"] - prev_close, 2)
+                results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2) if prev_close else 0.0
+                results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
             # Overnight range: 4 PM yesterday → 9:30 AM today (ES pre-market)
             # Position in this range = where price sits (0=overnight low, 1=overnight high)
             # Use wall-clock date (not last-bar date) so Sunday pre-6 PM doesn't anchor
@@ -2068,7 +2075,7 @@ st.markdown("""
 # Injects a hidden JS timer that reloads the Streamlit page.
 # Combined with fetch_live() ttl=60 and fetch_data() ttl=300, every reload
 # gets fresh ES/SPX prices and fresh SSR every 5th reload.
-_REFRESH_SECS = 180
+_REFRESH_SECS = 60
 _components.html(f"""
 <script>
 (function() {{
