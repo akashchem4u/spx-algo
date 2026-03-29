@@ -873,7 +873,7 @@ st.markdown("""
 # Injects a hidden JS timer that reloads the Streamlit page.
 # Combined with fetch_live() ttl=60 and fetch_data() ttl=300, every reload
 # gets fresh ES/SPX prices and fresh SSR every 5th reload.
-_REFRESH_SECS = 60
+_REFRESH_SECS = 180
 _components.html(f"""
 <script>
 (function() {{
