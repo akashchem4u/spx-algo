@@ -2340,6 +2340,10 @@ _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session
 levels  = compute_levels(spx)
 es_price   = live["es_price"]  or levels["current"]
 spx_price  = live["spx_price"] or levels["current"]
+# Guard: if daily SPX data failed, levels["current"] = 0.
+# Patch with live spx_price so gap, delta, and signal calcs don't use 0 as prior close.
+if levels["current"] <= 0 and spx_price > 0:
+    levels["current"] = spx_price
 
 # ── Pre-market implied gap injection (MUST happen before SSR scoring) ────────
 # Outside RTH (before 9:30, after 16:00, weekend): SPX open hasn't happened.
@@ -3287,10 +3291,12 @@ with _tab_live:
     # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
-    # Reuse the ES rows pre-computed at module level so the banner and table
-    # share exactly the same overnight-drift-adjusted anchor.
+    # Reuse the ES rows pre-computed at module level.
     es_rows = _es_rows_precomp
-    _spx_proj_base = (_es_rth_anchor if (_es_rth_anchor is not None and _pre_market and live["es_price"])
+    # SPX anchor = current implied open (ES price ≈ where SPX will open at RTH).
+    # This keeps the gap-up/down visible in the SPX table rather than absorbing
+    # overnight drift into the starting price.
+    _spx_proj_base = (_proj_spx_open if (_pre_market and live["es_price"] and _proj_spx_open)
                       else spx_price)
     spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
@@ -3330,12 +3336,12 @@ with _tab_live:
 
     with colB:
         spx_rows_html = ""
-        # Pre-market: prepend an anchor row showing where the model starts SPX from.
-        # Uses ES overnight-drift-adjusted price (not stale current implied open)
-        # so the anchor matches where ES will be when RTH actually opens.
+        # Pre-market: prepend an anchor row showing projected SPX RTH open.
+        # Anchor = current implied open (last SPX close + implied gap from ES).
         if _pre_market and live["es_price"]:
             _anc = _spx_proj_base
-            _anc_delta = round(_anc - levels["current"], 1)
+            _prev_close = levels["current"] if levels["current"] > 0 else spx_price
+            _anc_delta = round(_anc - _prev_close, 1) if _prev_close > 0 else 0.0
             _gap_c_row = "#4ade80" if _anc_delta >= 0 else "#f87171"
             _gap_sign  = "+" if _anc_delta >= 0 else ""
             spx_rows_html += f"""
@@ -3343,8 +3349,8 @@ with _tab_live:
               <td style="padding:5px 10px;color:#64748b;font-size:11px">RTH Open (proj)</td>
               <td style="padding:5px 10px;font-weight:800;font-size:14px;color:{_gap_c_row}">{_anc:,.1f}</td>
               <td style="padding:5px 8px;font-size:11px;color:{_gap_c_row}">{_gap_sign}{_anc_delta:.1f}</td>
-              <td style="padding:5px 8px;font-size:10px;color:#475569">ES overnight-adj</td>
-              <td style="padding:5px 10px;font-size:10px;color:#475569">ES {es_price:,.1f} · close {levels['current']:,.1f}</td>
+              <td style="padding:5px 8px;font-size:10px;color:#475569">ES implied open</td>
+              <td style="padding:5px 10px;font-size:10px;color:#475569">ES {es_price:,.1f} · close {_prev_close:,.1f}</td>
             </tr>"""
         for r in spx_rows:
             bg   = "#111827" if r["past"] else BIAS_BG.get(r["win_bias"], "#1e293b")
