@@ -93,7 +93,9 @@ SIGNAL_GROUPS = {
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
                    "52w Range Top 20%",           # near yearly highs = momentum continuation
                    "Above BB Mid",               # above 20d BB midline = short-term bull context
-                   "Above Prior Day High"],       # current close > PDH = trend continuation / breakout
+                   "Above Prior Day High",        # current close > PDH = trend continuation / breakout
+                   "Above Pivot",                 # above classic pivot = session bull lean
+                   "Above 5d High"],              # broke above prior 5-bar high = weekly breakout
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -931,6 +933,18 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # Signals trend continuation / breakout above prior resistance.
     # ph and pl are defined earlier: ph = high.iloc[-2], pl = low.iloc[-2]
     sigs["Above Prior Day High"] = int(c > float(high.iloc[-2])) if len(high) >= 2 else 0
+
+    # Above Pivot: classic pivot point = (prev_high + prev_low + prev_close) / 3.
+    # Price above pivot = bias is bullish for the session; below = bearish lean.
+    if len(high) >= 2 and len(low) >= 2:
+        _pivot = (float(high.iloc[-2]) + float(low.iloc[-2]) + float(close.iloc[-2])) / 3.0
+        sigs["Above Pivot"] = int(c > _pivot)
+
+    # Above 5d High: breaking above the prior 5 bars' highest high = weekly breakout.
+    # More immediate than 52w range — captures near-term breakout momentum.
+    if len(high) >= 6:
+        _5d_high = float(high.iloc[-6:-1].max())   # prior 5 bars (excludes today)
+        sigs["Above 5d High"] = int(c > _5d_high)
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
