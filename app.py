@@ -493,16 +493,19 @@ def get_current_window():
     return "Outside Market Hours", "neutral", "--", "--"
 
 
-def window_bias_at(hhmm, gap=0.0, vix=0.0):
+def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0):
     """
     Return (bias, label) for a given HH:MM.
-    gap = today's open − prior close (positive = gap-up, negative = gap-down).
-    vix = current VIX reading (0 = unknown / skip VIX override).
+    gap        = today's open − prior close (positive = gap-up, negative = gap-down).
+    vix        = current VIX reading (0 = unknown / skip VIX override).
+    news_score = composite news sentiment −1..+1 (from load_news composite_score).
 
     Override hierarchy (highest priority first):
       1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
       2. VIX > 25 (fear) → chop windows become bear; bull windows become chop
       3. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
+      4. Economic event  → FOMC/CPI/NFP time-of-day overrides
+      5. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
     """
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
@@ -539,6 +542,16 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0):
             if ("CPI" in _today_events or "NFP" in _today_events) and "09:30" <= hhmm < "10:00":
                 # First 30 min after data release: knee-jerk then reversal — treat as chop
                 return "chop", label + " (CPI/NFP reversal zone)"
+
+            # ── News sentiment override (lowest priority) ───────────────────
+            # Strong news flow shifts "chop" windows into directional.
+            # Threshold 0.25 = meaningful consensus, not just 1 headline.
+            _NEWS_THRESH = 0.25
+            if bias == "chop" and abs(news_score) >= _NEWS_THRESH:
+                if news_score > 0:
+                    return "bull", label + " (news→bull)"
+                else:
+                    return "bear", label + " (news→bear)"
 
             return bias, label
     return "neutral", "Outside Hours"
@@ -588,15 +601,22 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
-    # ATR per 30 minutes by session type
+    # VIX regime scaling — high VIX = larger per-slot swings (fear = bigger moves)
+    if   vix >= 35: _vx = 2.0
+    elif vix >= 30: _vx = 1.6
+    elif vix >= 25: _vx = 1.35
+    elif vix >= 20: _vx = 1.15
+    else:           _vx = 1.0
+
+    # ATR per 30 minutes by session type — scaled by VIX regime
     def slot_atr(h):
-        if 9 <= h < 16:  return daily_atr * 0.13 / 2   # RTH  ~half-hour slice
-        if 16 <= h < 17: return daily_atr * 0.05 / 2   # AH
-        return daily_atr * 0.04 / 2                     # Overnight
+        if 9 <= h < 16:  return daily_atr * 0.09  * _vx   # RTH ~30-min slice
+        if 16 <= h < 17: return daily_atr * 0.035 * _vx   # AH
+        return           daily_atr * 0.025 * _vx           # Overnight
 
     now    = datetime.now(EST)
     open_t = next_es_open(now)        # next 6:00 PM opening bell
@@ -609,10 +629,14 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
     while elapsed < total_session_minutes:
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
-            move     = satr * (direction * 0.55 + wf * 0.45)
+            # Outside-hours slots have no window bias — full SSR direction weight
+            if win_bias == "neutral":
+                move = satr * direction * 0.70
+            else:
+                move = satr * (direction * 0.55 + wf * 0.45)
             price    = round(price + move, 1)
             sess     = "RTH" if 9 <= t.hour < 16 else ("AH" if 16 <= t.hour < 17 else "Overnight")
             rows.append({
@@ -640,10 +664,16 @@ def next_trading_day(from_date):
     return d
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
-    slot_atr  = daily_atr / 6.5
+    # VIX regime scaling — same thresholds as ES projections
+    if   vix >= 35: _vx = 2.0
+    elif vix >= 30: _vx = 1.6
+    elif vix >= 25: _vx = 1.35
+    elif vix >= 20: _vx = 1.15
+    else:           _vx = 1.0
+    slot_atr  = (daily_atr / 6.5) * _vx
     slots     = ["09:30","10:30","11:30","12:30","13:30","14:30","15:30","16:00"]
     now       = datetime.now(EST)
 
@@ -664,7 +694,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0):
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score)
         win_factor = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         move  = slot_atr * (direction * 0.55 + win_factor * 0.45)
         price = round(price + move, 1)
@@ -902,7 +932,17 @@ with st.spinner("Fetching market data..."):
     live = fetch_live()
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
-score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors)
+_base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors)
+
+# ── News sentiment nudge: wires real-time news flow into SSR ────────────────
+# Composite score −1..+1 → nudge of up to ±8 SSR points.
+# Strong bullish news (tariff deal, rate cut) pushes score up.
+# Strong bearish news (escalation, miss) pulls score down.
+_news_comp  = news_data.get("composite_score", 0.0)
+_news_nudge = int(round(_news_comp * 8))
+score       = max(0, min(100, _base_score + _news_nudge))
+# ── end nudge ───────────────────────────────────────────────────────────────
+
 levels  = compute_levels(spx)
 rating, action, bias, color = ssr_meta(score)
 trade   = suggest_trade(score, levels)
@@ -1016,7 +1056,12 @@ with cL:
         <div style="background:{color};width:{score}%;height:8px;border-radius:6px"></div>
       </div>
       <div style="font-size:14px;font-weight:700;color:{color}">{rating}</div>
-      <div style="font-size:12px;color:#94a3b8;margin:3px 0 10px">{action}</div>
+      <div style="font-size:12px;color:#94a3b8;margin:3px 0 6px">{action}</div>
+      <div style="font-size:10px;color:#475569;margin-bottom:8px">
+        Base: {_base_score} &nbsp;·&nbsp;
+        News nudge: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
+        &nbsp;·&nbsp; Final: <b style="color:{color}">{score}</b>
+      </div>
       <hr class="divider">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">
         <div style="background:#0d2010;border-radius:6px;padding:6px 8px;text-align:center">
@@ -1164,8 +1209,8 @@ try:
     live_gap = round(spx_price - float(_spx_close.iloc[-2]), 1) if len(_spx_close) >= 2 else 0.0
 except Exception:
     live_gap = 0.0
-es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now)
-spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now)
+es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp)
+spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp)
 
 colA, colB = st.columns(2)
 
@@ -1655,6 +1700,126 @@ def _acc_color(d):
     v = d["c"] / d["t"] * 100
     return "#4ade80" if v >= 65 else ("#f59e0b" if v >= 45 else "#f87171")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SELF-IMPROVEMENT — Today's Live Prediction Accuracy
+# Compares this session's window predictions vs actual SPX intraday moves.
+# Refreshes every page reload (every 3 min) — accuracy improves as day progresses.
+# ═══════════════════════════════════════════════════════════════════════════════
+with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (click to expand)", expanded=False):
+    @st.cache_data(ttl=180)
+    def load_today_5m():
+        """Fetch today's 5-min SPX bars for live accuracy scoring."""
+        try:
+            df = yf.download("^GSPC", period="1d", interval="5m",
+                             progress=False, auto_adjust=True)
+            df.index = df.index.tz_convert(EST)
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+    _today_5m = load_today_5m()
+    _today_is_rth = (now_est.weekday() < 5 and
+                     datetime(now_est.year, now_est.month, now_est.day, 9, 30,
+                              tzinfo=EST) <= now_est)
+
+    if _today_5m.empty or not _today_is_rth:
+        st.markdown(
+            '<div style="padding:14px;color:#475569;font-size:12px;text-align:center">'
+            'Live accuracy available during market hours (Mon–Fri 9:30 AM+ EST).'
+            '</div>', unsafe_allow_html=True)
+    else:
+        _5m_close = _today_5m["Close"].squeeze()
+        if isinstance(_5m_close, pd.DataFrame): _5m_close = _5m_close.iloc[:, 0]
+        _5m_open  = float(_5m_close.iloc[0]) if len(_5m_close) else spx_price
+
+        def _snap_at(hhmm):
+            hh, mm = map(int, hhmm.split(":"))
+            _mask = ((_today_5m.index.hour == hh) &
+                     (_today_5m.index.minute >= mm))
+            _s = _today_5m[_mask]["Close"].squeeze()
+            if isinstance(_s, pd.DataFrame): _s = _s.iloc[:, 0]
+            return round(float(_s.iloc[0]), 1) if len(_s) else None
+
+        _slots = ["09:30","10:00","10:30","11:00","11:30","12:00",
+                  "13:00","13:30","14:00","14:30","15:00","15:30","16:00"]
+        _today_gap  = round(spx_price - float(_5m_close.iloc[-2]) if len(_5m_close) > 1 else 0, 1)
+        _slot_atr   = levels["atr"] / 6.5
+
+        _today_results = []
+        _prev_actual   = _5m_open
+        for _sl in _slots:
+            _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp)
+            _actual  = _snap_at(_sl)
+            if _actual is None:
+                continue
+            _actual_dir = "bull" if _actual > _prev_actual else ("bear" if _actual < _prev_actual else "chop")
+            _flat       = abs(_actual - _prev_actual) < _slot_atr * 0.3
+            _correct    = ((_wb == "bear" and _actual_dir == "bear") or
+                           (_wb == "bull" and _actual_dir == "bull") or
+                           (_wb == "chop" and _flat))
+            _today_results.append({
+                "slot": _sl, "bias": _wb, "label": _wl,
+                "actual": _actual, "actual_dir": _actual_dir,
+                "correct": _correct, "prev": _prev_actual,
+            })
+            _prev_actual = _actual
+
+        if _today_results:
+            _hits  = sum(1 for r in _today_results if r["correct"])
+            _total = len(_today_results)
+            _acc   = int(_hits / _total * 100)
+            _acc_c = "#4ade80" if _acc >= 65 else ("#f59e0b" if _acc >= 45 else "#f87171")
+
+            _rows_html = ""
+            for r in _today_results:
+                _tc   = BIAS_TEXT.get(r["bias"], "#94a3b8")
+                _tick = "✅" if r["correct"] else "❌"
+                _ad   = "🟢" if r["actual_dir"] == "bull" else ("🔴" if r["actual_dir"] == "bear" else "⚪")
+                _bg   = "rgba(34,197,94,0.10)" if r["correct"] else "rgba(248,113,113,0.08)"
+                _rows_html += (
+                    f'<tr style="background:{_bg};border-bottom:1px solid #1a1f33">'
+                    f'<td style="padding:5px 10px;color:#94a3b8;font-size:12px">{to_ampm(r["slot"])}</td>'
+                    f'<td style="padding:5px 8px;font-size:11px;color:{_tc}">{BIAS_COLOR.get(r["bias"],"")} {r["label"][:30]}</td>'
+                    f'<td style="padding:5px 8px;font-weight:700;color:#f1f5f9">{r["actual"]:,}</td>'
+                    f'<td style="padding:5px 8px;font-size:13px">{_ad}</td>'
+                    f'<td style="padding:5px 10px;font-size:14px">{_tick}</td>'
+                    f'</tr>'
+                )
+
+            # Learning insight: flag which windows are underperforming today
+            _worst  = [r["label"][:20] for r in _today_results if not r["correct"]]
+            _insight = ""
+            if len(_worst) >= 3:
+                _insight = f'<div style="margin-top:8px;padding:8px;background:#1a1000;border-radius:6px;font-size:11px;color:#f59e0b">⚠️ Windows missing today: {", ".join(set(_worst[:4]))} — consider flipping or skipping these</div>'
+            elif _acc >= 70:
+                _insight = f'<div style="margin-top:8px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">✅ Strong session — algorithm in sync with today\'s market regime</div>'
+
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;padding:14px 16px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+                f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">🧠 Today\'s Accuracy — {now_est.strftime("%A %b %d")}</span>'
+                f'<span style="font-size:18px;font-weight:800;color:{_acc_c}">{_acc}% &nbsp;<span style="font-size:12px;color:#64748b">({_hits}/{_total} correct)</span></span>'
+                f'</div>'
+                f'<div style="overflow-y:auto;max-height:300px">'
+                f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9;font-size:12px">'
+                f'<thead><tr style="background:#0f1117">'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">TIME</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">PREDICTED</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">SPX</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL DIR</th>'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
+                f'</tr></thead><tbody>{_rows_html}</tbody></table></div>'
+                f'{_insight}'
+                f'<div style="margin-top:8px;font-size:10px;color:#475569">'
+                f'Updates every 3 min · Window bias includes VIX regime, gap, news sentiment overrides'
+                f'</div></div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="padding:14px;color:#475569;font-size:12px;text-align:center">'
+                'Waiting for intraday bars — check back after 9:35 AM EST.'
+                '</div>', unsafe_allow_html=True)
 
 with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
     spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
