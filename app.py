@@ -2452,8 +2452,21 @@ if _pre_market and live["es_price"]:
     _gap_color  = "#f87171" if _implied_gap < -GAP_THRESHOLD else ("#4ade80" if _implied_gap > GAP_THRESHOLD else "#f59e0b")
     _gap_regime_lbl = ("GAP DOWN" if _implied_gap < -GAP_THRESHOLD
                        else "GAP UP" if _implied_gap > GAP_THRESHOLD else "FLAT OPEN")
-    _open_label = (f"{_mins_to_open}m to ES Open" if _mins_to_open > 0
-                   else "ES Session Active")
+    # If ES is already trading (past 6 PM), show countdown to RTH open (9:30 AM) instead
+    _now_est_pm = datetime.now(EST)
+    _is_es_trading_now = is_es_active(_now_est_pm)
+    if _is_es_trading_now:
+        # Compute minutes to next 9:30 AM RTH open
+        _next_rth = _now_est_pm.replace(hour=9, minute=30, second=0, microsecond=0)
+        if _now_est_pm >= _next_rth or _now_est_pm.weekday() >= 5:
+            _next_rth += timedelta(days=1)
+            while _next_rth.weekday() >= 5:
+                _next_rth += timedelta(days=1)
+        _mins_to_rth = int((_next_rth - _now_est_pm).total_seconds() / 60)
+        _open_label = f"{_mins_to_rth}m to RTH Open (9:30)"
+    else:
+        _open_label = (f"{_mins_to_open}m to ES Open" if _mins_to_open > 0
+                       else "ES Session Active")
     st.markdown(
         f'<div style="background:#0d1117;border:1px solid {_gap_color};border-radius:8px;'
         f'padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">'
