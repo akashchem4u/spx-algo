@@ -742,7 +742,7 @@ def atr(df, n=14):
     return tr.rolling(n).mean()
 
 
-def compute_ssr(spx, vix, pcr, sectors, macro=None):
+def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     close = spx["Close"].squeeze(); vol = spx["Volume"].squeeze()
     high  = spx["High"].squeeze();  low = spx["Low"].squeeze()
     if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
@@ -788,9 +788,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None):
 
     # ── Volatility group ─────────────────────────────────────────────────────
     sigs["VIX Below 20"]      = int(vix_c.iloc[-1] < 20)
-    # VIX Falling: only meaningful during live market hours — stale on weekends/holidays
-    _now_wd = datetime.now(EST).weekday()
-    _now_h  = datetime.now(EST).hour
+    # VIX Falling: use as_of_dt when provided (backtest) so we don't leak
+    # today's clock into historical evaluation.
+    _ref_dt   = as_of_dt if as_of_dt is not None else datetime.now(EST)
+    _now_wd   = _ref_dt.weekday()
+    _now_h    = _ref_dt.hour
     _mkt_open = (_now_wd < 5 and 9 <= _now_h < 16)
     sigs["VIX Falling"] = (int(vix_c.iloc[-1] < vix_c.iloc[-2])
                            if (len(vix_c) >= 2 and _mkt_open) else 0)
@@ -942,7 +944,8 @@ def is_opex_friday(ref_date=None):
     return ref_date == get_opex_friday(ref_date)
 
 
-def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False):
+def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False,
+                   event_types=None, weekday=None):
     """
     Return (bias, label) for a given HH:MM.
     gap        = today's open − prior close (positive = gap-up, negative = gap-down).
@@ -984,7 +987,9 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                     return "chop", label + " (lo-VIX→chop)"
 
             # ── Economic event overrides ────────────────────────────────────
-            _today_events = get_event_types_today()
+            # event_types may be injected by caller (backtest uses historical calendar);
+            # falls back to today's live lookup only when not provided.
+            _today_events = event_types if event_types is not None else get_event_types_today()
             if "FOMC" in _today_events:
                 # Pre-2PM: everyone waits → forced chop
                 if "09:30" <= hhmm < "14:00":
@@ -1002,7 +1007,7 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
             #   2. Wed-Thu: hedges re-price and fast money re-positions → directional allowed
             #   3. EOD Friday: gamma delta-hedge unwind = sharp directional move — keep bias
             if opex:
-                _today_wd = datetime.now(EST).weekday()  # 0=Mon..4=Fri
+                _today_wd = weekday if weekday is not None else datetime.now(EST).weekday()
                 if bias == "chop" and "10:45" <= hhmm <= "14:00" and _today_wd <= 1:
                     # Mon/Tue only — early pinning is real; Wed-Thu don't suppress direction
                     return "chop", label + " (OpEx pin)"
@@ -1430,12 +1435,17 @@ def run_extended_window_backtest():
                 # RTH only
                 if not (9 <= ts.hour < 16): continue
 
-                # Match window
-                mlabel = mbias = None
-                for s, e, lbl, b in TIME_WINDOWS:
-                    if s <= hhmm < e:
-                        mlabel, mbias = lbl, b; break
-                if mlabel is None: continue
+                # Match window — use window_bias_at() so the same overrides
+                # (gap, VIX, events, OpEx) that the live page uses are also
+                # applied in the 2-year research validation.
+                _hist_dt_str = dt.strftime("%Y-%m-%d")
+                _hist_evts   = {ev[2] for ev in _ECON_CAL if ev[0] == _hist_dt_str}
+                _is_opex_h   = is_opex_week(dt)
+                mbias, mlabel = window_bias_at(
+                    hhmm, gap=gap_val, vix=vix_val,
+                    event_types=_hist_evts, weekday=dt.weekday(),
+                    opex=_is_opex_h)
+                if mlabel == "Outside Hours": continue
 
                 vix_val = vix_map.get(dt, 20.0)
                 gap_val = gap_map.get(dt, 0.0)
@@ -2320,7 +2330,13 @@ with _tab_live:
         proj_price = day_open if abs(day_gap) > 20 else prev_close
         projections = []
         for s in slots:
-            win_bias, win_label = window_bias_at(s, gap=day_gap, vix=vix_on_day)
+            _bt_dt_str  = target_date.strftime("%Y-%m-%d")
+            _bt_evts    = {ev[2] for ev in _ECON_CAL if ev[0] == _bt_dt_str}
+            _bt_is_opex = is_opex_week(target_date)
+            win_bias, win_label = window_bias_at(
+                s, gap=day_gap, vix=vix_on_day,
+                event_types=_bt_evts, weekday=target_date.weekday(),
+                opex=_bt_is_opex)
             wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
             move = slot_atr * (bt_direction * 0.55 + wf * 0.45)
             proj_price = round(proj_price + move, 1)
