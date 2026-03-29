@@ -434,22 +434,27 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
   - Verified implemented.
   - `windows_html()` now prefers VIX / gap-specific hit rate when sample size is adequate in `app.py:1956-1996`.
 
-### New Remaining Issue
+### Audit 4 Item 1 — FIXED
 
-#### 1. Gap regime thresholds are inconsistent between live window logic and historical regime badges
-- Severity: Medium
-- Files:
-  - `app.py:47`
-  - `app.py:1889-1890`
-  - `app.py:1963-1964`
-  - `app.py:3891`
-- Problem:
-  - live window overrides use `GAP_THRESHOLD = 25.0`
-  - but the historical regime-bucket stats still classify `gap_up` / `gap_down` using `> 10` / `< -10`
-  - the new live badge can therefore show a "context-specific" gap accuracy for a different regime definition than the live model is actually using
-- Why it matters:
-  - the regime-specific badge is now more sophisticated, but it is not yet using the same gap buckets as the live window engine
-  - that can misstate the historical edge shown beside the live window
-- Recommendation:
-  - make the backtest / aggregate gap buckets use `GAP_THRESHOLD`
-  - or explicitly separate `small gap` and `large gap` statistics and label them correctly in the UI
+**Gap regime thresholds unified — FIXED:**
+- All three hardcoded `> 10` / `< -10` gap bucket thresholds replaced with `GAP_THRESHOLD` (25.0)
+- Files fixed: `app.py:1889-1890` (window backtest loop), `app.py:3891-3892` (regime accuracy backtest), `app.py:3172` (regime table UI labels)
+- `windows_html()` was already using `GAP_THRESHOLD` — no change needed there
+- Live window badge and historical regime accuracy tables now use identical gap bucket definitions
+
+### No remaining open issues from Audit 4
+
+---
+
+## Session Fix — Pre-market Banner / Table Anchor Consistency (2026-03-29)
+
+**Problem:**
+- The pre-market banner showed `Projected RTH open: 6,412.3` (current ES implied open)
+- The SPX projection table anchored from `_es_rth_anchor` (ES overnight-drift-adjusted price at last overnight slot before 9 AM)
+- These two values are different by ~65 pts overnight, causing visible inconsistency
+
+**Fix:**
+- `generate_es_projections()` and `_es_rth_anchor` are now computed once at **module level** (after `live_gap` is finalized, before tabs)
+- The pre-market banner now shows `_es_rth_anchor` (falling back to `_proj_spx_open` only if ES data unavailable)
+- The `_tab_live` projection block reuses `_es_rows_precomp` and `_es_rth_anchor` — no redundant computation
+- Banner and SPX table now always show the same overnight-drift-adjusted RTH open projection

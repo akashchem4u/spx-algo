@@ -865,7 +865,7 @@ def fetch_live():
                 _today = es_df.index[-1].date()
                 _on = es_df[
                     ((es_df.index.date == _today) & (es_df.index.hour < 9)) |
-                    ((es_df.index.date == _today) & (es_df.index.hour == 9) & (es_df.index.minute < 30)) |
+                    ((es_df.index.date == _today) & (es_df.index.hour == 9) & (es_df.index.minute <= 30)) |
                     ((es_df.index.date < _today) & (es_df.index.hour >= 16))
                 ]
                 if len(_on) >= 4:
@@ -944,7 +944,7 @@ def fetch_macro_signals():
     return out
 
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=60)
 def fetch_intraday_rsi():
     """
     14-period RSI computed on 5-minute SPX bars (last 5 trading days).
@@ -1112,8 +1112,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
             if len(_c) >= 50: _sec_closes[t] = _c
         except Exception:
             pass
-    _total_s = len(_sec_closes)
-    if _total_s:
+    # Denominator = full sector universe (11), not just sectors with enough bars.
+    # Missing or failed sector downloads are treated as "below SMA" (conservative).
+    # This prevents inflated breadth when some ETFs fail to download.
+    _total_s = len(sectors)   # always 11 (full universe)
+    if _total_s and _sec_closes:
         _above = sum(1 for _c in _sec_closes.values()
                      if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
         sigs["Sector Breadth ≥ 50%"] = int((_above / _total_s) >= 0.5)
@@ -1198,8 +1201,9 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # Above 5d High: breaking above the prior 5 bars' highest high = weekly breakout.
     # More immediate than 52w range — captures near-term breakout momentum.
     if len(high) >= 6:
-        _5d_high = float(high.iloc[-6:-1].max())   # prior 5 bars (excludes today)
-        sigs["Above 5d High"] = int(c > _5d_high)
+        _5d_high_raw = high.iloc[-6:-1].max()   # prior 5 bars (excludes today)
+        if not pd.isna(_5d_high_raw):
+            sigs["Above 5d High"] = int(c > float(_5d_high_raw))
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
@@ -1381,7 +1385,7 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
             # Narrow ORB guard: if ORB width < 0.12× daily ATR (e.g. ATR=40pts → ORB<4.8pts),
             # the range is too tight for the breakout to mean anything — skip override.
             # orb_range_atr=0.0 (unknown) passes through as before.
-            _orb_wide_enough = (orb_range_atr == 0.0 or orb_range_atr >= 0.12)
+            _orb_wide_enough = (orb_range_atr > 0.0 and orb_range_atr >= 0.12)
             if hhmm >= "10:00" and bias == "chop" and _orb_wide_enough:
                 if orb_status == "above":
                     return "bull", label + " (ORB↑ bull)"
@@ -1886,8 +1890,8 @@ def run_extended_window_backtest():
                 vix_key = ("vix_high" if vix_val > VIX_FEAR_THRESHOLD
                            else "vix_low" if vix_val < VIX_CALM_THRESHOLD
                            else "vix_mid")
-                gap_key = ("gap_up"   if gap_val > 10 else
-                           "gap_down" if gap_val < -10 else "gap_flat")
+                gap_key = ("gap_up"   if gap_val > GAP_THRESHOLD else
+                           "gap_down" if gap_val < -GAP_THRESHOLD else "gap_flat")
 
                 # Match window — use window_bias_at() with fully resolved historical context.
                 _hist_dt_str = dt.strftime("%Y-%m-%d")
@@ -2536,7 +2540,7 @@ if _pre_market and live["es_price"]:
         f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
         f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
         f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
-        f'Projected RTH open: <b style="color:{_gap_color}">{_proj_spx_open:,.1f}</b> · '
+        f'Projected RTH open: <b style="color:{_gap_color}">{(_es_rth_anchor or _proj_spx_open):,.1f}</b> · '
         f'{"Gap-down override: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No override threshold crossed"}'
         f'</div>'
         f'</div>'
@@ -2789,6 +2793,19 @@ if _pre_market and live["es_price"]:
     live_gap = _implied_gap          # already set above; re-assert to be explicit
 else:
     live_gap = _rth_gap
+# Pre-compute ES projections at module level so the pre-market banner and the
+# SPX projection table share the same overnight-drift-adjusted anchor price.
+_es_rows_precomp = generate_es_projections(
+    es_price, levels["atr"], score, gap=live_gap, vix=vix_now,
+    news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
+    orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+_es_rth_anchor = None
+if _pre_market and live["es_price"] and _es_rows_precomp:
+    for _ei, _er in enumerate(_es_rows_precomp):
+        if _er.get("session") == "RTH":
+            if _ei > 0:
+                _es_rth_anchor = _es_rows_precomp[_ei - 1]["price"]
+            break
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3156,7 +3173,7 @@ with _tab_research:
                     [("low","VIX < 18 (calm)"),("mid","VIX 18–25 (normal)"),("high","VIX > 25 (fear)")]),
                     unsafe_allow_html=True)
                 st.markdown(_regime_table("GAP REGIME", _reg["gap"],
-                    [("up","Gap Up > 10 pts"),("flat","Flat / Small gap"),("down","Gap Down > 10 pts")]),
+                    [("up",f"Gap Up > {int(GAP_THRESHOLD)} pts"),("flat",f"Flat / ≤{int(GAP_THRESHOLD)} pts"),("down",f"Gap Down > {int(GAP_THRESHOLD)} pts")]),
                     unsafe_allow_html=True)
             with _cols[1]:
                 st.markdown(_regime_table("DAY OF WEEK", _reg["dow"],
@@ -3261,23 +3278,11 @@ with _tab_live:
     # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
-    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
-    # Pre-market SPX anchor: use ES's projected price at the last overnight slot
-    # (just before RTH begins at 9 AM) so both tables start from the same
-    # overnight-drift-adjusted level, not from the stale current-ES implied open.
-    # Without this, ES accumulates 15h of overnight drift while SPX resets to
-    # today's implied open — causing a 60-100 pt divergence by 9:30 AM.
-    _spx_proj_base = spx_price
-    if _pre_market and live["es_price"] and es_rows:
-        _es_rth_anchor = None
-        for _ei, _er in enumerate(es_rows):
-            if _er.get("session") == "RTH":
-                # Use the price from the slot BEFORE the first RTH slot
-                # = where ES is at the overnight→RTH transition
-                if _ei > 0:
-                    _es_rth_anchor = es_rows[_ei - 1]["price"]
-                break
-        _spx_proj_base = _es_rth_anchor if _es_rth_anchor is not None else (_proj_spx_open or spx_price)
+    # Reuse the ES rows pre-computed at module level so the banner and table
+    # share exactly the same overnight-drift-adjusted anchor.
+    es_rows = _es_rows_precomp
+    _spx_proj_base = (_es_rth_anchor if (_es_rth_anchor is not None and _pre_market and live["es_price"])
+                      else spx_price)
     spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
     colA, colB = st.columns(2)
@@ -3888,7 +3893,7 @@ def aggregate_window_stats(all_bt_results):
         vix_day = bt.get("vix_on_day", 0.0)
         gap_day = bt.get("day_gap", 0.0)
         vix_key = "vix_high" if vix_day > VIX_FEAR_THRESHOLD else ("vix_low" if vix_day < VIX_CALM_THRESHOLD else "vix_mid")
-        gap_key = "gap_up"   if gap_day > 10 else ("gap_down" if gap_day < -10 else "gap_flat")
+        gap_key = "gap_up"   if gap_day > GAP_THRESHOLD else ("gap_down" if gap_day < -GAP_THRESHOLD else "gap_flat")
 
         for r in bt["results"]:
             lbl = r["label"].split(" (")[0]   # strip regime suffix like "(hi-VIX→bear)"
