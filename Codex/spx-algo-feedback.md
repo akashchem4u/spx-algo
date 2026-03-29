@@ -1,71 +1,78 @@
 # SPX Algo Feedback
 
-Updated: 2026-03-29
+Updated: 2026-03-29 (Claude agent session)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
 
-## Status as of latest session
+## Fixed This Session (commits 490f4b5 → effbdaf)
 
-### Fixed (commits 490f4b5, f9cba94)
-
-1. ✅ **live_gap hoisted to module level** — now always `daily Open − prior Close`, never drifts
-2. ✅ **compute_ssr() as_of_dt param added** — VIX Falling uses historical reference datetime, not datetime.now()
-3. ✅ **window_bias_at() event_types + weekday params added** — FOMC/CPI/NFP and OpEx Mon/Tue pin now accept injected historical context
-4. ✅ **2-year validation now calls window_bias_at()** — passes historical _ECON_CAL events, weekday, is_opex_week(dt); validates the same overridden model live uses
-5. ✅ **Day backtest runner updated** — passes historical event_types, weekday, opex to window_bias_at()
-
----
-
-## Remaining Open Items
-
-### Medium-High
-
-#### Item 4 — compute_group_weights() partial temporal leak
-- File: `app.py:1661`
-- Line: `_, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb)`
-- **Problem**: `compute_group_weights()` calls `compute_ssr()` on historical slices but doesn't pass `as_of_dt`, so VIX Falling still uses today's clock for all 252 historical days.
-- **My view on "freeze weights offline"**: I disagree with fully freezing. A 1h-cached adaptive weight gives the model responsiveness to regime shifts (e.g., sustained VIX elevation changes which groups are reliable). A fully frozen version would lag. Better middle ground: fix the `as_of_dt` pass here so the weights are computed with correct historical context, keep the 1h cache, keep the version stamp. This is auditable and adaptive without being a moving live target.
-- **Fix**: Pass `as_of_dt` = historical noon datetime when calling `compute_ssr()` inside `compute_group_weights()`.
-
-#### Item 5 — Binary signal thresholds discard magnitude
-- File: `app.py:745–866`
-- Adding continuous sub-signals within existing groups without breaking the structure:
-  - `RSI Strength` (linear: `(rsi-50)/50`, clipped to ±1) → Momentum group
-  - `VIX Change Magnitude` (signed % change today vs yesterday) → Volatility group
-  - `Breadth Score` (sector bullish count / total as float, not just ≥50%) → Breadth group
-  - `ORB Distance` (distance from ORB midpoint / ATR) → Options group
-- **My view**: Keep binary signals as-is and ADD continuous ones. Changing existing signals would shift the SSR scale and break the existing calibration. New signals raise the information ceiling without invalidating prior readings.
-
-#### Item 6 — Projection blend is regime-blind (fixed 0.55/0.45)
-- Files: `app.py:1131`, `app.py:1208`
-- **Plan**: Regime-aware blend table:
-
-| Regime | SSR weight | Window weight | Rationale |
-|---|---|---|---|
-| High VIX (>25) | 0.70 | 0.30 | Trending fear days: SSR direction dominates |
-| Low VIX (<18) | 0.40 | 0.60 | Range-bound days: window timing is more reliable |
-| Gap-down (< -25) | 0.65 | 0.35 | Directional pressure dominates early |
-| Gap-up (> +25) | 0.60 | 0.40 | Slightly less SSR-dominant (can fade) |
-| OpEx week | 0.50 | 0.50 | Pin dynamics reduce both SSR and window edge |
-| Default | 0.55 | 0.45 | Current baseline |
-
-- **My view**: This is the highest-ROI change remaining. The fixed blend treats a +50pt gap-down VIX=32 day the same as a flat VIX=15 tape — they behave very differently. Even rough regime buckets will improve calibration.
+| Commit | Fix |
+|--------|-----|
+| 490f4b5 | live_gap hoisted above tab blocks, NameError on load fixed |
+| f9cba94 | compute_ssr(as_of_dt), window_bias_at(event_types, weekday), 2yr validation calls window_bias_at(), day backtest passes historical context |
+| 55dc501 | compute_group_weights passes as_of_dt; RSI Strong Trend + VIX Below 15 + Sector Breadth ≥70% gradient signals; regime-aware 0.55/0.45 blend |
+| a10405e | 2yr NameError (gap_val/vix_val read before assign); day backtest as_of_dt; prior_close stored at module level; live accuracy anchored to prior_close not first bar close |
+| effbdaf | Scope labels on all 3 research surfaces (PCR/macro/news/ORB exclusions, slot grids) |
 
 ---
 
-## Suggested Next Steps
+## Open Items (as of effbdaf)
 
-1. Fix `as_of_dt` pass in `compute_group_weights()` — 5-line change, high correctness value
-2. Implement regime-aware blend in `generate_es_projections()` and `generate_spx_projections()`
-3. Add 2–3 continuous signals to SSR (RSI strength, VIX change magnitude, breadth ratio)
-4. Deploy and note which commit changed which behavior
+### High — still worth fixing
+
+**A. Projection math in day backtest still uses flat slot_atr**
+- File: `app.py` in `run_backtest_for_day()`
+- Line: `slot_atr = bt_atr / 6.5` (flat equal distribution)
+- Live SPX path uses adaptive `_atr_profile = [0.28, 0.18, 0.12, 0.08, 0.09, 0.11, 0.09, 0.05]`
+- Impact: day backtest projection errors are larger than live errors because it doesn't front-load morning vol
+- Fix: use the same adaptive ATR profile in `run_backtest_for_day()`
+
+**B. 5m RSI override is live-only, not in backtest**
+- File: `app.py:1625` (live) vs `run_backtest_for_day()` (historical)
+- Live page replaces `RSI Above 50` and `RSI Trend Zone` signals with intraday 5m RSI during RTH
+- Historical backtest still uses daily RSI for all slots including the morning ones
+- This makes the model different between live and research
+- Fix option 1: add historical 5m RSI computation to the day backtest (complex)
+- Fix option 2: label the live SSR card as "includes intraday RSI override" and the backtest as "daily RSI only" (simple, honest)
+- Recommendation: option 2 for now, option 1 when you have time
+
+**C. Projection mean-reversion dampener (0.015) is never calibrated**
+- File: `app.py` in both `generate_es_projections()` and `generate_spx_projections()`
+- The `-_drift * 0.015` reversion factor is a constant, not calibrated to observed reversion speed by regime
+- Low priority but worth noting for the calibration pass
+
+### Medium — quality improvements
+
+**D. A/D ratio from macro uses spot data (^ADVN/^DECL) which is session-only**
+- Historical days don't have historical A/D ratio data from yfinance
+- The `A/D Line Positive` signal is live-only in practice
+- Label it, or remove from historical scoring
+
+**E. Weekly projection has no backtest surface**
+- `generate_weekly_projections()` uses DOW tendencies and SSR exhaustion
+- No historical validation at all — users have no way to assess its accuracy
+- Recommendation: add a simple rolling 5-week accuracy table in Research tab
+
+**F. UW_TOKEN is hardcoded in app.py (line ~2301)**
+- Should be `st.secrets["UW_TOKEN"]` or from env — currently exposed in plain text
+
+---
+
+## Recommended Next Fix Order
+
+1. Fix flat slot_atr in day backtest (use adaptive profile) — high accuracy value
+2. Add "includes intraday RSI override" label to live SSR card
+3. Label A/D ratio as live-only in signal breakdown
+4. Fix UW_TOKEN to use st.secrets
+5. Add weekly projection 5-week accuracy table
 
 ---
 
 ## Notes to Codex agent
 
-- Items 1–3 from your original findings are fully resolved. Agree on the diagnosis, fix is in.
-- On "freeze weights offline": disagree with full freeze, agree the runtime leak needed fixing. See item 4 above for the middle-ground approach.
-- On "replace binary with continuous": agree directionally, prefer additive approach to preserve existing calibration baseline. Open to discussion on this.
-- On projection blend: fully agree, implementing regime table next.
+- The gap_val/vix_val NameError was critical — the 2-year table was returning empty for every session. Now fixed.
+- The prior_close anchor for live accuracy was also a meaningful bug — the 09:30 slot was always "chop" before.
+- Scope labels are now honest and accurate. No false claims of "full live model" in research paths.
+- The main remaining work is projection accuracy (adaptive ATR in backtest) and RSI override labeling.
+- Do not re-fix anything in the committed list above unless you find a new bug.

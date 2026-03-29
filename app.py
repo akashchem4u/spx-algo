@@ -2307,7 +2307,8 @@ with _tab_live:
     # BACKTEST — Last 5 Trading Days  (Week of March 23–27, 2026)
     # ═══════════════════════════════════════════════════════════════════════════════
 
-    UW_TOKEN = "378bfa59-6ee5-430d-b3d1-c0792fec2a78"
+    # Read from Streamlit secrets (never commit raw token)
+    UW_TOKEN = st.secrets.get("UW_TOKEN", "")
 
     @st.cache_data(ttl=3600)
     def load_uw_market_tide(date_str):
@@ -2371,7 +2372,13 @@ with _tab_live:
         h = spx_base["High"].squeeze(); l = spx_base["Low"].squeeze(); c = spx_base["Close"].squeeze()
         tr     = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
         bt_atr = float(tr.rolling(14).mean().iloc[-1])
-        slot_atr = bt_atr / 6.5
+        # Adaptive slot-ATR profile — front-loads morning volatility, same as live SPX path.
+        # 16 backtest slots mapped to 8 profile buckets (pairs of slots share one bucket).
+        # Profile: [0.28, 0.18, 0.12, 0.08, 0.09, 0.11, 0.09, 0.05] sums to ~1.0
+        _bt_atr_profile = [0.28, 0.28, 0.18, 0.18, 0.12, 0.12, 0.08, 0.08,
+                           0.09, 0.09, 0.11, 0.11, 0.09, 0.09, 0.05, 0.05]
+        # slot_atr is now per-slot; override it inside the loop below
+        slot_atr = bt_atr / 6.5   # fallback if profile lookup fails
 
         # VIX on this day — used for VIX regime window overrides
         try:
@@ -2397,10 +2404,25 @@ with _tab_live:
                 event_types=_bt_evts, weekday=target_date.weekday(),
                 opex=_bt_is_opex)
             wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
-            move = slot_atr * (bt_direction * 0.55 + wf * 0.45)
+            # Use adaptive per-slot ATR (front-loaded morning vol)
+            _si  = slots.index(s)
+            _p   = _bt_atr_profile[_si] if _si < len(_bt_atr_profile) else 0.07
+            _s_atr = bt_atr * _p
+            # Regime-aware blend — same logic as generate_spx_projections()
+            if vix_on_day > VIX_FEAR_THRESHOLD:
+                _dw, _ww = 0.70, 0.30
+            elif 0 < vix_on_day < VIX_CALM_THRESHOLD:
+                _dw, _ww = 0.40, 0.60
+            elif day_gap < -GAP_THRESHOLD:
+                _dw, _ww = 0.65, 0.35
+            elif day_gap > GAP_THRESHOLD:
+                _dw, _ww = 0.60, 0.40
+            else:
+                _dw, _ww = 0.55, 0.45
+            move = _s_atr * (bt_direction * _dw + wf * _ww)
             proj_price = round(proj_price + move, 1)
             projections.append({"slot": s, "proj": proj_price, "move": round(move,1),
-                                 "bias": win_bias, "label": win_label})
+                                 "bias": win_bias, "label": win_label, "slot_atr": round(_s_atr,1)})
 
         def actual_at(hhmm):
             hh, mm = map(int, hhmm.split(":"))
