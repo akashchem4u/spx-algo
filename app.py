@@ -2345,6 +2345,32 @@ with _tab_research:
                          unsafe_allow_html=True)
         st.caption("(live-only) = macro/flow data not available historically · (5m) = replaced by intraday 5-min RSI during RTH")
 
+        # Group score breakdown — shows each category's contribution to the weighted SSR
+        _grp_rows = []
+        for _gn, _gs in SIGNAL_GROUPS.items():
+            _gpresent = [signals[k] for k in _gs if k in signals]
+            if _gpresent:
+                _gscore = sum(_gpresent) / len(_gpresent)
+                _grp_rows.append((_gn, _gscore))
+        if _grp_rows:
+            _grp_html = "".join(
+                f'<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px">'
+                f'<span style="color:#64748b;min-width:80px">{gn}</span>'
+                f'<div style="flex:1;background:#1e2130;border-radius:4px;height:8px;overflow:hidden">'
+                f'<div style="width:{int(gs*100)}%;height:100%;background:{"#22c55e" if gs >= 0.5 else "#ef4444"};border-radius:4px"></div>'
+                f'</div>'
+                f'<span style="color:{"#22c55e" if gs >= 0.5 else "#ef4444"};min-width:35px;text-align:right">'
+                f'{int(gs*100)}%</span>'
+                f'</div>'
+                for gn, gs in _grp_rows
+            )
+            st.markdown(
+                f'<div style="background:#111827;border-radius:8px;padding:10px 14px;margin-top:8px">'
+                f'<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">Group Score Breakdown</div>'
+                f'{_grp_html}</div>',
+                unsafe_allow_html=True
+            )
+
     with st.expander("📅 Weekly SSR Directional Accuracy — Last 20 Weeks (click to expand)", expanded=False):
         st.caption(
             "Compares SSR directional call (bull/bear/neutral based on score vs 50) with actual weekly "
