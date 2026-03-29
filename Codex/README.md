@@ -8,5 +8,6 @@ Conventions:
 - Reference exact code paths and line numbers for anything actionable.
 - Separate findings from recommendations.
 
-Current active note:
+Current active notes:
 - `spx-algo-feedback.md`
+- `next-agent-action-plan.md`
