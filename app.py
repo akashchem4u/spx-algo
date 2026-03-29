@@ -2128,6 +2128,10 @@ _tab_live, _tab_research = st.tabs(["📈 Live Signal", "🔬 Research & Validat
 # ═══════════════════════════════════════════════════════════════════════════════
 with _tab_research:
     with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell", expanded=False):
+        # Signals available only in live mode (no historical data for these)
+        _LIVE_ONLY_SIGS = {"A/D Line Positive", "Yield Curve Positive", "Credit Spread Calm"}
+        # Signals that are overridden by intraday data during RTH
+        _INTRADAY_SIGS  = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
         bull_sigs = {k:v for k,v in signals.items() if v==1}
         bear_sigs = {k:v for k,v in signals.items() if v==0}
         scol1, scol2, scol3 = st.columns(3)
@@ -2137,13 +2141,19 @@ with _tab_research:
             chunk = all_sigs[ci*third:(ci+1)*third]
             rows_html = "".join(
                 f'<div class="sig-row">'
-                f'<span>{"✅" if v else "❌"} {k}</span>'
+                f'<span>{"✅" if v else "❌"} {k}'
+                + (f' <span style="font-size:9px;color:#64748b">(live-only)</span>'
+                   if k in _LIVE_ONLY_SIGS else
+                   f' <span style="font-size:9px;color:#60a5fa">(5m)</span>'
+                   if k in _INTRADAY_SIGS else "")
+                + f'</span>'
                 f'<span style="color:{"#22c55e" if v else "#ef4444"};font-size:10px">{"BUY" if v else "SELL"}</span>'
                 f'</div>'
                 for k, v in chunk
             )
             col.markdown(f'<div style="background:#1e2130;border-radius:8px;padding:8px 12px">{rows_html}</div>',
                          unsafe_allow_html=True)
+        st.caption("(live-only) = macro/flow data not available historically · (5m) = replaced by intraday 5-min RSI during RTH")
 
     with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
         st.caption(
@@ -3058,6 +3068,53 @@ with _tab_research:
                 'VIX&lt;18 = calm/range-bound &nbsp;·&nbsp; VIX&gt;25 = fear/trending &nbsp;·&nbsp; '
                 'Minimum 3 samples shown per cell</div>',
                 unsafe_allow_html=True)
+
+        # ── Day-of-week accuracy ──────────────────────────────────────────────
+        st.markdown("<hr style='border:1px solid #1e2130;margin:18px 0'>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:11px;color:#64748b;letter-spacing:1.4px;"
+            "text-transform:uppercase;margin-bottom:10px'>📆 Day-of-Week Directional Accuracy</div>",
+            unsafe_allow_html=True)
+        _dow_names = {0:"Monday",1:"Tuesday",2:"Wednesday",3:"Thursday",4:"Friday"}
+        _dow_acc   = {d:{"hits":0,"total":0,"moves":[]} for d in range(5)}
+        for _bt_r in all_bt_results:
+            if _bt_r is None: continue
+            _wd = _bt_r.get("date_label","")
+            # Recover weekday from date_label (e.g. "Monday March 24, 2026")
+            try:
+                _d_obj = datetime.strptime(_bt_r["date_label"], "%A %B %d, %Y")
+                _wd_i  = _d_obj.weekday()
+            except Exception:
+                continue
+            _hits_day = sum(1 for r in _bt_r["results"] if r["correct"])
+            _tot_day  = len(_bt_r["results"])
+            if _tot_day == 0: continue
+            _dow_acc[_wd_i]["hits"]  += _hits_day
+            _dow_acc[_wd_i]["total"] += _tot_day
+            _dow_acc[_wd_i]["moves"].append(_bt_r.get("day_move", 0))
+
+        _dow_cols = st.columns(5)
+        for _di, _col in zip(range(5), _dow_cols):
+            _da = _dow_acc[_di]
+            if _da["total"] == 0:
+                _col.markdown(
+                    f'<div class="metric-tile" style="text-align:center">'
+                    f'<div class="metric-label">{_dow_names[_di][:3]}</div>'
+                    f'<div style="font-size:11px;color:#64748b">No data</div></div>',
+                    unsafe_allow_html=True)
+            else:
+                _da_pct = int(_da["hits"] / _da["total"] * 100)
+                _da_c   = "#4ade80" if _da_pct >= 65 else ("#f59e0b" if _da_pct >= 45 else "#f87171")
+                _avg_mv = round(sum(_da["moves"]) / len(_da["moves"]), 1) if _da["moves"] else 0
+                _mv_c   = "#4ade80" if _avg_mv > 0 else "#f87171"
+                _col.markdown(
+                    f'<div class="metric-tile" style="text-align:center">'
+                    f'<div class="metric-label">{_dow_names[_di][:3]}</div>'
+                    f'<div style="font-size:20px;font-weight:800;color:{_da_c}">{_da_pct}%</div>'
+                    f'<div style="font-size:10px;color:#64748b">{_da["hits"]}/{_da["total"]} slots</div>'
+                    f'<div style="font-size:11px;color:{_mv_c};margin-top:2px">avg move: {_avg_mv:+.1f}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
 
 
 st.markdown("""
