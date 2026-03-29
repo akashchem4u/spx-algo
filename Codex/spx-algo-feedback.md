@@ -232,3 +232,64 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 - Recommendation:
   - when gap context is unavailable, omit the signal from scoring or treat it as neutral
   - do not default unknown context to bullish
+
+---
+
+## Follow-up Audit 3 (Codex, 2026-03-29 12:55 CT)
+
+### Findings
+
+#### 1. The 2-year regime / ablation study is likely time-misaligned on sector data
+- Severity: High
+- Files:
+  - `app.py:2115-2122`
+  - `app.py:2155-2158`
+- Problem:
+  - SPX and VIX are downloaded with `period="2y"`
+  - sector ETFs are downloaded with `period="1y"`
+  - the walk-forward loop then slices all datasets by row index, not by matching dates
+- Why it matters:
+  - for much of the 2-year study, sector slices are not aligned to the same calendar dates as the SPX slice
+  - this can distort regime accuracy, baseline accuracy, and ablation deltas
+  - because this powers the new “Regime Accuracy Breakdown” and ablation surfaces, it directly affects investor trust
+- Recommendation:
+  - download sector ETFs on the same 2-year horizon
+  - align slices by date index, not row count
+  - do not publish new regime/ablation conclusions until that alignment is fixed
+
+#### 2. Signal ablation currently penalizes coverage loss as if it were a miss
+- Severity: Medium-High
+- Files:
+  - `app.py:2207-2219`
+- Problem:
+  - baseline skips neutral calls entirely
+  - ablation recomputes score without one signal, but if the new score becomes neutral, `_c_excl` becomes `False`
+  - that counts as a miss instead of a no-call
+- Why it matters:
+  - the ablation table currently mixes two effects:
+    - true directional accuracy change
+    - loss of directional coverage
+  - this can make a signal look more valuable than it really is
+- Recommendation:
+  - report both:
+    - accuracy on directional calls only
+    - coverage rate after removing the signal
+  - do not treat neutral-after-removal as an outright miss
+
+#### 3. Shadow ledger forward accuracy still counts every flat day as correct
+- Severity: Medium
+- Files:
+  - `app.py:4163-4169`
+- Problem:
+  - `actual_dir == "flat"` is always counted as a hit regardless of `live_adj_ssr`
+- Why it matters:
+  - this inflates the displayed forward accuracy
+  - it is the same class of issue as the earlier weekly neutral inflation: no-call / low-move outcomes should be broken out explicitly, not auto-counted as wins
+- Recommendation:
+  - either exclude flat days from the accuracy numerator/denominator
+  - or show them as a separate bucket alongside bullish and bearish hits
+
+### Bottom Line
+
+- The app is adding better research surfaces, but the newest regime/ablation layer should not be trusted yet without a date-alignment fix.
+- The next highest-value work is measurement integrity, not more signals or more UI.
