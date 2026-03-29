@@ -2102,7 +2102,7 @@ vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 # Live pre-market VIX: CBOE publishes VIX starting ~3:15 AM ET.
 # After 3 AM, fetch 1-minute intraday VIX to replace the stale prior-day close.
 # Cached 60s — same as app refresh — so it stays current through the pre-open session.
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def _fetch_premarket_vix():
     try:
         _v = yf.download("^VIX", period="1d", interval="1m", progress=False, auto_adjust=True)
@@ -2551,6 +2551,11 @@ _mc4_sc  = "#f59e0b" if _opex_friday else ("#64748b" if _opex_week else "#475569
 # _es_rth_anchor (overnight-drift-adjusted projected open) is computed ~260 lines
 # below after live_gap and ORB vars are ready. Reserve a placeholder here so the
 # banner stays visually above the metrics tiles; fill it after anchor is known.
+# Initialize banner vars with safe defaults so the fill block never hits NameError
+# even if the condition logic diverges in future refactors.
+_gap_color      = "#f59e0b"   # neutral amber default
+_gap_regime_lbl = "FLAT OPEN"
+_open_label     = "—"
 _banner_placeholder = st.empty()
 if _pre_market and live["es_price"]:
     _gap_color  = "#f87171" if _implied_gap < -GAP_THRESHOLD else ("#4ade80" if _implied_gap > GAP_THRESHOLD else "#f59e0b")
@@ -2815,10 +2820,14 @@ else:
     live_gap = _rth_gap
 # Pre-compute ES projections at module level so the pre-market banner and the
 # SPX projection table share the same overnight-drift-adjusted anchor price.
-_es_rows_precomp = generate_es_projections(
-    es_price, levels["atr"], score, gap=live_gap, vix=vix_now,
-    news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
-    orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+# Guard: skip if ATR is 0 (data failure) to avoid zero-width projection ranges.
+if levels["atr"] > 0 and es_price > 0:
+    _es_rows_precomp = generate_es_projections(
+        es_price, levels["atr"], score, gap=live_gap, vix=vix_now,
+        news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
+        orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+else:
+    _es_rows_precomp = []
 _es_rth_anchor = None
 if _pre_market and live["es_price"] and _es_rows_precomp:
     for _ei, _er in enumerate(_es_rows_precomp):
