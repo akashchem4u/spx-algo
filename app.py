@@ -3182,7 +3182,10 @@ with _tab_live:
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
     es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
-    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+    # Pre-market: anchor SPX projection to implied open (last_close + implied_gap) so the
+    # table shows the expected path from the actual RTH open, not from yesterday's close.
+    _spx_proj_base = _proj_spx_open if (_pre_market and _proj_spx_open is not None) else spx_price
+    spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
     colA, colB = st.columns(2)
 
