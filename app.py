@@ -867,6 +867,8 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # Gap/ATR ratio: is today's gap large relative to recent volatility?
     # A gap > 0.5× daily ATR is high-conviction and should amplify window bias.
     # We use Open vs prior Close from the daily DataFrame when available.
+    _day_gap_pts = 0.0   # default: no gap context available
+    _daily_atr   = 0.0   # default: no ATR context available
     _gap_atr_ratio = 0.0
     if "Open" in spx.columns and len(atr_v.dropna()) >= 14:
         _open_s = spx["Open"].squeeze()
@@ -878,6 +880,8 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # Gap/ATR Normal: fires 1 only on small POSITIVE gap (0 to +0.5 ATR).
     # Direction-sensitive: a small down gap or flat open is NOT a bull signal.
     # Large gaps (>0.5 ATR) or negative gaps get 0 — reduces bull score on those days.
+    # When gap context is unavailable (_daily_atr=0), _signed_gap_atr=0.0 → fires 1
+    # (conservative fallback: treat unknown as small-gap normal open).
     _signed_gap_atr = _day_gap_pts / max(_daily_atr, 1) if _daily_atr > 0 else 0.0
     sigs["Gap/ATR Normal"]     = int(0.0 <= _signed_gap_atr < 0.5)
 
@@ -1509,7 +1513,8 @@ def suggest_trade(score, levels):
     friday = today + timedelta(days=(4-today.weekday())%7)
     next_w = today + timedelta(days=7+(4-today.weekday())%7)
     if bias == "puts":
-        strike = int(c // 25) * 25
+        # OTM put: nearest 5-point strike at or below current price (SPX near-term have 5pt strikes)
+        strike = int(c / 5) * 5
         return {"direction":"PUT","strike":strike,
                 "expiry": str(friday) if score<=35 else str(next_w),
                 "entry": f"{levels['resistance_1']} – {levels['resistance_2']}",
@@ -1517,7 +1522,8 @@ def suggest_trade(score, levels):
                 "stop":round(levels["resistance_2"]+atr14*0.5,1),
                 "sizing":"2–4 contracts" if score<=35 else "1–2 contracts"}
     elif bias == "calls":
-        strike = (int(c // 25)+1) * 25
+        # OTM call: nearest 5-point strike above current price (SPX near-term have 5pt strikes)
+        strike = (int(c / 5) + 1) * 5
         return {"direction":"CALL","strike":strike,
                 "expiry": str(friday) if score>=66 else str(next_w),
                 "entry": f"{levels['support_1']} – {levels['support_2']}",
@@ -1705,17 +1711,26 @@ def run_extended_window_backtest():
         return {}
 
 
-def windows_html(now_hhmm):
+def windows_html(now_hhmm, win_acc=None):
     rows = []
     for s, e, lbl, b in TIME_WINDOWS:
         is_now = s <= now_hhmm < e
         now_badge = '<span class="win-now">NOW</span>' if is_now else ""
         row_style = 'background:#1a2744;border-radius:6px;' if is_now else ""
+        # Historical accuracy badge — look up base label in 2yr backtest stats
+        acc_badge = ""
+        if win_acc and lbl in win_acc:
+            _ws = win_acc[lbl]
+            _tot = _ws.get("total", 0)
+            if _tot >= 20:
+                _pct = round(_ws["correct"] / _tot * 100)
+                _ac = "#4ade80" if _pct >= 60 else ("#f87171" if _pct < 45 else "#94a3b8")
+                acc_badge = f'<span class="win-acc" style="color:{_ac}">{_pct}%</span>'
         rows.append(
             f'<div class="window-row" style="{row_style}">'
             f'<span class="win-time">{to_ampm(s)}–{to_ampm(e)}</span>'
             f'<span class="win-label">{BIAS_COLOR.get(b,"⚪")} {lbl}</span>'
-            f'{now_badge}</div>'
+            f'{now_badge}{acc_badge}</div>'
         )
     return "".join(rows)
 
@@ -1757,6 +1772,8 @@ st.markdown("""
   .win-label    { flex:1; font-size:13px; }
   .win-now      { background:#1e3a8a; border-radius:4px; padding:1px 6px;
                   font-size:10px; color:#93c5fd; font-weight:700; }
+  .win-acc      { background:#1c2135; border-radius:3px; padding:1px 5px;
+                  font-size:10px; color:#64748b; margin-left:auto; flex-shrink:0; }
   .sig-grid     { display:grid; grid-template-columns:1fr 1fr; gap:0; }
   .sig-row      { display:flex; justify-content:space-between; align-items:center;
                   padding:3px 6px; font-size:12px; border-bottom:1px solid #1a1f33; }
@@ -2128,11 +2145,12 @@ with cM:
         {to_ampm(cur_start)} – {to_ampm(cur_end)}
       </div>
     </div>"""
+    _live_win_acc = run_extended_window_backtest()
     st.markdown(f"""
     <div class="card">
       <h3>Intraday Windows — ES &amp; SPX (EST)</h3>
       {now_badge_html}
-      {windows_html(now_hhmm)}
+      {windows_html(now_hhmm, win_acc=_live_win_acc)}
     </div>
     """, unsafe_allow_html=True)
 
@@ -2426,8 +2444,10 @@ with _tab_research:
 
     with st.expander("📅 Weekly SSR Directional Accuracy — Last 20 Weeks (click to expand)", expanded=False):
         st.caption(
-            "Compares SSR directional call (bull/bear/neutral based on score vs 50) with actual weekly "
-            "SPX move over the last 20 weeks. Uses price+VIX+sector SSR only (no PCR/macro)."
+            "Validates SSR directional call (bull/bear/neutral, score vs 50) against actual weekly SPX move — "
+            "last 20 weeks. Scope: price+VIX+sector SSR only (no PCR/macro). "
+            "Note: this table measures SSR direction accuracy, not the weekly projection path or ranges "
+            "(VIX scaling, exhaustion gate, and day-by-day levels are not backtested here)."
         )
         @st.cache_data(ttl=3600)
         def run_weekly_ssr_validation():
@@ -2787,8 +2807,9 @@ with _tab_live:
 
         slots = ["09:30","10:00","10:30","10:45","11:00","11:15","11:30","12:00",
                  "13:00","13:15","13:30","14:00","14:30","15:00","15:30","16:00"]
-        # Anchor projection to open price when gap is significant (fixes systematic drift)
-        proj_price = day_open if abs(day_gap) > 20 else prev_close
+        # Always anchor projection to the actual open price, not prior close.
+        # Using prev_close would inflate hit rates on gap days (gap move credited to forecast).
+        proj_price = day_open
         projections = []
         for s in slots:
             _bt_dt_str  = target_date.strftime("%Y-%m-%d")

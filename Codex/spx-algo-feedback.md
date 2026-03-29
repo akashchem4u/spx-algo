@@ -40,7 +40,7 @@ Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 **Gap/ATR Normal direction-sensitive**
 - Was: fires `1` when `abs(gap) < 0.5 ATR` — small down-gaps voted bullish
-- Now: fires `1` only when `0 ≤ signed_gap < 0.5 ATR` — down gaps and flat opens get 0
+- Now: fires `1` when `0.0 ≤ signed_gap < 0.5 ATR` — down gaps get 0; flat opens (0.0) still fire 1 (treated as normal/neutral, not bearish)
 
 **VIX scaling smooth interpolation**
 - Was: step function with 35% cliff-edge at VIX=25/30/35
@@ -110,3 +110,56 @@ Position (6):   52w Range Upper Half/Top 20%, Above BB Mid, Above Prior Day High
 Live-only: A/D, Yield Curve, Credit Spread, Above Overnight Midpoint, Overnight Upper Third
 RTH-override: RSI Above 50, RSI Trend Zone (replaced by 5m intraday RSI)
 Convention: 1=bullish, 0=bearish (all signals verified correct)
+
+---
+
+## Follow-up Audit (Codex, 2026-03-29 03:20 CT)
+
+### Findings
+
+#### 1. `Gap/ATR Normal` can throw on short or degraded data slices
+- Severity: Medium-High
+- File: `app.py:871-882`
+- Problem:
+  - `_day_gap_pts` and `_daily_atr` are assigned only inside the inner `if len(_open_s) >= 2`
+  - `_signed_gap_atr` is computed afterward unconditionally
+- Why it matters:
+  - if `compute_ssr()` is ever called with enough closes to pass the top guard, but without 14 valid ATR bars or without a usable `Open` series, this can raise an `UnboundLocalError` instead of degrading gracefully
+  - recent work already added projection fallbacks for thin/bad data; the scorer should be equally defensive
+- Recommendation:
+  - initialize `_day_gap_pts` and `_daily_atr` before the conditional block
+  - default `_signed_gap_atr = 0.0` when gap context is unavailable
+
+#### 2. Weekly projection upgrades are not actually validated by the weekly research table
+- Severity: Medium
+- Files:
+  - `app.py:1421-1488`
+  - `app.py:2433-2460`
+- Problem:
+  - `generate_weekly_projections()` now includes VIX scaling and a high-VIX exhaustion gate
+  - but `run_weekly_ssr_validation()` still evaluates only `compute_ssr()` direction, not the weekly projection function
+- Why it matters:
+  - the session note presents “weekly projection enhancements” as if they improved evidenced model quality
+  - in reality those changes affect the displayed weekly path, but the visible weekly accuracy table does not validate them
+- Recommendation:
+  - either backtest `generate_weekly_projections()` directly
+  - or narrow the wording so the weekly table is clearly an SSR-direction check, not weekly projection validation
+
+#### 3. The feedback note is slightly wrong on `Gap/ATR Normal`
+- Severity: Low
+- Files:
+  - `Codex/spx-algo-feedback.md:41-43`
+  - `app.py:881-882`
+- Problem:
+  - the note says “down gaps and flat opens get 0”
+  - the code currently uses `0.0 <= _signed_gap_atr < 0.5`, which includes flat opens
+- Recommendation:
+  - fix the note or change the condition if flat opens are truly meant to be non-bullish
+
+### Bottom Line
+
+- The app is cleaner than it was one audit ago.
+- The 360 session closed several real issues.
+- It still does **not** justify calling the system “high confidence” yet, mainly because:
+  - one new scorer robustness bug was introduced
+  - some claimed weekly improvements are not yet tied to validation
