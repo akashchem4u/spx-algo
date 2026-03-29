@@ -931,10 +931,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # Gap/ATR Normal: fires 1 only on small POSITIVE gap (0 to +0.5 ATR).
     # Direction-sensitive: a small down gap or flat open is NOT a bull signal.
     # Large gaps (>0.5 ATR) or negative gaps get 0 — reduces bull score on those days.
-    # When gap context is unavailable (_daily_atr=0), _signed_gap_atr=0.0 → fires 1
-    # (conservative fallback: treat unknown as small-gap normal open).
-    _signed_gap_atr = _day_gap_pts / max(_daily_atr, 1) if _daily_atr > 0 else 0.0
-    sigs["Gap/ATR Normal"]     = int(0.0 <= _signed_gap_atr < 0.5)
+    # When gap context is unavailable (_daily_atr=0), omit the signal entirely
+    # so unknown context does not bias the score bullish.
+    _signed_gap_atr = _day_gap_pts / _daily_atr if _daily_atr > 0 else None
+    if _signed_gap_atr is not None:
+        sigs["Gap/ATR Normal"] = int(0.0 <= _signed_gap_atr < 0.5)
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: confirmed only when price is also higher (accumulation),
@@ -1776,7 +1777,7 @@ def windows_html(now_hhmm, win_acc=None):
             if _tot >= 20:
                 _pct = round(_ws["correct"] / _tot * 100)
                 _ac = "#4ade80" if _pct >= 60 else ("#f87171" if _pct < 45 else "#94a3b8")
-                acc_badge = f'<span class="win-acc" style="color:{_ac}">{_pct}%</span>'
+                acc_badge = f'<span class="win-acc" style="color:{_ac}">{_pct}% avg</span>'
         rows.append(
             f'<div class="window-row" style="{row_style}">'
             f'<span class="win-time">{to_ampm(s)}–{to_ampm(e)}</span>'
@@ -2696,7 +2697,7 @@ with _tab_research:
                         _wk_close = float(_closes.iloc[_nxt_end - 1])
                         _wk_move  = round(_wk_close - _wk_open, 1)
                         _actual   = "bull" if _wk_move > 5 else ("bear" if _wk_move < -5 else "neutral")
-                        _correct  = (_proj_call == _actual) or (_proj_call == "neutral")
+                        _correct  = (_proj_call == _actual) if _proj_call != "neutral" else None
                         _wk_label = _dates[_nxt_start].strftime("%b %d")
                         _results.append({
                             "week": _wk_label, "ssr": _sc, "call": _proj_call,
@@ -2712,22 +2713,25 @@ with _tab_research:
         if not _wkly_results:
             st.warning("Weekly validation unavailable — needs market data connection.")
         else:
-            _wk_hits   = sum(1 for r in _wkly_results if r["correct"])
-            _wk_total  = len(_wkly_results)
+            _wk_hits   = sum(1 for r in _wkly_results if r["call"] != "neutral" and r["correct"])
+            _wk_total  = sum(1 for r in _wkly_results if r["call"] != "neutral")
+            _wk_neutral = sum(1 for r in _wkly_results if r["call"] == "neutral")
             _wk_acc    = int(_wk_hits / _wk_total * 100) if _wk_total else 0
             _wk_acc_c  = "#4ade80" if _wk_acc >= 60 else ("#f59e0b" if _wk_acc >= 45 else "#f87171")
+            _neutral_note = f" · {_wk_neutral} neutral (excluded)" if _wk_neutral else ""
             st.markdown(
                 f'<div style="font-size:13px;color:#94a3b8;margin-bottom:8px">'
                 f'Weekly directional accuracy: <b style="color:{_wk_acc_c};font-size:16px">{_wk_acc}%</b>'
-                f' ({_wk_hits}/{_wk_total} weeks · neutral = excluded from miss count)</div>',
+                f' ({_wk_hits}/{_wk_total} directional calls{_neutral_note})</div>',
                 unsafe_allow_html=True)
             _wk_rows = ""
             for _r in _wkly_results:
-                _cc  = "#4ade80" if _r["correct"] else "#f87171"
+                _correct_val = _r["correct"]
+                _cc  = "#4ade80" if _correct_val else ("#64748b" if _correct_val is None else "#f87171")
                 _mc  = "#4ade80" if _r["move"] > 0 else "#f87171"
                 _ac  = {"bull":"#4ade80","bear":"#f87171","neutral":"#64748b"}.get(_r["actual"],"#94a3b8")
                 _pc  = {"bull":"#4ade80","bear":"#f87171","neutral":"#64748b"}.get(_r["call"],"#94a3b8")
-                _tk  = "\u2705" if _r["correct"] else "\u274c"
+                _tk  = "\u2705" if _correct_val else ("\u2014" if _correct_val is None else "\u274c")
                 _wk_rows += (
                     f'<tr style="border-bottom:1px solid #1a1f33">'
                     f'<td style="padding:4px 10px;font-size:12px;color:#94a3b8">{_r["week"]}</td>'
