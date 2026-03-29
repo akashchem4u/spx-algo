@@ -80,12 +80,15 @@ SIGNAL_GROUPS = {
     "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish",
                    "RSI Strong Trend"],          # RSI 60-75: strong momentum, not extreme
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
-                   "VIX Below 15"],              # ultra-calm: second tier for gradient
+                   "VIX Below 15",              # ultra-calm tier for gradient
+                   "VIX 3d Relief"],             # 3-day VIX decline = fear unwinding = bull
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
                    "Sector Breadth ≥ 70%"],      # strong breadth: second tier for gradient
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
+    "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
+                   "VIX 3d Spike"],              # 3-day VIX surge = fear expansion = bear
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -809,6 +812,32 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # VIX Below 15: ultra-calm regime tier. Pairs with "VIX Below 20" for gradient:
     # VIX 16-20 fires one signal; VIX <15 fires both — stronger low-vol bull context.
     sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15)
+    # VIX rate-of-change signals: capture fear acceleration/deceleration
+    # that the point-in-time VIX level misses. 3-day window balances noise vs signal.
+    if len(vix_c) >= 4:
+        _vix_3d_chg = (float(vix_c.iloc[-1]) - float(vix_c.iloc[-4])) / max(float(vix_c.iloc[-4]), 1)
+        # Fear unwinding: VIX down >8% over 3 days = relief rally context = bull
+        sigs["VIX 3d Relief"]  = int(_vix_3d_chg < -0.08)
+        # Fear spike: VIX up >15% over 3 days = fear expansion = bear context
+        sigs["VIX 3d Spike"]   = int(_vix_3d_chg > 0.15)
+    else:
+        sigs["VIX 3d Relief"]  = 0
+        sigs["VIX 3d Spike"]   = 0
+
+    # Gap/ATR ratio: is today's gap large relative to recent volatility?
+    # A gap > 0.5× daily ATR is high-conviction and should amplify window bias.
+    # We use Open vs prior Close from the daily DataFrame when available.
+    _gap_atr_ratio = 0.0
+    if "Open" in spx.columns and len(atr_v.dropna()) >= 14:
+        _open_s = spx["Open"].squeeze()
+        if isinstance(_open_s, pd.DataFrame): _open_s = _open_s.iloc[:, 0]
+        if len(_open_s) >= 2:
+            _day_gap_pts = float(_open_s.iloc[-1]) - float(close.iloc[-2])
+            _daily_atr   = float(atr_v.dropna().iloc[-1])
+            _gap_atr_ratio = abs(_day_gap_pts) / max(_daily_atr, 1)
+    # Gap/ATR Normal: gap < 0.5 ATR = low-conviction open → window timing more reliable
+    # A large gap (>0.5 ATR) gets 0 here = sell vote → reduces overall bull score on big-gap days
+    sigs["Gap/ATR Normal"]     = int(_gap_atr_ratio < 0.5)
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: confirmed only when price is also higher (accumulation),
@@ -2154,6 +2183,103 @@ with _tab_research:
             col.markdown(f'<div style="background:#1e2130;border-radius:8px;padding:8px 12px">{rows_html}</div>',
                          unsafe_allow_html=True)
         st.caption("(live-only) = macro/flow data not available historically · (5m) = replaced by intraday 5-min RSI during RTH")
+
+    with st.expander("📅 Weekly SSR Directional Accuracy — Last 20 Weeks (click to expand)", expanded=False):
+        st.caption(
+            "Compares SSR directional call (bull/bear/neutral based on score vs 50) with actual weekly "
+            "SPX move over the last 20 weeks. Uses price+VIX+sector SSR only (no PCR/macro)."
+        )
+        @st.cache_data(ttl=3600)
+        def run_weekly_ssr_validation():
+            try:
+                _spx_w = yf.download("^GSPC", period="120d", interval="1d", progress=False, auto_adjust=True)
+                _vix_w = yf.download("^VIX",  period="120d", interval="1d", progress=False, auto_adjust=True)
+                _sec_w = {}
+                for _t in ["XLF","XLK","XLE","XLV","XLI"]:
+                    try:
+                        _sec_w[_t] = yf.download(_t, period="120d", interval="1d", progress=False, auto_adjust=True)
+                    except Exception:
+                        _sec_w[_t] = pd.DataFrame()
+                _closes  = _spx_w["Close"].squeeze()
+                if isinstance(_closes, pd.DataFrame): _closes = _closes.iloc[:, 0]
+                _dates   = list(_spx_w.index)
+                _results = []
+                for _wi in range(4, len(_dates) - 5, 5):
+                    try:
+                        _fri_idx  = _wi
+                        _base     = _spx_w.iloc[:_fri_idx]
+                        _vbase    = _vix_w.iloc[:_fri_idx]
+                        _ebase    = {k: v.iloc[:_fri_idx] for k, v in _sec_w.items()}
+                        if len(_base) < 30: continue
+                        _fri_as_of = EST.localize(datetime(_dates[_fri_idx].year,
+                                                           _dates[_fri_idx].month,
+                                                           _dates[_fri_idx].day, 15, 0))
+                        _sc, _, _, _ = compute_ssr(_base, _vbase, pd.DataFrame(), _ebase,
+                                                   as_of_dt=_fri_as_of)
+                        _dir = ssr_direction(_sc)
+                        _proj_call = "bull" if _dir > 0.2 else ("bear" if _dir < -0.2 else "neutral")
+                        _nxt_start = _fri_idx + 1
+                        _nxt_end   = min(_fri_idx + 6, len(_closes))
+                        if _nxt_end <= _nxt_start: continue
+                        _wk_open  = float(_closes.iloc[_nxt_start])
+                        _wk_close = float(_closes.iloc[_nxt_end - 1])
+                        _wk_move  = round(_wk_close - _wk_open, 1)
+                        _actual   = "bull" if _wk_move > 5 else ("bear" if _wk_move < -5 else "neutral")
+                        _correct  = (_proj_call == _actual) or (_proj_call == "neutral")
+                        _wk_label = _dates[_nxt_start].strftime("%b %d")
+                        _results.append({
+                            "week": _wk_label, "ssr": _sc, "call": _proj_call,
+                            "actual": _actual, "move": _wk_move, "correct": _correct,
+                        })
+                    except Exception:
+                        continue
+                return _results[-20:]
+            except Exception:
+                return []
+
+        _wkly_results = run_weekly_ssr_validation()
+        if not _wkly_results:
+            st.warning("Weekly validation unavailable — needs market data connection.")
+        else:
+            _wk_hits   = sum(1 for r in _wkly_results if r["correct"])
+            _wk_total  = len(_wkly_results)
+            _wk_acc    = int(_wk_hits / _wk_total * 100) if _wk_total else 0
+            _wk_acc_c  = "#4ade80" if _wk_acc >= 60 else ("#f59e0b" if _wk_acc >= 45 else "#f87171")
+            st.markdown(
+                f'<div style="font-size:13px;color:#94a3b8;margin-bottom:8px">'
+                f'Weekly directional accuracy: <b style="color:{_wk_acc_c};font-size:16px">{_wk_acc}%</b>'
+                f' ({_wk_hits}/{_wk_total} weeks · neutral = excluded from miss count)</div>',
+                unsafe_allow_html=True)
+            _wk_rows = ""
+            for _r in _wkly_results:
+                _cc  = "#4ade80" if _r["correct"] else "#f87171"
+                _mc  = "#4ade80" if _r["move"] > 0 else "#f87171"
+                _ac  = {"bull":"#4ade80","bear":"#f87171","neutral":"#64748b"}.get(_r["actual"],"#94a3b8")
+                _pc  = {"bull":"#4ade80","bear":"#f87171","neutral":"#64748b"}.get(_r["call"],"#94a3b8")
+                _tk  = "\u2705" if _r["correct"] else "\u274c"
+                _wk_rows += (
+                    f'<tr style="border-bottom:1px solid #1a1f33">'
+                    f'<td style="padding:4px 10px;font-size:12px;color:#94a3b8">{_r["week"]}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:#f1f5f9">{_r["ssr"]}/100</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_pc}">{_r["call"]}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_mc}">{_r["move"]:+.1f} pts</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_ac}">{_r["actual"]}</td>'
+                    f'<td style="padding:4px 10px;font-size:14px">{_tk}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;padding:12px 14px;'
+                f'border:1px solid #2d3250;overflow-x:auto">'
+                f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9">'
+                f'<thead><tr style="background:#0f1117">'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">WEEK OF</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">SSR</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">CALL</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL MOVE</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL DIR</th>'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
+                f'</tr></thead><tbody>{_wk_rows}</tbody></table></div>',
+                unsafe_allow_html=True)
 
     with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
         st.caption(
