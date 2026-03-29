@@ -318,3 +318,74 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 - Pre-market banner countdown: shows "Xm to RTH Open" when ES is already trading overnight
 - News taxonomy: expanded US_IRAN_WAR/IRAN_ESCALATION/IRAN_DEESCALATION keywords
 - Pre-market SSR injection: implied gap (ES–SPX) feeds `Gap/ATR Normal` signal when outside RTH
+
+## Audit 4 — Remaining Verified Issues (2026-03-29)
+
+#### 1. Pre-market implied-gap signal is injected after SSR scoring, so the displayed score is stale
+- Severity: High
+- Files:
+  - `app.py:2270-2291`
+  - `app.py:2339-2348`
+- Problem:
+  - `_weighted_base`, `score`, and `_core_ssr` are computed before the pre-market implied-gap override runs
+  - later, the code updates `signals["Gap/ATR Normal"]` and recomputes only `buys` / `sells`
+  - the UI comment says pre-market SSR reflects tonight's gap, but the displayed SSR does not fully re-score after that override
+- Why it matters:
+  - pre-market users can see a gap-aware narrative with a partially non-gap-aware score
+  - this is a live correctness issue, not just a research issue
+- Recommendation:
+  - if `_pre_market` and ES is available, inject the implied-gap signal before weighted scoring
+  - or fully recompute `_weighted_base`, `_core_ssr`, `score`, and downstream labels after the override
+
+#### 2. News dedupe happens before GNews is appended, so duplicate headlines can still be double-counted
+- Severity: Medium
+- Files:
+  - `app.py:661-669`
+  - `app.py:671-691`
+- Problem:
+  - RSS headlines are deduped first
+  - GNews headlines are appended after that with no second dedupe pass
+  - the same Iran / Hormuz / oil story can therefore enter twice from different sources
+- Why it matters:
+  - duplicate high-severity headlines can overstate `composite_score`
+  - that can distort `_news_nudge` and top-impact labeling
+- Recommendation:
+  - run one final dedupe pass after all feeds, including GNews / Alpha Vantage / fallback news
+  - dedupe on a stronger normalized key than raw title prefix if possible
+
+#### 3. News "recency" weighting is actually feed-order weighting, not true time-order weighting
+- Severity: Medium
+- Files:
+  - `app.py:637-660`
+  - `app.py:737-744`
+- Problem:
+  - articles are appended feed-by-feed
+  - recency weights are then assigned by list position (`1 / (i + 1)`)
+  - no global timestamp sort happens before the composite is computed
+- Why it matters:
+  - earlier feeds structurally get more influence even when a later-feed item is newer
+  - this is especially important now that the app uses many heterogeneous news feeds
+- Recommendation:
+  - normalize timestamps where possible and sort globally before recency weighting
+  - if timestamps are unavailable or inconsistent, downgrade the recency term rather than pretending the list is time-ordered
+
+#### 4. Window strip still shows average accuracy only, not the regime-specific edge the model is actually using
+- Severity: Low-Medium
+- Files:
+  - `app.py:1882-1895`
+  - `app.py:1920-1941`
+- Problem:
+  - `run_extended_window_backtest()` already computes gap- and VIX-specific stats per window
+  - `windows_html()` still displays only one average percentage for the window label
+- Why it matters:
+  - the app's live window logic is regime-conditional
+  - a single average badge can misstate the current slot's real historical edge
+- Recommendation:
+  - when current gap / VIX regime is known, show the context-specific hit rate first
+  - keep the all-regime average only as secondary context
+
+### Audit 4 Bottom Line
+
+- Most of the older measurement-integrity issues are fixed.
+- The biggest remaining issue is now live-score consistency in pre-market mode.
+- After that, the main weakness is the news pipeline: duplicate counting and pseudo-recency can still distort market judgment.
