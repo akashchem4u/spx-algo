@@ -11,7 +11,7 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 import streamlit.components.v1 as _components
-import urllib.request, urllib.error
+import urllib.request, urllib.error, urllib.parse
 import json as _json
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +174,14 @@ try:
     _AV_KEY = st.secrets.get("AV_KEY", "")
 except Exception:
     import os; _AV_KEY = os.environ.get("AV_KEY", "")
+
+# Optional GNews API key — free tier: 100 req/day, real-time, no delay
+# Sign up at https://gnews.io — set GNEWS_KEY in st.secrets or env
+# Used for targeted geopolitical keyword search (Iran, Hormuz, oil, war)
+try:
+    _GNEWS_KEY = st.secrets.get("GNEWS_KEY", "")
+except Exception:
+    import os; _GNEWS_KEY = os.environ.get("GNEWS_KEY", "")
 
 # ── 2026 Economic Calendar (FOMC/CPI/NFP/PPI/GDP) ────────────────────────────
 # Source: Federal Reserve, BLS, BEA — all published months in advance
@@ -603,21 +611,30 @@ def load_news(vix_now=0.0):
             pass
         return items
 
-    # Tier 1: Breaking market + geopolitical — always fetch all, deduplicate after
-    # ForexLive: fastest on Iran/US military/macro headlines (verified working)
-    articles += _parse_rss("https://www.forexlive.com/feed/news", "ForexLive", max_items=15)
-    # FinancialJuice: real-time breaking market news
-    articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice", max_items=15)
-    # BBC World: geopolitical depth — Iran/Middle East/war coverage (verified working)
-    articles += _parse_rss("https://feeds.bbci.co.uk/news/world/rss.xml", "BBC", max_items=12)
-    # CNBC — broad market coverage
+    # ── RSS feed stack — ordered by geopolitical speed ───────────────────────
+    # ForexLive: fastest on Iran/US military/macro macro headlines
+    articles += _parse_rss("https://www.forexlive.com/feed/news",               "ForexLive",    max_items=15)
+    # FinancialJuice: real-time breaking market
+    articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice",max_items=15)
+    # BBC Middle East: dedicated Iran/Israel/Houthi/Gulf feed (verified)
+    articles += _parse_rss("https://feeds.bbci.co.uk/news/world/middle_east/rss.xml", "BBC-ME", max_items=12)
+    # Jerusalem Post: IDF/Iran/Israel breaking news — fastest on IDF/Hormuz events (verified)
+    articles += _parse_rss("https://www.jpost.com/Rss/RssFeedsHeadlines.aspx",  "JPost",        max_items=12)
+    # BBC World: broader geopolitical context
+    articles += _parse_rss("https://feeds.bbci.co.uk/news/world/rss.xml",       "BBC",          max_items=10)
+    # Al Jazeera: Middle East / Hormuz regional depth (verified)
+    articles += _parse_rss("https://www.aljazeera.com/xml/rss/all.xml",         "AlJazeera",    max_items=10)
+    # OilPrice.com: fastest dedicated energy/oil/Hormuz feed (verified)
+    articles += _parse_rss("https://oilprice.com/rss/main",                     "OilPrice",     max_items=10)
+    # CNBC: broad market coverage
     articles += _parse_rss(
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
         "CNBC", max_items=10)
-    # Al Jazeera — Middle East / Iran / Hormuz regional depth (verified working)
-    articles += _parse_rss("https://www.aljazeera.com/xml/rss/all.xml", "AlJazeera", max_items=10)
-    # MarketWatch — market/macro headlines (verified working)
-    articles += _parse_rss("https://www.marketwatch.com/rss/topstories", "MarketWatch", max_items=8)
+    # MarketWatch: macro/market headlines
+    articles += _parse_rss("https://www.marketwatch.com/rss/topstories",        "MarketWatch",  max_items=8)
+    # AP Top/World: wire-speed — DNS issues on some hosts but works on Streamlit Cloud
+    articles += _parse_rss("https://feeds.apnews.com/rss/topnews",              "AP",           max_items=10)
+    articles += _parse_rss("https://feeds.apnews.com/rss/worldnews",            "AP-World",     max_items=10)
     # Deduplicate by title prefix to avoid same headline from multiple feeds
     _seen = set()
     _deduped = []
@@ -627,6 +644,28 @@ def load_news(vix_now=0.0):
             _seen.add(_key)
             _deduped.append(_a)
     articles = _deduped
+
+    # ── GNews API: targeted geopolitical keyword search (free 100/day, real-time) ──
+    # Set GNEWS_KEY in st.secrets. Queries Iran/Hormuz/oil/war even when RSS feeds miss it.
+    if _GNEWS_KEY:
+        try:
+            _gq  = "Iran OR Hormuz OR \"US troops\" OR \"oil prices\" OR OPEC OR Israel"
+            _gurl = (f"https://gnews.io/api/v4/search?q={urllib.parse.quote(_gq)}"
+                     f"&lang=en&max=10&token={_GNEWS_KEY}")
+            with urllib.request.urlopen(_gurl, timeout=8) as _r:
+                _gdata = _json.loads(_r.read())
+            for _gi in _gdata.get("articles", [])[:10]:
+                _gt = _gi.get("title", "")
+                _sc, _cat, _wt, _note = _keyword_impact(_gt, vix=vix_now)
+                _lbl = "🟢 Bullish" if _sc > 0.1 else ("🔴 Bearish" if _sc < -0.1 else "⚪ Neutral")
+                _pub = (_gi.get("publishedAt", "")[:16]).replace("T", " ")
+                articles.append({
+                    "title": _gt, "source": "GNews",
+                    "time": _pub, "score": _sc, "label": _lbl,
+                    "category": _cat, "impact_weight": _wt, "note": _note,
+                })
+        except Exception:
+            pass
 
     if _AV_KEY and len(articles) < 5:
         try:
@@ -697,7 +736,7 @@ def load_news(vix_now=0.0):
                   "weight": top["impact_weight"], "title": top["title"][:80]} if top["score"] != 0 else None
 
     return {
-        "articles":        articles[:18],   # show up to 18 with 5 feeds
+        "articles":        articles[:25],   # show up to 25 with 10+ feeds
         "composite_score": round(comp, 3),
         "label":           label,
         "bull_pct":        bull_pct,
@@ -3491,7 +3530,7 @@ with _tab_live:
             st.markdown(
                 f'<div style="font-size:10px;color:#475569;margin-bottom:4px">'
                 f'Last fetched: {_fetched_at} · auto-refresh every 90s · '
-                f'{len(articles)} articles from FinancialJuice / ForexLive / Reuters / CNBC / AlJazeera</div>',
+                f'{len(articles)} articles · ForexLive / FinancialJuice / BBC-ME / JPost / AlJazeera / OilPrice / CNBC / AP</div>',
                 unsafe_allow_html=True)
         with _ncol2:
             if st.button("🔄 Refresh News", key="news_refresh", use_container_width=True):
