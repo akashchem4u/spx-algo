@@ -2730,20 +2730,27 @@ with cR:
 
 # ── Compute live_gap, prior_close, and ORB status at module level
 #    (used in Why This Bias, projections, and live accuracy — before tabs)
+# Pre-market: use ES-implied gap (already set at line ~2308); do NOT overwrite with
+# yesterday's session gap (open-prev_close) which is a stale completed bar.
 try:
     _spx_open_  = spx["Open"].squeeze()
     _spx_close_ = spx["Close"].squeeze()
     if isinstance(_spx_open_,  pd.DataFrame): _spx_open_  = _spx_open_.iloc[:,  0]
     if isinstance(_spx_close_, pd.DataFrame): _spx_close_ = _spx_close_.iloc[:, 0]
     if len(_spx_open_) >= 2 and len(_spx_close_) >= 2:
-        live_gap             = round(float(_spx_open_.iloc[-1]) - float(_spx_close_.iloc[-2]), 1)
+        _rth_gap             = round(float(_spx_open_.iloc[-1]) - float(_spx_close_.iloc[-2]), 1)
         _session_prior_close = float(_spx_close_.iloc[-2])
     else:
-        live_gap             = 0.0
+        _rth_gap             = 0.0
         _session_prior_close = spx_price
 except Exception:
-    live_gap             = 0.0
+    _rth_gap             = 0.0
     _session_prior_close = spx_price
+# Use implied ES gap when pre-market; RTH session open gap otherwise
+if _pre_market and live["es_price"]:
+    live_gap = _implied_gap          # already set above; re-assert to be explicit
+else:
+    live_gap = _rth_gap
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
