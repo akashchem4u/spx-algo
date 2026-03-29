@@ -2084,7 +2084,12 @@ with cR:
           {(lambda o: lrow("ORB High", o["high"], "#f87171") + lrow("ORB Low", o["low"], "#4ade80") +
             lrow("Status",
                  f'{"↑ Above" if o["status"]=="above" else "↓ Below" if o["status"]=="below" else "Inside"}',
-                 "#4ade80" if o["status"]=="above" else "#f87171" if o["status"]=="below" else "#94a3b8")
+                 "#4ade80" if o["status"]=="above" else "#f87171" if o["status"]=="below" else "#94a3b8") +
+            lrow("Range", f'{o["range_pts"]} pts  ({round(o["range_pts"]/max(levels["atr"],1)*100)}% ATR)',
+                 "#f59e0b" if _orb_range_atr >= 0.12 else "#475569") +
+            (lrow("Dist/ATR", f'{_orb_distance_atr:.2f}× ATR {"↑" if o["status"]=="above" else "↓"}',
+                  "#4ade80" if o["status"]=="above" else "#f87171")
+             if o["status"] in ("above","below") and _orb_distance_atr > 0 else "")
           )(orb_data) if orb_data.get("valid") else lrow("ORB", "Pre-market / unavailable", "#475569")}
         </div>
       </div>
@@ -2183,13 +2188,22 @@ else:
     _vix_override = "No override"
 _why_rows.append(("VIX Regime", _vix_regime_lbl, _vix_regime_c, _vix_override))
 
-# 3. ORB status
+# 3. ORB status — include width and distance for context
 if orb_data.get("valid"):
-    _orb_lbl = f"{orb_data['status'].capitalize()} range ({orb_data['high']}/{orb_data['low']})"
+    _orb_dist_str = (f"  dist {_orb_distance_atr:.2f}×ATR" if _orb_distance_atr > 0 else "")
+    _orb_narrow_warn = " ⚠ narrow ORB" if 0 < _orb_range_atr < 0.12 else ""
+    _orb_lbl = (f"{orb_data['status'].capitalize()} ({orb_data['high']}/{orb_data['low']})"
+                f"  rng {orb_data['range_pts']}pts ({round(_orb_range_atr*100)}%ATR)"
+                f"{_orb_dist_str}{_orb_narrow_warn}")
     _orb_c = "#4ade80" if orb_data["status"] == "above" else ("#f87171" if orb_data["status"] == "below" else "#64748b")
-    _orb_ov = ("Active post 10 AM: chop→bull" if orb_data["status"] == "above"
-               else "Active post 10 AM: chop→bear" if orb_data["status"] == "below"
-               else "No override (inside ORB)")
+    if 0 < _orb_range_atr < 0.12:
+        _orb_ov = "ORB too narrow — breakout override suppressed"
+    elif orb_data["status"] == "above":
+        _orb_ov = f"Active post 10 AM: chop→bull (+{_orb_distance_atr:.2f}×ATR past edge)"
+    elif orb_data["status"] == "below":
+        _orb_ov = f"Active post 10 AM: chop→bear ({_orb_distance_atr:.2f}×ATR past edge)"
+    else:
+        _orb_ov = "No override (inside ORB)"
 else:
     _orb_lbl, _orb_c, _orb_ov = "ORB unavailable", "#475569", "Pre-market or no data"
 _why_rows.append(("ORB", _orb_lbl, _orb_c, _orb_ov))
