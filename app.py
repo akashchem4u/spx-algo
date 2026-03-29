@@ -860,13 +860,16 @@ def fetch_live():
             results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
             # Overnight range: 4 PM yesterday → 9:30 AM today (ES pre-market)
             # Position in this range = where price sits (0=overnight low, 1=overnight high)
+            # Use wall-clock date (not last-bar date) so Sunday pre-6 PM doesn't anchor
+            # to Thursday's overnight session (last bar = Friday, would pull the wrong night).
             try:
                 es_df.index = es_df.index.tz_convert(EST)
-                _today = es_df.index[-1].date()
+                _today = datetime.now(EST).date()
+                _yesterday = _today - timedelta(days=1)
                 _on = es_df[
                     ((es_df.index.date == _today) & (es_df.index.hour < 9)) |
                     ((es_df.index.date == _today) & (es_df.index.hour == 9) & (es_df.index.minute <= 30)) |
-                    ((es_df.index.date < _today) & (es_df.index.hour >= 16))
+                    ((es_df.index.date == _yesterday) & (es_df.index.hour >= 16))
                 ]
                 if len(_on) >= 4:
                     _h = _on["High"].squeeze()
