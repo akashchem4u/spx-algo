@@ -573,9 +573,18 @@ def load_news(vix_now=0.0):
     def _parse_rss(url, source_name, max_items=12):
         items = []
         try:
+            import ssl as _ssl
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=6) as r:
-                raw = r.read().decode("utf-8", errors="ignore")
+            try:
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    raw = r.read().decode("utf-8", errors="ignore")
+            except _ssl.SSLError:
+                # Fallback: some feeds have cert chain issues on certain hosts
+                _ctx = _ssl.create_default_context()
+                _ctx.check_hostname = False
+                _ctx.verify_mode    = _ssl.CERT_NONE
+                with urllib.request.urlopen(req, timeout=6, context=_ctx) as r:
+                    raw = r.read().decode("utf-8", errors="ignore")
             root = _ET.fromstring(raw)
             ns   = {"atom": "http://www.w3.org/2005/Atom"}
             entries = root.findall(".//item") or root.findall(".//atom:entry", ns)
@@ -594,17 +603,21 @@ def load_news(vix_now=0.0):
             pass
         return items
 
-    # Tier 1: Breaking market + geopolitical news — always fetch all feeds
+    # Tier 1: Breaking market + geopolitical — always fetch all, deduplicate after
+    # ForexLive: fastest on Iran/US military/macro headlines (verified working)
+    articles += _parse_rss("https://www.forexlive.com/feed/news", "ForexLive", max_items=15)
+    # FinancialJuice: real-time breaking market news
     articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice", max_items=15)
-    articles += _parse_rss("https://www.forexlive.com/feed/news", "ForexLive", max_items=12)
-    # Reuters world news — strong for Iran/Middle East/geopolitical
-    articles += _parse_rss("https://feeds.reuters.com/reuters/worldNews", "Reuters", max_items=12)
+    # BBC World: geopolitical depth — Iran/Middle East/war coverage (verified working)
+    articles += _parse_rss("https://feeds.bbci.co.uk/news/world/rss.xml", "BBC", max_items=12)
     # CNBC — broad market coverage
     articles += _parse_rss(
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
         "CNBC", max_items=10)
-    # Al Jazeera — Middle East depth (Iran, oil, regional)
+    # Al Jazeera — Middle East / Iran / Hormuz regional depth (verified working)
     articles += _parse_rss("https://www.aljazeera.com/xml/rss/all.xml", "AlJazeera", max_items=10)
+    # MarketWatch — market/macro headlines (verified working)
+    articles += _parse_rss("https://www.marketwatch.com/rss/topstories", "MarketWatch", max_items=8)
     # Deduplicate by title prefix to avoid same headline from multiple feeds
     _seen = set()
     _deduped = []
