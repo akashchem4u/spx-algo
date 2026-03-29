@@ -658,20 +658,38 @@ ts1 = live.get("es_ts") or "delayed"
 ts2 = live.get("spx_ts") or "delayed"
 
 mc1,mc2,mc3,mc4,mc5,mc6,mc7,mc8 = st.columns(8)
-for col, lbl, val, sub, vc, sc in [
-    (mc1, "SSR Score",      str(score),     f"{rating.split()[0]} {rating.split()[1] if len(rating.split())>1 else ''}", color, "#94a3b8"),
-    (mc2, "SSR Action",     action.split("—")[0].strip(), f"{buys}✅ {sells}❌", color, "#64748b"),
-    (mc3, "ES Futures",     es_display,     chg_str(live["es_change"],live["es_pct"]), "#f1f5f9", es_chg_color),
-    (mc4, "ES Last Tick",   ts1,            "ES=F  24×5", "#94a3b8", "#475569"),
-    (mc5, "SPX",            spx_display,    chg_str(live["spx_change"],live["spx_pct"]), "#f1f5f9", spx_chg_color),
-    (mc6, "VIX",            str(vix_now),   "Fear Index", "#f59e0b" if vix_now>20 else "#4ade80", "#64748b"),
-    (mc7, "ATR (14d)",      str(levels['atr']), f"RSI: {levels['rsi']}", "#94a3b8", "#64748b"),
-    (mc8, "Now",            win_icon,       cur_win[:18], BIAS_TEXT.get(cur_bias,"#94a3b8"), "#64748b"),
+
+# SSR Action: split into short direction + conviction subtitle
+# e.g. "HIGH CONVICTION PUTS" → big="PUTS", conv="HIGH CONVICTION"
+#      "PUTS — STANDARD"      → big="PUTS", conv="STANDARD"
+#      "NO EDGE — WAIT"       → big="WAIT", conv="NO EDGE"
+_act_parts = action.split("—")
+if len(_act_parts) == 2:
+    _act_conv, _act_dir = _act_parts[0].strip(), _act_parts[1].strip()
+elif "PUTS" in action:
+    _act_dir  = "PUTS"
+    _act_conv = action.replace("PUTS","").strip()
+elif "CALLS" in action:
+    _act_dir  = "CALLS"
+    _act_conv = action.replace("CALLS","").strip()
+else:
+    _act_dir  = action
+    _act_conv = ""
+
+for col, lbl, val, sub, vc, sc, fsize in [
+    (mc1, "SSR Score",    str(score),      f"{rating.split()[0]} {rating.split()[1] if len(rating.split())>1 else ''}",  color,  "#94a3b8", "22px"),
+    (mc2, "SSR Action",   _act_dir,        f"<span style='font-size:9px;letter-spacing:.5px'>{_act_conv}</span>&nbsp; {buys}✅{sells}❌", color, "#64748b", "20px"),
+    (mc3, "ES Futures",   es_display,      chg_str(live["es_change"],live["es_pct"]),  "#f1f5f9", es_chg_color,  "18px"),
+    (mc4, "ES Last Tick", ts1,             "ES=F  24×5",                               "#94a3b8", "#475569",     "13px"),
+    (mc5, "SPX",          spx_display,     chg_str(live["spx_change"],live["spx_pct"]),"#f1f5f9", spx_chg_color, "18px"),
+    (mc6, "VIX",          str(vix_now),    "Fear Index",                               "#f59e0b" if vix_now>20 else "#4ade80", "#64748b", "22px"),
+    (mc7, "ATR (14d)",    str(levels['atr']), f"RSI: {levels['rsi']}",                 "#94a3b8", "#64748b",     "18px"),
+    (mc8, "Now",          win_icon,        cur_win[:18],                               BIAS_TEXT.get(cur_bias,"#94a3b8"), "#64748b", "24px"),
 ]:
     with col:
         st.markdown(f'<div class="metric-tile"><div class="metric-label">{lbl}</div>'
-                    f'<div class="metric-val" style="color:{vc};font-size:18px">{val}</div>'
-                    f'<div class="metric-sub" style="color:{sc}">{sub}</div></div>',
+                    f'<div class="metric-val" style="color:{vc};font-size:{fsize};line-height:1.15">{val}</div>'
+                    f'<div class="metric-sub" style="color:{sc};margin-top:3px">{sub}</div></div>',
                     unsafe_allow_html=True)
 
 st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
