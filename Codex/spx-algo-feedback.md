@@ -293,3 +293,28 @@ Convention: 1=bullish, 0=bearish (all signals verified correct)
 
 - The app is adding better research surfaces, but the newest regime/ablation layer should not be trusted yet without a date-alignment fix.
 - The next highest-value work is measurement integrity, not more signals or more UI.
+
+### Resolution (commits b593fd5, 6b52aa2, 7e318d8, fbe26dc, 89e617e — 2026-03-29)
+
+**Audit 3 Item 1 — FIXED:**
+- Sector ETFs now download `period="2y"` in `compute_historical_analysis()`
+- Slice alignment changed from row-index to date-index (`v[v.index <= _cutoff_ts]`)
+
+**Audit 3 Item 2 — FIXED:**
+- Ablation now tracks `t_excl` (preserved directional calls after signal removal)
+- When removing a signal makes call neutral → treated as coverage loss, not a miss
+- `acc_excl` computed on `t_excl` denominator (directional-calls-only accuracy)
+- Ablation table now shows a COVERAGE column (% of directional calls preserved)
+- `Codex/ablation-report.md` includes coverage column and methodology note
+
+**Audit 3 Item 3 — FIXED:**
+- Shadow ledger: flat days AND neutral SSR calls both excluded from accuracy numerator/denominator
+- Display shows `flat days excluded: N · neutral SSR excluded: N` for transparency
+- Per-row CALL and RESULT columns added to ledger table (✅/❌/⚪/—)
+
+**Additional fixes in same batch:**
+- `_is_rth_now` corrected to exclude 9:00–9:29 AM pre-open (was treating it as RTH)
+- Pre-market SPX projections now anchored to implied RTH open (`last_close + implied_gap`)
+- Pre-market banner countdown: shows "Xm to RTH Open" when ES is already trading overnight
+- News taxonomy: expanded US_IRAN_WAR/IRAN_ESCALATION/IRAN_DEESCALATION keywords
+- Pre-market SSR injection: implied gap (ES–SPX) feeds `Gap/ATR Normal` signal when outside RTH
