@@ -98,10 +98,14 @@ Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ## Open Items (Next Agent Plan — see `next-agent-action-plan.md`)
 
-**High priority:**
-1. Walk-forward regime tables (Priority 2) — break day-backtest SSR accuracy by VIX/gap/weekday/event/OpEx. The 2yr window backtest has VIX+gap per window; day-level SSR regime breakdown is missing.
-2. Signal ablation testing (Priority 3) — test which newly-added signals improve accuracy vs add noise. Run baseline + one-signal-at-a-time loop; write report to `Codex/ablation-report.md`.
-3. Shadow ledger needs 30–60 sessions to produce meaningful forward hit-rate numbers (Priority 4, now writing).
+**Completed:**
+1. ✅ Walk-forward regime tables — `compute_historical_analysis()` (24h cached). "📐 Regime Accuracy Breakdown" expander shows VIX/gap/weekday/event/OpEx accuracy from 2yr daily core-SSR walk-forward.
+2. ✅ Signal ablation — "🧬 Signal Ablation Study" expander shows acc with vs without each of 28 core signals; delta in percentage points; ✅ = edge, ⚠️ = noise.
+3. Shadow ledger writing — needs 30–60 sessions to accumulate meaningful forward hit-rate numbers.
+
+**Remaining:**
+- Act on ablation results: signals with persistent negative delta should be removed or downgraded
+- Auto-write ablation summary to `Codex/ablation-report.md` for the other agent to read
 
 **Low priority:**
 1. `_slot_atr` in live accuracy section is flat (`levels["atr"] / 6.5`) — chop classification only, not projection math.

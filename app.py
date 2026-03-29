@@ -1959,6 +1959,137 @@ def compute_group_weights():
     except Exception:
         return {g: 1.0 for g in SIGNAL_GROUPS}
 
+@st.cache_data(ttl=86400)
+def compute_historical_analysis():
+    """
+    2-year daily walk-forward study (Priority 2 + 3).
+    For each trading day from bar 200 onward:
+      - Compute core SSR (closed-bar signals only) on that day's historical slice
+      - Compare predicted direction (score ≥55=bull, ≤44=bear) to next-day SPX move
+      - Bin by VIX regime / gap regime / weekday / event day / OpEx week
+      - Ablation: for each core signal, measure accuracy with vs without it
+    Returns: {regime, ablation, baseline_hits, baseline_total}
+    All computations use equal group weights (1.0) for stability across cache windows.
+    """
+    try:
+        _spx = yf.download("^GSPC", period="2y", interval="1d", progress=False, auto_adjust=True)
+        _vix = yf.download("^VIX",  period="2y", interval="1d", progress=False, auto_adjust=True)
+        _sec = {}
+        for _t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
+            try:
+                _sec[_t] = yf.download(_t, period="1y", interval="1d", progress=False, auto_adjust=True)
+            except Exception:
+                _sec[_t] = pd.DataFrame()
+
+        _close = _spx["Close"].squeeze()
+        _open  = _spx["Open"].squeeze()
+        if isinstance(_close, pd.DataFrame): _close = _close.iloc[:, 0]
+        if isinstance(_open,  pd.DataFrame): _open  = _open.iloc[:, 0]
+        _n = len(_spx)
+
+        # Helper: compute weighted group score from a signals dict (equal weights)
+        def _grp_score(sigs_dict):
+            _ws, _ww = [], []
+            for _gn, _gs in SIGNAL_GROUPS.items():
+                _pr = [sigs_dict[k] for k in _gs if k in sigs_dict]
+                if _pr:
+                    _ws.append(sum(_pr) / len(_pr))
+                    _ww.append(1.0)
+            return round(sum(_ws) / len(_ws) * 100) if _ws else 50
+
+        # Regime accumulators
+        _regime = {
+            "vix":   {"low":{"h":0,"t":0}, "mid":{"h":0,"t":0}, "high":{"h":0,"t":0}},
+            "gap":   {"up": {"h":0,"t":0}, "flat":{"h":0,"t":0}, "down": {"h":0,"t":0}},
+            "dow":   {d: {"h":0,"t":0} for d in range(5)},
+            "event": {"event":{"h":0,"t":0}, "normal":{"h":0,"t":0}},
+            "opex":  {"opex":{"h":0,"t":0},  "normal":{"h":0,"t":0}},
+        }
+        _base_h = 0; _base_t = 0
+        # Ablation: per core signal — hits with all signals vs hits without this signal
+        _core_sigs = [s for s, tr in SIGNAL_TIERS.items() if tr == "core"]
+        _abl = {s: {"h_all":0, "h_excl":0, "t":0} for s in _core_sigs}
+
+        for _i in range(200, _n - 1):
+            try:
+                _spx_sl = _spx.iloc[:_i + 1]
+                _vix_sl = _vix.iloc[:_i + 1]
+                _sec_sl = {k: v.iloc[:_i + 1] for k, v in _sec.items() if not v.empty and len(v) > _i}
+                _dt  = _spx.index[_i].date()
+                _aof = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
+                _sc, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl, as_of_dt=_aof)
+
+                # Use equal-weight group score for core signals only (ablation-consistent)
+                _core_sc = _grp_score({k: v for k, v in _sigs.items() if SIGNAL_TIERS.get(k) == "core"})
+
+                _nxt = float(_close.iloc[_i + 1])
+                _cur = float(_close.iloc[_i])
+                _up  = _nxt > _cur + 5      # >5pt = directional bull
+                _dn  = _nxt < _cur - 5      # >5pt drop = directional bear
+                _bull_call = _core_sc >= 55
+                _bear_call = _core_sc <= 44
+                if not _bull_call and not _bear_call:
+                    continue   # neutral call — no directional claim, skip
+                _correct = (_bull_call and _up) or (_bear_call and _dn)
+
+                _base_t += 1
+                if _correct: _base_h += 1
+
+                # VIX regime
+                _vv = float(_vix_sl["Close"].squeeze().iloc[-1]) if not _vix_sl.empty else 20
+                _vk = "high" if _vv > 25 else ("low" if _vv < 18 else "mid")
+                _regime["vix"][_vk]["t"] += 1
+                if _correct: _regime["vix"][_vk]["h"] += 1
+
+                # Gap regime (today open vs prior close)
+                if _i > 0:
+                    _gp = float(_open.iloc[_i]) - float(_close.iloc[_i - 1])
+                    _gk = "up" if _gp > 10 else ("down" if _gp < -10 else "flat")
+                    _regime["gap"][_gk]["t"] += 1
+                    if _correct: _regime["gap"][_gk]["h"] += 1
+
+                # Weekday
+                _wd = _spx.index[_i].weekday()
+                _regime["dow"][_wd]["t"] += 1
+                if _correct: _regime["dow"][_wd]["h"] += 1
+
+                # Event day
+                _dt_s = _dt.strftime("%Y-%m-%d")
+                _ek = "event" if any(ev[0] == _dt_s for ev in _ECON_CAL) else "normal"
+                _regime["event"][_ek]["t"] += 1
+                if _correct: _regime["event"][_ek]["h"] += 1
+
+                # OpEx week
+                _ok = "opex" if is_opex_week(_dt) else "normal"
+                _regime["opex"][_ok]["t"] += 1
+                if _correct: _regime["opex"][_ok]["h"] += 1
+
+                # Signal ablation — recompute core score without each signal
+                for _sig in _core_sigs:
+                    if _sig not in _sigs: continue
+                    _sigs_excl = {k: v for k, v in _sigs.items()
+                                  if SIGNAL_TIERS.get(k) == "core" and k != _sig}
+                    _sc_excl = _grp_score(_sigs_excl)
+                    _bull_excl = _sc_excl >= 55
+                    _bear_excl = _sc_excl <= 44
+                    _c_all  = _correct
+                    _c_excl = (_bull_excl and _up) or (_bear_excl and _dn)
+                    _abl[_sig]["t"]     += 1
+                    _abl[_sig]["h_all"] += 1 if _c_all  else 0
+                    _abl[_sig]["h_excl"]+= 1 if _c_excl else 0
+            except Exception:
+                continue
+
+        return {
+            "regime": _regime,
+            "ablation": _abl,
+            "baseline_hits": _base_h,
+            "baseline_total": _base_t,
+        }
+    except Exception:
+        return {}
+
+
 _grp_weights = compute_group_weights()
 # Stamp when weights were computed so the UI can show a version, not silently recalculate
 _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session (1h cache)
@@ -2660,6 +2791,125 @@ with _tab_research:
                         f' &nbsp;·&nbsp; acc: <b style="color:#f87171">{_row["Acc%"]}</b> n={_row["n"]}'
                         f'</div>', unsafe_allow_html=True)
             st.dataframe(_bt_df, use_container_width=True, hide_index=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PRIORITY 2: Regime Accuracy Breakdown
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.expander("📐 Regime Accuracy Breakdown — 2yr Walk-Forward (click to expand)", expanded=False):
+        st.caption(
+            "Uses core SSR only (28 backtestable signals, equal group weights). "
+            "Predicted direction: score ≥55 = bull, ≤44 = bear; neutral skipped. "
+            "Actual = next-day SPX close vs today's close (>5 pts = bull, <−5 = bear). "
+            "Run once per day (cached 24h) — first run downloads ~13 tickers."
+        )
+        if st.button("🔬 Run Regime & Ablation Analysis", key="run_ha"):
+            compute_historical_analysis.clear()  # force refresh
+        _ha = compute_historical_analysis()
+        if not _ha:
+            st.warning("Analysis unavailable — needs market data connection.")
+        else:
+            _bt_total = _ha["baseline_total"]
+            _bt_hits  = _ha["baseline_hits"]
+            _bt_base  = int(_bt_hits / _bt_total * 100) if _bt_total else 0
+            _btc      = "#4ade80" if _bt_base >= 60 else ("#f59e0b" if _bt_base >= 50 else "#f87171")
+            st.markdown(
+                f'<div style="font-size:13px;color:#94a3b8;margin-bottom:12px">'
+                f'Overall core-SSR directional accuracy (2yr): '
+                f'<b style="color:{_btc};font-size:16px">{_bt_base}%</b>'
+                f' &nbsp;·&nbsp; n={_bt_total} directional calls</div>',
+                unsafe_allow_html=True)
+
+            def _regime_table(title, buckets, labels):
+                rows = ""
+                for k, lbl in labels:
+                    d = buckets.get(k, {"h":0,"t":0})
+                    if d["t"] < 3: continue
+                    pct = int(d["h"] / d["t"] * 100)
+                    c   = "#4ade80" if pct >= 60 else ("#f59e0b" if pct >= 50 else "#f87171")
+                    bar = f'<div style="flex:1;background:#1e2130;border-radius:3px;height:6px;overflow:hidden"><div style="width:{pct}%;height:100%;background:{c};border-radius:3px"></div></div>'
+                    rows += (f'<tr><td style="padding:4px 10px;font-size:12px;color:#94a3b8">{lbl}</td>'
+                             f'<td style="padding:4px 8px;font-size:13px;font-weight:700;color:{c}">{pct}%</td>'
+                             f'<td style="padding:4px 8px;font-size:11px;color:#475569">n={d["t"]}</td>'
+                             f'<td style="padding:4px 12px;min-width:80px">{bar}</td></tr>')
+                if not rows: return ""
+                return (f'<div style="margin-bottom:12px"><div style="font-size:10px;color:#64748b;letter-spacing:1px;margin-bottom:4px">{title}</div>'
+                        f'<table style="width:100%;border-collapse:collapse">{rows}</table></div>')
+
+            _reg = _ha["regime"]
+            _dow_names = {0:"Monday",1:"Tuesday",2:"Wednesday",3:"Thursday",4:"Friday"}
+            _cols = st.columns(3)
+            with _cols[0]:
+                st.markdown(_regime_table("VIX REGIME", _reg["vix"],
+                    [("low","VIX < 18 (calm)"),("mid","VIX 18–25 (normal)"),("high","VIX > 25 (fear)")]),
+                    unsafe_allow_html=True)
+                st.markdown(_regime_table("GAP REGIME", _reg["gap"],
+                    [("up","Gap Up > 10 pts"),("flat","Flat / Small gap"),("down","Gap Down > 10 pts")]),
+                    unsafe_allow_html=True)
+            with _cols[1]:
+                st.markdown(_regime_table("DAY OF WEEK", _reg["dow"],
+                    [(d, _dow_names[d]) for d in range(5)]), unsafe_allow_html=True)
+            with _cols[2]:
+                st.markdown(_regime_table("EVENT DAY", _reg["event"],
+                    [("event","FOMC / CPI / NFP"),("normal","No major event")]),
+                    unsafe_allow_html=True)
+                st.markdown(_regime_table("OPEX WEEK", _reg["opex"],
+                    [("opex","OpEx week"),("normal","Normal week")]),
+                    unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PRIORITY 3: Signal Ablation Study
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.expander("🧬 Signal Ablation Study — Which Signals Add Edge (click to expand)", expanded=False):
+        st.caption(
+            "For each core signal: compare accuracy WITH vs WITHOUT that signal over the 2yr walk-forward. "
+            "Positive delta = signal helps (removing it hurts accuracy). "
+            "Negative delta = signal may be noise (removing it improves accuracy). "
+            "Uses equal group weights and core signals only. Same cache as regime analysis."
+        )
+        _ha2 = compute_historical_analysis()
+        if not _ha2 or not _ha2.get("ablation"):
+            st.warning("Ablation data unavailable — run the regime analysis first.")
+        else:
+            _abl = _ha2["ablation"]
+            _abl_rows = []
+            for _sig, _ad in _abl.items():
+                if _ad["t"] < 10: continue
+                _acc_all  = int(_ad["h_all"]  / _ad["t"] * 100)
+                _acc_excl = int(_ad["h_excl"] / _ad["t"] * 100)
+                _delta    = _acc_all - _acc_excl
+                _grp_name = next((g for g, sigs in SIGNAL_GROUPS.items() if _sig in sigs), "—")
+                _abl_rows.append((_sig, _grp_name, _acc_all, _acc_excl, _delta, _ad["t"]))
+            # Sort by delta descending (biggest contributors first)
+            _abl_rows.sort(key=lambda x: x[4], reverse=True)
+            if _abl_rows:
+                _tbl_html = ""
+                for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows:
+                    _dc = "#4ade80" if _dlt > 1 else ("#f87171" if _dlt < -1 else "#94a3b8")
+                    _sign = "+" if _dlt >= 0 else ""
+                    _icon = "✅" if _dlt > 1 else ("⚠️" if _dlt < -1 else "➖")
+                    _tbl_html += (
+                        f'<tr style="border-bottom:1px solid #1a1f33">'
+                        f'<td style="padding:4px 10px;font-size:11px">{_icon} {_sig}</td>'
+                        f'<td style="padding:4px 6px;font-size:10px;color:#64748b">{_grp}</td>'
+                        f'<td style="padding:4px 6px;font-size:12px;font-weight:700;color:#94a3b8">{_acc_a}%</td>'
+                        f'<td style="padding:4px 6px;font-size:12px;color:#64748b">{_acc_e}%</td>'
+                        f'<td style="padding:4px 10px;font-size:13px;font-weight:800;color:{_dc}">{_sign}{_dlt}pp</td>'
+                        f'<td style="padding:4px 6px;font-size:10px;color:#475569">n={_n}</td>'
+                        f'</tr>'
+                    )
+                st.markdown(
+                    f'<div style="background:#1e2130;border-radius:10px;padding:12px 14px;overflow-x:auto">'
+                    f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9">'
+                    f'<thead><tr style="background:#0f1117">'
+                    f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">SIGNAL</th>'
+                    f'<th style="padding:5px 6px;text-align:left;color:#64748b;font-size:10px">GROUP</th>'
+                    f'<th style="padding:5px 6px;color:#64748b;font-size:10px">ACC W/ SIG</th>'
+                    f'<th style="padding:5px 6px;color:#64748b;font-size:10px">ACC W/O SIG</th>'
+                    f'<th style="padding:5px 10px;color:#64748b;font-size:10px">DELTA</th>'
+                    f'<th style="padding:5px 6px;color:#64748b;font-size:10px">N</th>'
+                    f'</tr></thead><tbody>{_tbl_html}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                st.caption("✅ = signal adds edge  ⚠️ = may be noise  ➖ = neutral  |  delta >±1pp is meaningful at n≥50")
 
 
 with _tab_live:
