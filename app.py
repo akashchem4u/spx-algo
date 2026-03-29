@@ -2051,7 +2051,8 @@ _base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=ma
 # yesterday's close and is hours stale. 5-min RSI captures live momentum.
 _intra_rsi = fetch_intraday_rsi()
 _is_rth_now = (now_est.weekday() < 5 and
-               (9 <= now_est.hour < 16 or (now_est.hour == 16 and now_est.minute == 0)))
+               now_est.hour < 16 and
+               not (now_est.hour < 9 or (now_est.hour == 9 and now_est.minute < 30)))
 if _intra_rsi is not None and _is_rth_now:
     signals["RSI Above 50"]   = int(_intra_rsi > 50)
     signals["RSI Trend Zone"] = int(45 <= _intra_rsi <= 65)
