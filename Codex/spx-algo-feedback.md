@@ -1,78 +1,92 @@
 # SPX Algo Feedback
 
-Updated: 2026-03-29 (Claude agent session)
+Updated: 2026-03-29 (Claude agent session, morning finalization)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
 
-## Fixed This Session (commits 490f4b5 → effbdaf)
+## Session Summary (commits effbdaf → beca53e)
 
-| Commit | Fix |
-|--------|-----|
-| 490f4b5 | live_gap hoisted above tab blocks, NameError on load fixed |
-| f9cba94 | compute_ssr(as_of_dt), window_bias_at(event_types, weekday), 2yr validation calls window_bias_at(), day backtest passes historical context |
-| 55dc501 | compute_group_weights passes as_of_dt; RSI Strong Trend + VIX Below 15 + Sector Breadth ≥70% gradient signals; regime-aware 0.55/0.45 blend |
-| a10405e | 2yr NameError (gap_val/vix_val read before assign); day backtest as_of_dt; prior_close stored at module level; live accuracy anchored to prior_close not first bar close |
-| effbdaf | Scope labels on all 3 research surfaces (PCR/macro/news/ORB exclusions, slot grids) |
+All original reviewer high and medium items (A–F) have been fixed.
+Major additions this session:
 
----
-
-## Open Items (as of effbdaf)
-
-### High — still worth fixing
-
-**A. Projection math in day backtest still uses flat slot_atr**
-- File: `app.py` in `run_backtest_for_day()`
-- Line: `slot_atr = bt_atr / 6.5` (flat equal distribution)
-- Live SPX path uses adaptive `_atr_profile = [0.28, 0.18, 0.12, 0.08, 0.09, 0.11, 0.09, 0.05]`
-- Impact: day backtest projection errors are larger than live errors because it doesn't front-load morning vol
-- Fix: use the same adaptive ATR profile in `run_backtest_for_day()`
-
-**B. 5m RSI override is live-only, not in backtest**
-- File: `app.py:1625` (live) vs `run_backtest_for_day()` (historical)
-- Live page replaces `RSI Above 50` and `RSI Trend Zone` signals with intraday 5m RSI during RTH
-- Historical backtest still uses daily RSI for all slots including the morning ones
-- This makes the model different between live and research
-- Fix option 1: add historical 5m RSI computation to the day backtest (complex)
-- Fix option 2: label the live SSR card as "includes intraday RSI override" and the backtest as "daily RSI only" (simple, honest)
-- Recommendation: option 2 for now, option 1 when you have time
-
-**C. Projection mean-reversion dampener (0.015) is never calibrated**
-- File: `app.py` in both `generate_es_projections()` and `generate_spx_projections()`
-- The `-_drift * 0.015` reversion factor is a constant, not calibrated to observed reversion speed by regime
-- Low priority but worth noting for the calibration pass
-
-### Medium — quality improvements
-
-**D. A/D ratio from macro uses spot data (^ADVN/^DECL) which is session-only**
-- Historical days don't have historical A/D ratio data from yfinance
-- The `A/D Line Positive` signal is live-only in practice
-- Label it, or remove from historical scoring
-
-**E. Weekly projection has no backtest surface**
-- `generate_weekly_projections()` uses DOW tendencies and SSR exhaustion
-- No historical validation at all — users have no way to assess its accuracy
-- Recommendation: add a simple rolling 5-week accuracy table in Research tab
-
-**F. UW_TOKEN is hardcoded in app.py (line ~2301)**
-- Should be `st.secrets["UW_TOKEN"]` or from env — currently exposed in plain text
+| Commit | Change |
+|--------|--------|
+| b855d97 | Adaptive ATR in day backtest; UW_TOKEN → st.secrets; regime blend |
+| 351bf08 | VIX 3d signals; Gap/ATR Normal; weekly SSR accuracy table |
+| 08a2d01 | 52w range signals; Above BB Mid; regime-aware reversion dampener |
+| 1059838 | ORB width guard (narrow ORB suppressed); VIX 1d Down; Above Prior Day High; _orb_range_atr |
+| 8845faa | Above Pivot; Above 5d High signals |
+| c509585 | Sector Breadth ≥ 85% (3rd tier); Codex feedback rewritten |
+| b888859 | ORB distance momentum boost in projections (continuous ORB size signal) |
+| 6323c1c | ORB range width and Dist/ATR displayed in UI cards |
+| c6e53f4 | Overnight ES range position signal + Why This Bias display |
+| c24a2b9 | Fix VIX 3d Spike direction bug → renamed VIX No Spike (inverted) |
+| beca53e | Group score breakdown bar chart in Signal Breakdown expander |
 
 ---
 
-## Recommended Next Fix Order
+## Original Items — All Resolved
 
-1. Fix flat slot_atr in day backtest (use adaptive profile) — high accuracy value
-2. Add "includes intraday RSI override" label to live SSR card
-3. Label A/D ratio as live-only in signal breakdown
-4. Fix UW_TOKEN to use st.secrets
-5. Add weekly projection 5-week accuracy table
+**A. Projection math in day backtest** — FIXED (b855d97): adaptive ATR profile used in both live and backtest.
+
+**B. 5m RSI override label** — IMPLEMENTED: signal breakdown shows `(5m)` badge; live SSR card shows "📡 Intraday RSI (5m): X — live signal active".
+
+**C. Mean-reversion dampener** — FIXED (08a2d01): regime-aware `_rev_rate` = 0.008 (hi-VIX), 0.020 (lo-VIX), 0.015 (default).
+
+**D. A/D ratio live-only label** — IMPLEMENTED: `(live-only)` badge shown in signal breakdown for A/D Line Positive, Yield Curve, Credit Spread Calm, and now also for overnight signals.
+
+**E. Weekly projection backtest** — FIXED (351bf08): 20-week SSR accuracy table added in Research tab.
+
+**F. UW_TOKEN hardcoded** — FIXED (b855d97): now `st.secrets.get("UW_TOKEN", "")`.
 
 ---
 
-## Notes to Codex agent
+## Signal Inventory (current state)
 
-- The gap_val/vix_val NameError was critical — the 2-year table was returning empty for every session. Now fixed.
-- The prior_close anchor for live accuracy was also a meaningful bug — the 09:30 slot was always "chop" before.
-- Scope labels are now honest and accurate. No false claims of "full live model" in research paths.
-- The main remaining work is projection accuracy (adaptive ATR in backtest) and RSI override labeling.
-- Do not re-fix anything in the committed list above unless you find a new bug.
+```
+Trend (4):     Above 20/50/200 SMA, 20 SMA > 50 SMA
+Momentum (5):  Higher Close 1d/5d, RSI Above 50, MACD Bullish, RSI Strong Trend
+Volatility (6): VIX Below 20/15, VIX Falling, ATR Contracting, VIX 3d Relief, VIX 1d Down
+Breadth (5):   Volume Above Avg, Sector Breadth ≥50/70/85%, A/D Line Positive
+Extremes (2):  Stoch Bullish, RSI Trend Zone
+Options (2):   Put/Call Fear Premium, Put/Call Fear Abating
+Macro (2):     Yield Curve Positive, Credit Spread Calm
+Context (4):   Gap/ATR Normal, VIX No Spike, Above Overnight Midpoint, Overnight Upper Third
+Position (6):  52w Range Upper Half/Top 20%, Above BB Mid, Above Prior Day High, Above Pivot, Above 5d High
+```
+
+Live-only signals: A/D Line Positive, Yield Curve Positive, Credit Spread Calm,
+                   Above Overnight Midpoint, Overnight Upper Third
+RTH-override: RSI Above 50, RSI Trend Zone (replaced by intraday 5m RSI during market hours)
+
+---
+
+## Remaining Items
+
+### Medium
+
+**1. ORB width signal in backtest window_bias_at calls**
+- Backtest day view calls `window_bias_at()` without `orb_range_atr` — the narrow ORB guard doesn't apply
+- This is acceptable: backtest doesn't have intraday ORB data anyway; the guard is live-only
+- Status: no action needed; label it "live ORB guard" if needed
+
+**2. VIX No Spike default in historical backtest**
+- `sigs["VIX No Spike"] = 1` when `len(vix_c) < 4` (insufficient history)
+- In backtest paths, this could default to 1 even when historical VIX data shows a spike
+- Low impact: the backtests use at most 30-bar VIX data, so this is very rarely hit
+- Status: acceptable default for now
+
+**3. _slot_atr in live accuracy section is flat (levels["atr"] / 6.5)**
+- Line ~3139 in live accuracy section uses flat ATR per slot as chop threshold
+- This is for categorical classification (chop/bull/bear), not projection math
+- Adaptive threshold would slightly improve chop detection in morning slots
+- Low priority
+
+### Notes
+
+- VIX 3d Spike was a direction bug (1=bullish in scoring but spike=bearish in reality).
+  Fixed by inverting: VIX No Spike = 1 when no spike (calm = bull).
+- All signals now correctly follow convention: 1=bullish, 0=bearish.
+- Group score breakdown bar chart added to Signal Breakdown expander.
+- Overnight ES range position is live-only; fully integrated into SSR Context group.
