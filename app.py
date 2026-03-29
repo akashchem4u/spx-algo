@@ -244,11 +244,15 @@ _EVENT_COLOR = {"HIGH":"#f87171","MED":"#f59e0b"}
 #   Geopolitical war      → safe-haven flow + oil/commodity spike               = 3.0
 _NEWS_IMPACTS = [
     # ── OIL / ENERGY (causal chain: oil → CPI → Fed → equity) ───────────────
-    (["strait of hormuz","hormuz block","hormuz clos","iran oil","oil tanker attack",
-      "oil supply disruption","opec cut","opec produc cut","oil embargo",
-      "oil facility attack","saudi oil","pipeline attack"],
-     "OIL_SUPPLY_SHOCK", 3.5, "any", "bear",
-     "Oil supply shock → oil spike → CPI surge → Fed hawkish → bearish"),
+    # Hormuz closure is a 4.0 event: ~20% of global oil supply at risk immediately.
+    (["strait of hormuz","hormuz block","hormuz clos","hormuz shut","hormuz seized",
+      "iran closes hormuz","iran blocks hormuz","iran threatens hormuz",
+      "hormuz tanker","iran oil tanker","iran seize tanker",
+      "oil supply disruption","oil tanker attack","iran oil block",
+      "opec cut","opec produc cut","oil embargo","oil facility attack",
+      "saudi oil","pipeline attack","iran oil"],
+     "OIL_SUPPLY_SHOCK", 4.0, "any", "bear",
+     "Hormuz/oil supply shock → ~20% global supply risk → oil spike → CPI surge → Fed hawkish → bearish"),
 
     # Supply-surplus driven drop: OPEC hike, glut, oversupply → inflation relief → BULLISH
     (["oil drops","oil falls","oil tumble","oil plunge","oil collaps","crude falls",
@@ -279,16 +283,28 @@ _NEWS_IMPACTS = [
      "Oil spike → inflation re-acceleration → Fed stays restrictive → bearish"),
 
     # ── IRAN / MIDDLE EAST ───────────────────────────────────────────────────
+    # US direct military engagement with Iran is a step-change escalation:
+    # oil route closure + carrier group + risk-off across all asset classes.
+    (["us troops iran","us boots iran","us military iran","us ground troops iran",
+      "us invad iran","us strikes iran","us attack iran","us bombs iran",
+      "american troops iran","boots on the ground iran","us iran war",
+      "us iran conflict","us deploys iran","pentagon iran","us forces iran"],
+     "US_IRAN_WAR", 4.5, "any", "bear",
+     "US direct military engagement with Iran → Hormuz closure + oil spike + war premium → sharply bearish"),
+
     (["iran attack","iran missile","iran nuclear","israel iran","iran war",
       "iran strikes","iran retaliat","iran threaten","iran sanction new",
-      "iran oil block","hezbollah","hamas attack","iran-backed"],
-     "IRAN_ESCALATION", 3.0, "any", "bear",
-     "Iran conflict → Hormuz risk + oil spike + safe-haven flows → bearish"),
+      "iran oil block","hezbollah","hamas attack","iran-backed",
+      "israel strikes iran","israel bombs iran","idf iran"],
+     "IRAN_ESCALATION", 3.5, "any", "bear",
+     "Iran/Israel conflict → Hormuz risk + oil spike + safe-haven flows → bearish"),
 
     (["iran deal","iran nuclear deal","iran sanction lift","iran ceasefire",
-      "iran agreement","iran talks","iran diplomacy"],
-     "IRAN_DEESCALATION", 2.5, "any", "bull",
-     "Iran de-escalation → Hormuz open + oil supply relief → bullish"),
+      "iran agreement","iran us talks","iran diplomacy","iran negotiat",
+      "iran peace","iran nuclear framework","us iran diplomacy",
+      "iran withdraw","iran comply"],
+     "IRAN_DEESCALATION", 3.0, "any", "bull",
+     "Iran de-escalation → Hormuz open + oil supply relief + war premium unwind → bullish"),
 
     # ── BROADER GEOPOLITICAL ─────────────────────────────────────────────────
     (["russia attack","russia missile","russia ukraine escal","russia nato",
@@ -301,22 +317,19 @@ _NEWS_IMPACTS = [
      "CHINA_TAIWAN", 3.0, "any", "bear",
      "Taiwan tension → semiconductor supply chain collapse + tech selloff → sharply bearish"),
 
-    # ── INDIA / PAKISTAN ─────────────────────────────────────────────────────
-    (["india pakistan war","india pakistan conflict","india pakistan attack",
-      "india pakistan strike","india pakistan nuclear","pakistan missile",
-      "islamabad attack","india pakistan escalat","line of control attack",
-      "kashmir war","kashmir conflict","pakistan india tension","india pakistan clashes"],
-     "INDIA_PAKISTAN_ESCALATION", 2.5, "any", "bear",
-     "India-Pakistan conflict → nuclear risk premium + EM flight + oil route disruption → bearish"),
-
-    (["india pakistan peace","india pakistan talks","india pakistan ceasefire",
-      "islamabad talks","india pakistan deal","india pakistan truce",
-      "kashmir peace","india pakistan de-escalat","india pakistan diplomacy"],
-     "INDIA_PAKISTAN_DEESCALATION", 2.0, "any", "bull",
-     "India-Pakistan de-escalation → South Asia stability + EM risk-on → bullish"),
+    # ── PAKISTAN MEDIATION / MIDDLE EAST PEACE ───────────────────────────────
+    # Pakistan is currently mediating Iran-US/Israel talks. Progress here is bullish:
+    # war premium unwind + oil relief + risk-on. Treat mediator breakthrough = de-escalation.
+    (["pakistan mediat","islamabad mediat","pakistan broker","pakistan peace talks",
+      "pakistan facilitate","pakistan shuttle","islamabad summit","pakistan diplomacy iran",
+      "pakistan iran us talks","pakistan help iran","pakistan peace deal",
+      "islamabad peace","pakistan negotiat ceasefire"],
+     "PAKISTAN_MEDIATION_PROGRESS", 2.5, "any", "bull",
+     "Pakistan brokering Iran-US/Israel peace → war premium unwind + oil relief → bullish"),
 
     (["ceasefire","peace deal","de-escalat","peace agreement","hostage deal",
-      "conflict ends","war ends","truce signed","peace talks succeed"],
+      "conflict ends","war ends","truce signed","peace talks succeed",
+      "iran ceasefire","iran truce","middle east ceasefire","iran deal reached"],
      "GEO_DEESCALATION", 2.5, "any", "bull",
      "Conflict resolution → risk-on + commodity price relief → bullish"),
 
