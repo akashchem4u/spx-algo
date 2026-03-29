@@ -623,8 +623,20 @@ def load_news(vix_now=0.0):
                 title_el = entry.find("title")
                 title = (title_el.text or "").strip() if title_el is not None else ""
                 if not title: continue
-                pub_el = entry.find("pubDate") or entry.find("published")
-                pub    = (pub_el.text or "")[:25] if pub_el is not None else ""
+                pub_el  = entry.find("pubDate") or entry.find("published") or entry.find("updated")
+                _pub_raw = (pub_el.text or "").strip() if pub_el is not None else ""
+                # Normalize to sortable "YYYY-MM-DD HH:MM" regardless of RSS/Atom/ISO source format.
+                # RSS pubDate: "Sun, 29 Mar 2026 18:45:00 GMT"  → use email.utils
+                # ISO Atom:    "2026-03-29T18:45:00Z"           → strip T/Z
+                pub = ""
+                if _pub_raw:
+                    try:
+                        import email.utils as _eu
+                        _pt = _eu.parsedate_to_datetime(_pub_raw)
+                        pub = _pt.strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        # Fallback: strip T and Z from ISO format
+                        pub = _pub_raw[:16].replace("T", " ").replace("Z", "")
                 score, cat, wt, note = _keyword_impact(title, vix=vix_now)
                 label = "🟢 Bullish" if score > 0.1 else ("🔴 Bearish" if score < -0.1 else "⚪ Neutral")
                 items.append({"title": title, "source": source_name,
@@ -1941,21 +1953,47 @@ def run_extended_window_backtest():
         return {}
 
 
-def windows_html(now_hhmm, win_acc=None):
+def windows_html(now_hhmm, win_acc=None, cur_vix=0.0, cur_gap=0.0):
+    """Render window strip. Shows regime-specific hit rate when cur_vix/cur_gap are known."""
     rows = []
+    # Determine current regime keys to look up context-specific accuracy
+    _vix_key = ("vix_high" if cur_vix > VIX_FEAR_THRESHOLD
+                else "vix_low" if (0 < cur_vix < VIX_CALM_THRESHOLD)
+                else "vix_mid")
+    _gap_key = ("gap_up"   if cur_gap > GAP_THRESHOLD
+                else "gap_down" if cur_gap < -GAP_THRESHOLD
+                else "gap_flat")
+    _regime_known = cur_vix > 0
+
     for s, e, lbl, b in TIME_WINDOWS:
         is_now = s <= now_hhmm < e
         now_badge = '<span class="win-now">NOW</span>' if is_now else ""
         row_style = 'background:#1a2744;border-radius:6px;' if is_now else ""
-        # Historical accuracy badge — look up base label in 2yr backtest stats
         acc_badge = ""
         if win_acc and lbl in win_acc:
-            _ws = win_acc[lbl]
+            _ws  = win_acc[lbl]
             _tot = _ws.get("total", 0)
             if _tot >= 20:
-                _pct = round(_ws["correct"] / _tot * 100)
-                _ac = "#4ade80" if _pct >= 60 else ("#f87171" if _pct < 45 else "#94a3b8")
-                acc_badge = f'<span class="win-acc" style="color:{_ac}">{_pct}% avg</span>'
+                _avg_pct = round(_ws["correct"] / _tot * 100)
+                # Prefer regime-specific hit rate when current VIX+gap are known
+                _regime_pct = None
+                if _regime_known:
+                    _vk = _ws.get(_vix_key, {})
+                    _gk = _ws.get(_gap_key, {})
+                    # Use whichever sub-regime has enough samples (prefer VIX since it's more powerful)
+                    if _vk.get("t", 0) >= 10:
+                        _regime_pct = round(_vk["c"] / _vk["t"] * 100)
+                    elif _gk.get("t", 0) >= 10:
+                        _regime_pct = round(_gk["c"] / _gk["t"] * 100)
+                if _regime_pct is not None:
+                    _rc = "#4ade80" if _regime_pct >= 60 else ("#f87171" if _regime_pct < 45 else "#94a3b8")
+                    _ac = "#475569"
+                    _regime_lbl = _vix_key.replace("vix_","VIX ").replace("_"," ") if _vk.get("t",0) >= 10 else _gap_key.replace("_"," ")
+                    acc_badge = (f'<span class="win-acc" style="color:{_rc};font-weight:700">{_regime_pct}%</span>'
+                                 f'<span class="win-acc" style="color:{_ac};font-size:9px"> ({_avg_pct}% avg)</span>')
+                else:
+                    _ac = "#4ade80" if _avg_pct >= 60 else ("#f87171" if _avg_pct < 45 else "#94a3b8")
+                    acc_badge = f'<span class="win-acc" style="color:{_ac}">{_avg_pct}% avg</span>'
         rows.append(
             f'<div class="window-row" style="{row_style}">'
             f'<span class="win-time">{to_ampm(s)}–{to_ampm(e)}</span>'
@@ -2627,7 +2665,7 @@ with cM:
     <div class="card">
       <h3>Intraday Windows — ES &amp; SPX (EST)</h3>
       {now_badge_html}
-      {windows_html(now_hhmm, win_acc=_live_win_acc)}
+      {windows_html(now_hhmm, win_acc=_live_win_acc, cur_vix=vix_now, cur_gap=live_gap)}
     </div>
     """, unsafe_allow_html=True)
 
@@ -3224,9 +3262,22 @@ with _tab_live:
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
     es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
-    # Pre-market: anchor SPX projection to implied open (last_close + implied_gap) so the
-    # table shows the expected path from the actual RTH open, not from yesterday's close.
-    _spx_proj_base = _proj_spx_open if (_pre_market and _proj_spx_open is not None) else spx_price
+    # Pre-market SPX anchor: use ES's projected price at the last overnight slot
+    # (just before RTH begins at 9 AM) so both tables start from the same
+    # overnight-drift-adjusted level, not from the stale current-ES implied open.
+    # Without this, ES accumulates 15h of overnight drift while SPX resets to
+    # today's implied open — causing a 60-100 pt divergence by 9:30 AM.
+    _spx_proj_base = spx_price
+    if _pre_market and live["es_price"] and es_rows:
+        _es_rth_anchor = None
+        for _ei, _er in enumerate(es_rows):
+            if _er.get("session") == "RTH":
+                # Use the price from the slot BEFORE the first RTH slot
+                # = where ES is at the overnight→RTH transition
+                if _ei > 0:
+                    _es_rth_anchor = es_rows[_ei - 1]["price"]
+                break
+        _spx_proj_base = _es_rth_anchor if _es_rth_anchor is not None else (_proj_spx_open or spx_price)
     spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
     colA, colB = st.columns(2)
@@ -3265,19 +3316,21 @@ with _tab_live:
 
     with colB:
         spx_rows_html = ""
-        # Pre-market: prepend an anchor row showing the projected RTH open price.
-        # This makes clear that the model starts from _proj_spx_open (e.g. 6,412.3),
-        # not from the first slot's end price (e.g. 6,371.5 after open volatility move).
-        if _pre_market and _proj_spx_open is not None:
-            _gap_c_row = "#4ade80" if _implied_gap >= 0 else "#f87171"
-            _gap_sign  = "+" if _implied_gap >= 0 else ""
+        # Pre-market: prepend an anchor row showing where the model starts SPX from.
+        # Uses ES overnight-drift-adjusted price (not stale current implied open)
+        # so the anchor matches where ES will be when RTH actually opens.
+        if _pre_market and live["es_price"]:
+            _anc = _spx_proj_base
+            _anc_delta = round(_anc - levels["current"], 1)
+            _gap_c_row = "#4ade80" if _anc_delta >= 0 else "#f87171"
+            _gap_sign  = "+" if _anc_delta >= 0 else ""
             spx_rows_html += f"""
             <tr style="background:#0a1a0a;border-bottom:2px solid #1e3a1e">
               <td style="padding:5px 10px;color:#64748b;font-size:11px">RTH Open (proj)</td>
-              <td style="padding:5px 10px;font-weight:800;font-size:14px;color:{_gap_c_row}">{_proj_spx_open:,}</td>
-              <td style="padding:5px 8px;font-size:11px;color:{_gap_c_row}">{_gap_sign}{_implied_gap:.1f}</td>
-              <td style="padding:5px 8px;font-size:10px;color:#475569">implied gap</td>
-              <td style="padding:5px 10px;font-size:10px;color:#475569">ES {es_price:,.1f} vs close {levels['current']:,.1f}</td>
+              <td style="padding:5px 10px;font-weight:800;font-size:14px;color:{_gap_c_row}">{_anc:,.1f}</td>
+              <td style="padding:5px 8px;font-size:11px;color:{_gap_c_row}">{_gap_sign}{_anc_delta:.1f}</td>
+              <td style="padding:5px 8px;font-size:10px;color:#475569">ES overnight-adj</td>
+              <td style="padding:5px 10px;font-size:10px;color:#475569">ES {es_price:,.1f} · close {levels['current']:,.1f}</td>
             </tr>"""
         for r in spx_rows:
             bg   = "#111827" if r["past"] else BIAS_BG.get(r["win_bias"], "#1e293b")
