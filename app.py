@@ -134,32 +134,268 @@ _ECON_CAL = [
 _EVENT_ICON  = {"FOMC":"🏦","CPI":"📊","NFP":"👷","PPI":"🏭","GDP":"📈"}
 _EVENT_COLOR = {"HIGH":"#f87171","MED":"#f59e0b"}
 
-# ── Keyword scoring weights ───────────────────────────────────────────────────
-# Trump/Policy keywords that move SPX — scored bearish/bullish
-_BEAR_KEYWORDS = {
-    "tariff":2.0,"tariffs":2.0,"trade war":2.5,"sanction":1.5,"sanctions":1.5,
-    "recession":2.0,"default":2.0,"crash":1.5,"plunge":1.5,"collapse":2.0,
-    "rate hike":1.5,"hawkish":1.5,"tighten":1.0,
-    "sell off":1.5,"selloff":1.5,"drop":1.0,"fall":1.0,"decline":1.0,
-    "miss":1.0,"below expect":1.5,"weak":1.0,"worsen":1.0,"fear":1.0,
-    "inflation":1.0,"geopolit":1.5,"war":1.5,"conflict":1.5,"attack":1.5,
-    "shutdown":1.5,"debt ceiling":2.0,"downgrade":2.0,
-}
-_BULL_KEYWORDS = {
-    "rate cut":2.0,"dovish":1.5,"easing":1.5,"stimulus":1.5,
-    "beat":1.5,"above expect":1.5,"strong":1.0,"surge":1.5,"rally":1.5,
-    "record":1.0,"recovery":1.5,"deal":1.5,"trade deal":2.0,"truce":2.0,
-    "ceasefire":1.5,"resolution":1.0,"boost":1.0,"gain":1.0,"rise":0.8,
+# ── Causal-Chain News Impact Taxonomy ────────────────────────────────────────
+# Each entry: (phrase_list, category, base_weight, vix_regime, spx_dir, causal_note)
+# vix_regime: "any" | "high_vix" (>25) | "low_vix" (<18)
+# spx_dir:    "bull" | "bear" | "context" (regime-dependent — scored at runtime)
+#
+# WEIGHT RATIONALE (1.0 = moderate, 2.0 = significant, 3.0+ = market-moving):
+#   Oil supply disruption → oil spike → CPI → Fed hawkish → sell equity       = 3.5
+#   Tariff announcement   → supply cost + retaliation → earnings hit           = 3.5
+#   Bank failure          → systemic risk + credit freeze                       = 4.0
+#   Fed rate cut          → risk premium compressed + multiple expansion        = 3.0
+#   Geopolitical war      → safe-haven flow + oil/commodity spike               = 3.0
+_NEWS_IMPACTS = [
+    # ── OIL / ENERGY (causal chain: oil → CPI → Fed → equity) ───────────────
+    (["strait of hormuz","hormuz block","hormuz clos","iran oil","oil tanker attack",
+      "oil supply disruption","opec cut","opec produc cut","oil embargo",
+      "oil facility attack","saudi oil","pipeline attack"],
+     "OIL_SUPPLY_SHOCK", 3.5, "any", "bear",
+     "Oil supply shock → oil spike → CPI surge → Fed hawkish → bearish"),
+
+    (["oil drops","oil falls","oil tumble","oil plunge","oil collaps","crude falls",
+      "crude drops","crude plunge","oil prices fall","opec increas output",
+      "opec produc hike","oil glut","oil oversupply","oil supply surge",
+      "oil below","wti drops","brent drops"],
+     "OIL_DROP", 2.5, "any", "bull",
+     "Oil drop → deflation relief → rate cut room → multiple expansion → bullish"),
+
+    (["oil spike","oil surges","oil jumps","crude surges","oil hits","crude jumps",
+      "oil prices rise","oil prices surge","wti rises","brent rises","oil rally"],
+     "OIL_SPIKE", 2.5, "any", "bear",
+     "Oil spike → inflation re-acceleration → Fed stays restrictive → bearish"),
+
+    # ── IRAN / MIDDLE EAST ───────────────────────────────────────────────────
+    (["iran attack","iran missile","iran nuclear","israel iran","iran war",
+      "iran strikes","iran retaliat","iran threaten","iran sanction new",
+      "iran oil block","hezbollah","hamas attack","iran-backed"],
+     "IRAN_ESCALATION", 3.0, "any", "bear",
+     "Iran conflict → Hormuz risk + oil spike + safe-haven flows → bearish"),
+
+    (["iran deal","iran nuclear deal","iran sanction lift","iran ceasefire",
+      "iran agreement","iran talks","iran diplomacy"],
+     "IRAN_DEESCALATION", 2.5, "any", "bull",
+     "Iran de-escalation → Hormuz open + oil supply relief → bullish"),
+
+    # ── BROADER GEOPOLITICAL ─────────────────────────────────────────────────
+    (["russia attack","russia missile","russia ukraine escal","russia nato",
+      "nuclear threat","nuclear strike","russia invad"],
+     "RUSSIA_GEO", 2.5, "any", "bear",
+     "Russia escalation → energy supply risk + European recession fears → bearish"),
+
+    (["china taiwan","taiwan strait","taiwan tension","china threaten taiwan",
+      "china military taiwan","pla taiwan","china invad taiwan"],
+     "CHINA_TAIWAN", 3.0, "any", "bear",
+     "Taiwan tension → semiconductor supply chain collapse + tech selloff → sharply bearish"),
+
+    (["ceasefire","peace deal","de-escalat","peace agreement","hostage deal",
+      "conflict ends","war ends","truce signed","peace talks succeed"],
+     "GEO_DEESCALATION", 2.5, "any", "bull",
+     "Conflict resolution → risk-on + commodity price relief → bullish"),
+
+    # ── TRADE / TARIFFS ──────────────────────────────────────────────────────
+    (["new tariff","tariff hike","tariff increas","tariff imposed","tariff announc",
+      "trade war escal","trade war widen","tariff expand","trump tariff",
+      "china tariff","reciprocal tariff","tariffs on","tariff threat",
+      "section 301","section 232","import tax","import duty"],
+     "TARIFF_BEARISH", 3.5, "any", "bear",
+     "Tariffs → supply chain costs + retaliation risk + margin compression → bearish"),
+
+    (["tariff pause","tariff delay","tariff exempt","tariff cut","tariff reduc",
+      "trade deal","trade agreement","trade truce","tariff remov","tariff drop",
+      "tariff lift","trade war end","trade war resolv","tariff rollback",
+      "tariff suspend"],
+     "TARIFF_BULLISH", 3.5, "any", "bull",
+     "Tariff relief → supply chain normalization + margin recovery + risk-on → bullish"),
+
+    # ── FED / MONETARY POLICY ────────────────────────────────────────────────
+    (["rate cut","fed cuts","fed lower","dovish","interest rate cut",
+      "powell dovish","fed pivot","easing cycle","quantitative easing",
+      "qe restart","fed ease","accommodative","cut rates"],
+     "FED_DOVISH", 3.0, "any", "bull",
+     "Fed dovish → lower discount rate + risk premium shrinks + liquidity → bullish"),
+
+    (["rate hike","fed hikes","fed rais","hawkish","interest rate hike",
+      "powell hawkish","tighten","quantitative tighten","qt",
+      "higher for longer","rates stay high","no cut","delay cut",
+      "hold rates"],
+     "FED_HAWKISH", 3.0, "any", "bear",
+     "Fed hawkish → higher discount rate + multiple compression + credit cost → bearish"),
+
+    # ── INFLATION DATA ───────────────────────────────────────────────────────
+    (["cpi hot","cpi above","inflation accelerat","cpi beat","inflation surges",
+      "hotter than expect","core cpi rise","inflation uptick","inflation sticky",
+      "pce hot","pce above","pce beat"],
+     "CPI_HOT", 3.0, "any", "bear",
+     "Hot CPI/PCE → Fed can't cut → discount rate stays elevated → bearish"),
+
+    (["cpi cool","cpi below","inflation slow","cpi miss","cpi drop",
+      "cooler than expect","core cpi fall","disinflation","deflation",
+      "pce cool","pce below","pce miss"],
+     "CPI_COOL", 3.0, "any", "bull",
+     "Cool CPI/PCE → rate cut path opens → equity multiples expand → bullish"),
+
+    # ── JOBS / LABOR (VIX-regime dependent) ─────────────────────────────────
+    # High VIX = recession fear dominant: strong jobs = relief = BULL
+    # Low/normal VIX = rate cycle dominant: strong jobs = Fed won't cut = BEAR
+    (["jobs beat","nfp beat","payroll beat","strong jobs","jobs surge",
+      "unemployment fall","jobless claims low","labor market strong",
+      "adp beat","private payroll beat"],
+     "JOBS_STRONG", 2.0, "any", "context",
+     "Strong jobs: BULL when VIX>22 (recession relief), BEAR when VIX<22 (Fed won't cut)"),
+
+    (["jobs miss","nfp miss","payroll miss","weak jobs","jobs disappoint",
+      "unemployment rises","layoffs surge","jobless claims high",
+      "jobs below","labor market weak","mass layoff","job cuts"],
+     "JOBS_WEAK", 2.0, "any", "context",
+     "Weak jobs: BEAR when VIX>22 (confirms recession), BULL when VIX<22 (rate cut hope)"),
+
+    # ── BANKING / SYSTEMIC RISK ──────────────────────────────────────────────
+    (["bank failure","bank collaps","bank run","credit crunch","bank crisis",
+      "banking stress","fdic seizes","bank default","bank bailout needed",
+      "bank insolvency","contagion","systemic risk"],
+     "BANK_CRISIS", 4.0, "any", "bear",
+     "Bank failure → systemic credit freeze + contagion risk → sharply bearish"),
+
+    (["credit downgrade","us downgrade","sovereign downgrade","moody downgrade",
+      "fitch downgrade","sp downgrade","debt downgrade"],
+     "CREDIT_DOWNGRADE", 2.5, "any", "bear",
+     "Credit downgrade → risk premium rises + dollar falls + rates spike → bearish"),
+
+    # ── FISCAL / POLITICAL ───────────────────────────────────────────────────
+    (["government shutdown","shutdown begins","congress fail","debt ceiling",
+      "default risk","us default","fiscal cliff","budget impasse"],
+     "FISCAL_CRISIS", 2.5, "any", "bear",
+     "Fiscal crisis → policy uncertainty + credit risk premium → bearish"),
+
+    (["debt ceiling raised","shutdown avert","budget deal","fiscal deal",
+      "congress passes","stimulus package","spending bill","bipartisan"],
+     "FISCAL_RESOLUTION", 2.0, "any", "bull",
+     "Fiscal resolution → uncertainty removed + policy clarity → bullish"),
+
+    # ── TREASURY YIELDS / DOLLAR ─────────────────────────────────────────────
+    (["yield spike","yields surge","yields jump","10-year yield","treasury yield spike",
+      "bond selloff","yield curve invert","rates spike","10yr spike"],
+     "YIELD_SPIKE", 2.0, "any", "bear",
+     "Yield spike → discount rate rises → equity valuation compressed → bearish"),
+
+    (["yield falls","yields drop","yields decline","bond rally","yield drops",
+      "treasury rally","rates fall","bond prices rise"],
+     "YIELD_DROP", 1.5, "any", "bull",
+     "Yield drop → lower discount rate → equity multiple expansion → bullish"),
+
+    # ── EARNINGS ─────────────────────────────────────────────────────────────
+    (["earnings beat","beats estimates","beats expectations","record earnings",
+      "profit beats","revenue beats","guidance raised","raises guidance",
+      "eps beat","above consensus"],
+     "EARNINGS_BEAT", 1.5, "any", "bull",
+     "Strong earnings → forward PE expansion + sector rotation → bullish"),
+
+    (["earnings miss","misses estimates","misses expectations","profit warning",
+      "guidance cut","lowers guidance","revenue miss","below estimates",
+      "eps miss","below consensus","profit warning"],
+     "EARNINGS_MISS", 1.5, "any", "bear",
+     "Earnings miss → forward PE contraction + sector selloff → bearish"),
+
+    # ── GENERIC MACRO (lowest weight — surface signals) ──────────────────────
+    (["recession","contraction","gdp shrink","economic slowdown","stagflat"],
+     "RECESSION_FEAR", 2.0, "any", "bear",
+     "Recession signals → earnings revision lower + risk-off → bearish"),
+
+    (["gdp beat","gdp surpass","economic growth","gdp above","strong growth",
+      "expansion","soft landing"],
+     "GROWTH_STRONG", 1.5, "any", "bull",
+     "Strong growth → earnings upgrade cycle + risk-on → bullish"),
+]
+
+# Category importance multiplier — applied on top of base_weight
+# Certain categories need extra amplification due to SPX correlation magnitude
+_CATEGORY_AMP = {
+    "BANK_CRISIS":       1.5,   # systemic events have outsized tail risk
+    "OIL_SUPPLY_SHOCK":  1.2,   # Hormuz/Iran oil events are reliably market-moving
+    "CHINA_TAIWAN":      1.2,   # semiconductor supply chain = instant tech selloff
+    "TARIFF_BEARISH":    1.2,   # market has been hypersensitive to tariff news in 2025-26
+    "TARIFF_BULLISH":    1.2,
+    "FED_DOVISH":        1.1,
+    "FED_HAWKISH":       1.1,
 }
 
-def _keyword_score(text):
-    """Return sentiment score -1..+1 from headline text using weighted keywords."""
+
+def _keyword_impact(text, vix=0.0):
+    """
+    Analyze a headline using the causal-chain taxonomy.
+    Returns (score, category, effective_weight, causal_note)
+      score = -1..+1 (negative = bearish, positive = bullish)
+      category = taxonomy key e.g. "OIL_SUPPLY_SHOCK"
+      effective_weight = base_weight × category_amp (used for composite weighting)
+      causal_note = human-readable causal chain explanation
+    """
     t = text.lower()
-    bear = sum(w for kw, w in _BEAR_KEYWORDS.items() if kw in t)
-    bull = sum(w for kw, w in _BULL_KEYWORDS.items() if kw in t)
-    total = bear + bull
-    if total == 0: return 0.0
-    return round((bull - bear) / total, 3)
+    best_score  = 0.0
+    best_cat    = "GENERIC"
+    best_wt     = 1.0
+    best_note   = ""
+    total_bull  = 0.0
+    total_bear  = 0.0
+
+    for phrases, cat, base_wt, regime, direction, note in _NEWS_IMPACTS:
+        matched = any(ph in t for ph in phrases)
+        if not matched:
+            continue
+
+        amp = _CATEGORY_AMP.get(cat, 1.0)
+        eff_wt = base_wt * amp
+
+        # Resolve "context" direction using VIX regime
+        if direction == "context":
+            _vix_high = vix > 22 if vix > 0 else False
+            if "JOBS_STRONG" in cat:
+                direction = "bull" if _vix_high else "bear"
+            elif "JOBS_WEAK" in cat:
+                direction = "bear" if _vix_high else "bull"
+            else:
+                direction = "neutral"
+
+        if direction == "bull":
+            total_bull += eff_wt
+        elif direction == "bear":
+            total_bear += eff_wt
+
+        # Track highest-weight match as the "headline" impact
+        if eff_wt > best_wt or best_cat == "GENERIC":
+            best_wt   = eff_wt
+            best_cat  = cat
+            best_note = note
+            best_score = 1.0 if direction == "bull" else (-1.0 if direction == "bear" else 0.0)
+
+    # Normalized score: weighted sentiment ratio
+    _total = total_bull + total_bear
+    if _total > 0:
+        final_score = round((total_bull - total_bear) / _total, 3)
+    else:
+        # Fall back to simple surface-level keywords for unrecognized headlines
+        _bear_surf = sum(w for kw, w in [
+            ("tariff",1.5),("war",1.5),("attack",1.5),("sanction",1.2),
+            ("default",1.5),("recession",1.5),("miss",0.8),("weak",0.8),
+            ("hawkish",1.5),("decline",0.8),("shutdown",1.2),("downgrade",1.5),
+        ] if kw in t)
+        _bull_surf = sum(w for kw, w in [
+            ("rate cut",2.0),("dovish",1.5),("deal",1.2),("beat",1.0),
+            ("stimulus",1.5),("rally",1.0),("recovery",1.2),("strong",0.8),
+            ("ceasefire",1.5),("truce",1.5),("boost",0.8),
+        ] if kw in t)
+        _st = _bear_surf + _bull_surf
+        final_score = round((_bull_surf - _bear_surf) / _st, 3) if _st > 0 else 0.0
+        best_cat    = "GENERIC"
+        best_wt     = 1.0
+        best_note   = ""
+
+    return final_score, best_cat, best_wt, best_note
+
+
+def _keyword_score(text, vix=0.0):
+    """Backward-compat wrapper — returns score only."""
+    return _keyword_impact(text, vix=vix)[0]
 
 def get_todays_events(lookahead_days=4):
     """Return economic events for today + next N trading days."""
@@ -173,28 +409,30 @@ def get_event_types_today():
     return {e[2] for e in _ECON_CAL if e[0] == today_str}
 
 @st.cache_data(ttl=300)
-def load_news():
+def load_news(vix_now=0.0):
     """
-    Fetch real-time market news with sentiment scoring.
+    Fetch real-time market news with causal-chain sentiment scoring.
+    Each article is scored using _NEWS_IMPACTS taxonomy with domain weights.
+    Composite score is weighted by article impact weight (not just recency).
+
     Priority:
       1. Financial Juice RSS (real-time breaking market news, free)
       2. CNBC Markets RSS  (reliable, free)
       3. Alpha Vantage News Sentiment (if AV_KEY set — pre-scored)
       4. yfinance headlines (fallback)
-    Returns: {articles: [...], composite_score: float, label: str}
+    Returns: {articles: [...], composite_score: float, label: str,
+              top_impact: {category, note, weight}}
     """
     articles = []
 
     def _parse_rss(url, source_name, max_items=12):
-        """Parse RSS feed, return list of {title, time, score, label}."""
         items = []
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=6) as r:
                 raw = r.read().decode("utf-8", errors="ignore")
             root = _ET.fromstring(raw)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
-            # Handle both RSS and Atom feeds
+            ns   = {"atom": "http://www.w3.org/2005/Atom"}
             entries = root.findall(".//item") or root.findall(".//atom:entry", ns)
             for entry in entries[:max_items]:
                 title_el = entry.find("title")
@@ -202,26 +440,21 @@ def load_news():
                 if not title: continue
                 pub_el = entry.find("pubDate") or entry.find("published")
                 pub    = (pub_el.text or "")[:25] if pub_el is not None else ""
-                score  = _keyword_score(title)
-                label  = "🟢 Bullish" if score > 0.1 else ("🔴 Bearish" if score < -0.1 else "⚪ Neutral")
+                score, cat, wt, note = _keyword_impact(title, vix=vix_now)
+                label = "🟢 Bullish" if score > 0.1 else ("🔴 Bearish" if score < -0.1 else "⚪ Neutral")
                 items.append({"title": title, "source": source_name,
-                               "time": pub, "score": score, "label": label})
+                               "time": pub, "score": score, "label": label,
+                               "category": cat, "impact_weight": wt, "note": note})
         except Exception:
             pass
         return items
 
-    # 1. Financial Juice — real-time market-moving news feed
-    articles += _parse_rss(
-        "https://www.financialjuice.com/feed.aspx?q=market",
-        "FinancialJuice")
-
-    # 2. CNBC Breaking News (markets)
+    articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice")
     if len(articles) < 8:
         articles += _parse_rss(
             "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
             "CNBC")
 
-    # 3. Alpha Vantage scored sentiment (better labels)
     if _AV_KEY and len(articles) < 5:
         try:
             url = (f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT"
@@ -230,46 +463,56 @@ def load_news():
             with urllib.request.urlopen(url, timeout=8) as r:
                 data = _json.loads(r.read())
             for item in data.get("feed", [])[:10]:
-                sc = float(item.get("overall_sentiment_score", 0))
+                sc  = float(item.get("overall_sentiment_score", 0))
+                ttl = item.get("title","")
+                _, cat, wt, note = _keyword_impact(ttl, vix=vix_now)
                 lbl = "🟢 Bullish" if sc > 0.15 else ("🔴 Bearish" if sc < -0.15 else "⚪ Neutral")
                 articles.append({
-                    "title":  item.get("title",""),
-                    "source": item.get("source","AV"),
-                    "time":   item.get("time_published","")[:8],
-                    "score":  round(sc, 3),
-                    "label":  lbl,
+                    "title": ttl, "source": item.get("source","AV"),
+                    "time":  item.get("time_published","")[:8],
+                    "score": round(sc, 3), "label": lbl,
+                    "category": cat, "impact_weight": wt, "note": note,
                 })
         except Exception:
             pass
 
-    # 4. yfinance fallback
     if not articles:
         try:
             for item in (yf.Ticker("^GSPC").news or [])[:10]:
                 title = item.get("title","")
-                sc    = _keyword_score(title)
-                ts    = item.get("providerPublishTime", 0)
-                lbl   = "🟢 Bullish" if sc > 0.1 else ("🔴 Bearish" if sc < -0.1 else "⚪ Neutral")
+                sc, cat, wt, note = _keyword_impact(title, vix=vix_now)
+                ts  = item.get("providerPublishTime", 0)
+                lbl = "🟢 Bullish" if sc > 0.1 else ("🔴 Bearish" if sc < -0.1 else "⚪ Neutral")
                 articles.append({
-                    "title":  title,
-                    "source": item.get("publisher","yf"),
-                    "time":   datetime.fromtimestamp(ts).strftime("%I:%M %p") if ts else "",
-                    "score":  sc, "label": lbl,
+                    "title": title, "source": item.get("publisher","yf"),
+                    "time":  datetime.fromtimestamp(ts).strftime("%I:%M %p") if ts else "",
+                    "score": sc, "label": lbl,
+                    "category": cat, "impact_weight": wt, "note": note,
                 })
         except Exception:
             pass
 
     if not articles:
         return {"articles": [], "composite_score": 0.0, "label": "⚪ Unavailable",
-                "bull_pct": 0, "bear_pct": 0}
+                "bull_pct": 0, "bear_pct": 0, "top_impact": None}
 
-    # Composite: recency-weighted average (most recent headline = highest weight)
-    scores  = [a["score"] for a in articles]
-    weights = [1.0 / (i + 1) for i in range(len(scores))]
-    comp    = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
-    label   = "🟢 Bullish" if comp > 0.10 else ("🔴 Bearish" if comp < -0.10 else "⚪ Neutral")
-    bull_pct = int(sum(1 for a in articles if a["score"] > 0.1) / len(articles) * 100)
+    # ── Composite score: impact-weighted (high-weight articles matter more) ──
+    # Weight = impact_weight × recency (most recent = position 0 = weight 1.0/(0+1)=1.0)
+    scores   = [a["score"]         for a in articles]
+    imp_wts  = [a["impact_weight"] for a in articles]
+    rec_wts  = [1.0 / (i + 1)      for i in range(len(scores))]
+    comb_wts = [iw * rw for iw, rw in zip(imp_wts, rec_wts)]
+    total_w  = sum(comb_wts) or 1.0
+    comp     = sum(s * w for s, w in zip(scores, comb_wts)) / total_w
+
+    label    = "🟢 Bullish" if comp > 0.10 else ("🔴 Bearish" if comp < -0.10 else "⚪ Neutral")
+    bull_pct = int(sum(1 for a in articles if a["score"] > 0.1)  / len(articles) * 100)
     bear_pct = int(sum(1 for a in articles if a["score"] < -0.1) / len(articles) * 100)
+
+    # Find highest-impact article for display
+    top = max(articles, key=lambda a: a["impact_weight"] * abs(a["score"]) if a["score"] != 0 else 0)
+    top_impact = {"category": top["category"], "note": top["note"],
+                  "weight": top["impact_weight"], "title": top["title"][:80]} if top["score"] != 0 else None
 
     return {
         "articles":        articles[:12],
@@ -277,6 +520,7 @@ def load_news():
         "label":           label,
         "bull_pct":        bull_pct,
         "bear_pct":        bear_pct,
+        "top_impact":      top_impact,
     }
 
 
@@ -927,20 +1171,78 @@ now_hhmm = now_est.strftime("%H:%M")
 
 with st.spinner("Fetching market data..."):
     spx, vix, pcr, sectors = fetch_data()
-    news_data   = load_news()
     today_events = get_todays_events(lookahead_days=4)
     live = fetch_live()
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
+
+# Load news with live VIX so VIX-conditional items (jobs data) score correctly
+news_data = load_news(vix_now=vix_now)
+
 _base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors)
 
-# ── News sentiment nudge: wires real-time news flow into SSR ────────────────
-# Composite score −1..+1 → nudge of up to ±8 SSR points.
-# Strong bullish news (tariff deal, rate cut) pushes score up.
-# Strong bearish news (escalation, miss) pulls score down.
+# ── Data-driven SSR group weights from recent backtest performance ───────────
+# Each signal group is weighted by how well it correlated with actual SPX
+# direction over the last 10 trading days.  Groups with >70% hit rate get
+# boosted (up to 1.8×); groups with <50% hit rate get penalised (down to 0.4×).
+@st.cache_data(ttl=3600)
+def compute_group_weights():
+    """Derive per-group weights by correlating each group's vote with actual day direction."""
+    try:
+        _spx_d, _vix_d, _sec_d, _day_s, _days = load_backtest_data()
+        if not _days: return {g: 1.0 for g in SIGNAL_GROUPS}
+        _dl = list(_spx_d.index.date); _td = len(_spx_d)
+        _gc = {g: 0 for g in SIGNAL_GROUPS}
+        _gt = {g: 0 for g in SIGNAL_GROUPS}
+        for _day in _days[-10:]:
+            try:
+                _pos = _dl.index(_day)
+                _off = _td - _pos
+                _sb  = _spx_d.iloc[:-_off] if _off > 0 else _spx_d
+                _vb  = _vix_d.iloc[:-_off] if _off > 0 else _vix_d
+                _eb  = {k: v.iloc[:-_off] if _off > 0 else v for k, v in _sec_d.items()}
+                _ds  = _day_s.get(_day)
+                if _ds is None or len(_ds) < 2: continue
+                _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb)
+                _act = 1 if float(_ds.iloc[-1]) > float(_ds.iloc[0]) else -1
+                for _gn, _gs in SIGNAL_GROUPS.items():
+                    _pr = [_sigs.get(k, 0) for k in _gs if k in _sigs]
+                    if not _pr: continue
+                    _vote = 1 if (sum(_pr) / len(_pr)) > 0.5 else -1
+                    _gt[_gn] += 1
+                    if _vote == _act: _gc[_gn] += 1
+            except Exception:
+                continue
+        # acc → weight: 50%=0.5, 60%=1.0, 70%=1.4, 80%=1.8 (linear through those points)
+        _out = {}
+        for _gn in SIGNAL_GROUPS:
+            _t = _gt[_gn]
+            if _t < 3:
+                _out[_gn] = 1.0
+            else:
+                _acc = _gc[_gn] / _t
+                _out[_gn] = round(max(0.3, min(2.0, (_acc - 0.5) * 6.0 + 0.7)), 2)
+        return _out
+    except Exception:
+        return {g: 1.0 for g in SIGNAL_GROUPS}
+
+_grp_weights = compute_group_weights()
+
+# Re-score SSR using data-driven group weights
+_wg_s, _wg_w = [], []
+for _gn, _gs in SIGNAL_GROUPS.items():
+    _pr = [signals.get(k, 0) for k in _gs if k in signals]
+    if _pr:
+        _w = _grp_weights.get(_gn, 1.0)
+        _wg_s.append((sum(_pr) / len(_pr)) * _w)
+        _wg_w.append(_w)
+_weighted_base = round(sum(_wg_s) / sum(_wg_w) * 100) if _wg_s else _base_score
+
+# ── News sentiment nudge: causal-chain weighted composite → ±10 SSR pts ─────
+# Higher-weight news events (OIL_SUPPLY_SHOCK, BANK_CRISIS) move score more.
 _news_comp  = news_data.get("composite_score", 0.0)
-_news_nudge = int(round(_news_comp * 8))
-score       = max(0, min(100, _base_score + _news_nudge))
+_news_nudge = int(round(_news_comp * 10))
+score       = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
 levels  = compute_levels(spx)
@@ -1057,10 +1359,14 @@ with cL:
       </div>
       <div style="font-size:14px;font-weight:700;color:{color}">{rating}</div>
       <div style="font-size:12px;color:#94a3b8;margin:3px 0 6px">{action}</div>
-      <div style="font-size:10px;color:#475569;margin-bottom:8px">
-        Base: {_base_score} &nbsp;·&nbsp;
-        News nudge: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
+      <div style="font-size:10px;color:#475569;margin-bottom:4px">
+        Base: {_base_score} → Wt: {_weighted_base} &nbsp;·&nbsp;
+        News: <span style="color:{'#4ade80' if _news_nudge>0 else '#f87171' if _news_nudge<0 else '#64748b'}">{'+' if _news_nudge>0 else ''}{_news_nudge}</span>
         &nbsp;·&nbsp; Final: <b style="color:{color}">{score}</b>
+      </div>
+      <div style="font-size:9px;color:#374151;margin-bottom:8px">
+        {"&nbsp;".join(f'<span style="color:{"#4ade80" if w>=1.2 else "#f87171" if w<=0.6 else "#64748b"}">{g[:4]}:{w}×</span>'
+          for g, w in _grp_weights.items())}
       </div>
       <hr class="divider">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">
@@ -1568,25 +1874,61 @@ with _nc1:
     comp_lbl = news_data.get("label", "⚪ Neutral")
     comp_c   = "#4ade80" if comp > 0.10 else ("#f87171" if comp < -0.10 else "#94a3b8")
 
+    # Category → display label + color
+    _CAT_DISPLAY = {
+        "OIL_SUPPLY_SHOCK": ("🛢️ OIL SHOCK",   "#f59e0b"),
+        "OIL_DROP":         ("🛢️ OIL DROP",    "#4ade80"),
+        "OIL_SPIKE":        ("🛢️ OIL SPIKE",   "#f87171"),
+        "IRAN_ESCALATION":  ("⚔️ IRAN",         "#f87171"),
+        "IRAN_DEESCALATION":("🕊️ IRAN DEAL",    "#4ade80"),
+        "RUSSIA_GEO":       ("⚔️ RUSSIA",        "#f87171"),
+        "CHINA_TAIWAN":     ("⚔️ TAIWAN",        "#f87171"),
+        "GEO_DEESCALATION": ("🕊️ DE-ESCAL",     "#4ade80"),
+        "TARIFF_BEARISH":   ("🚧 TARIFF",        "#f87171"),
+        "TARIFF_BULLISH":   ("🤝 TRADE DEAL",    "#4ade80"),
+        "FED_DOVISH":       ("🏦 FED DOVE",      "#4ade80"),
+        "FED_HAWKISH":      ("🏦 FED HAWK",      "#f87171"),
+        "CPI_HOT":          ("📊 CPI HOT",       "#f87171"),
+        "CPI_COOL":         ("📊 CPI COOL",      "#4ade80"),
+        "JOBS_STRONG":      ("👷 JOBS+",         "#f59e0b"),
+        "JOBS_WEAK":        ("👷 JOBS−",         "#f59e0b"),
+        "BANK_CRISIS":      ("🏦 BANK CRISIS",   "#b91c1c"),
+        "CREDIT_DOWNGRADE": ("📉 DOWNGRADE",     "#f87171"),
+        "FISCAL_CRISIS":    ("🏛️ FISCAL",        "#f87171"),
+        "FISCAL_RESOLUTION":("🏛️ FISCAL OK",    "#4ade80"),
+        "YIELD_SPIKE":      ("📈 YIELD↑",        "#f87171"),
+        "YIELD_DROP":       ("📈 YIELD↓",        "#4ade80"),
+        "EARNINGS_BEAT":    ("💹 EARN BEAT",     "#4ade80"),
+        "EARNINGS_MISS":    ("💹 EARN MISS",     "#f87171"),
+        "RECESSION_FEAR":   ("🔻 RECESSION",     "#f87171"),
+        "GROWTH_STRONG":    ("📈 GROWTH",        "#4ade80"),
+        "GENERIC":          ("",                 "#475569"),
+    }
+
     rows_html = ""
     for a in articles[:10]:
         sc    = a["score"]
         sc_c  = "#4ade80" if sc > 0.10 else ("#f87171" if sc < -0.10 else "#64748b")
         badge = "🟢" if sc > 0.10 else ("🔴" if sc < -0.10 else "⚪")
         src   = a.get("source","")[:14]
-        t     = a.get("time","")[:16]
-        # Flag Trump/tariff/policy headlines
-        title_lower = a["title"].lower()
-        is_macro = any(k in title_lower for k in
-                       ["trump","tariff","fed ","fomc","powell","rate","inflation",
-                        "cpi","nfp","jobs","gdp","recession","trade war","sanction"])
-        macro_tag = ' <span style="background:#3b1d08;color:#f59e0b;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700">MACRO</span>' if is_macro else ""
+        t_    = a.get("time","")[:16]
+        cat   = a.get("category","GENERIC")
+        note  = a.get("note","")
+        iw    = a.get("impact_weight", 1.0)
+        cat_lbl, cat_c = _CAT_DISPLAY.get(cat, ("", "#475569"))
+        cat_tag = (f' <span style="background:#1a1a2e;color:{cat_c};font-size:9px;'
+                   f'padding:1px 5px;border-radius:3px;font-weight:700">{cat_lbl}</span>'
+                   if cat_lbl else "")
+        # High-weight items get a causal note tooltip-style row
+        note_row = (f'<div style="font-size:9px;color:#475569;margin-top:1px;'
+                    f'font-style:italic">{note}</div>' if note and iw >= 2.5 else "")
         rows_html += (
             f'<div style="padding:6px 8px;border-bottom:1px solid #1a1f33;display:flex;gap:8px;align-items:flex-start">'
             f'<span style="font-size:14px;flex-shrink:0;margin-top:1px">{badge}</span>'
             f'<div style="flex:1;min-width:0">'
-            f'<div style="font-size:12px;color:#e2e8f0;line-height:1.3">{a["title"][:120]}{macro_tag}</div>'
-            f'<div style="font-size:10px;color:#475569;margin-top:2px">{src} · {t}</div>'
+            f'<div style="font-size:12px;color:#e2e8f0;line-height:1.3">{a["title"][:120]}{cat_tag}</div>'
+            f'{note_row}'
+            f'<div style="font-size:10px;color:#475569;margin-top:2px">{src} · {t_} · wt:{iw:.1f}</div>'
             f'</div>'
             f'<span style="font-size:11px;color:{sc_c};font-weight:700;flex-shrink:0">{sc:+.2f}</span>'
             f'</div>'
@@ -1594,13 +1936,27 @@ with _nc1:
     if not rows_html:
         rows_html = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">News unavailable — check connection</div>'
 
+    # Top-impact article banner
+    _top = news_data.get("top_impact")
+    _top_html = ""
+    if _top and _top.get("note"):
+        _tc = "#f87171" if comp < -0.05 else "#4ade80" if comp > 0.05 else "#f59e0b"
+        _top_html = (
+            f'<div style="margin:6px 10px;padding:8px 10px;background:#0d1520;'
+            f'border-left:3px solid {_tc};border-radius:4px;font-size:11px">'
+            f'<span style="color:{_tc};font-weight:700">⚡ TOP IMPACT [{_top["category"]}]</span>'
+            f'<div style="color:#94a3b8;margin-top:2px">{_top["note"]}</div>'
+            f'</div>'
+        )
+
     st.markdown(
         f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 6px">'
-        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📰 Market News · Financial Juice + CNBC</span>'
+        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📰 Market News · Causal-Chain Scored</span>'
         f'<span style="font-size:12px;font-weight:700;color:{comp_c}">Composite: {comp_lbl} ({comp:+.3f})</span>'
         f'</div>'
-        f'<div style="overflow-y:auto;max-height:320px">{rows_html}</div>'
+        f'{_top_html}'
+        f'<div style="overflow-y:auto;max-height:360px">{rows_html}</div>'
         f'</div>',
         unsafe_allow_html=True)
 
