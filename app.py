@@ -2085,6 +2085,22 @@ with cM:
     </div>
     """, unsafe_allow_html=True)
 
+_orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
+# ORB width / daily ATR — used to guard narrow ORB breakout signals.
+_orb_range_atr = (round(orb_data["range_pts"] / max(levels["atr"], 1), 3)
+                  if orb_data.get("valid") and levels.get("atr", 0) > 0 else 0.0)
+# ORB distance / daily ATR — how far price has traveled beyond the ORB edge.
+if orb_data.get("valid") and levels.get("atr", 0) > 0:
+    _cur = orb_data["current"]; _atr_ref = max(levels["atr"], 1)
+    if _orb_status == "above":
+        _orb_distance_atr = round((_cur - orb_data["high"]) / _atr_ref, 3)
+    elif _orb_status == "below":
+        _orb_distance_atr = round((orb_data["low"] - _cur) / _atr_ref, 3)
+    else:
+        _orb_distance_atr = 0.0
+else:
+    _orb_distance_atr = 0.0
+
 # ── Right: Key Levels (top) + Trade Plan (bottom) ─────────────────────────────
 with cR:
     # Key Levels — compact 2-column grid layout
@@ -2182,25 +2198,6 @@ try:
 except Exception:
     live_gap             = 0.0
     _session_prior_close = spx_price
-_orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
-# ORB width / daily ATR — used to guard narrow ORB breakout signals.
-# 0.0 when ORB is not valid (before 9:45 or on errors).
-_orb_range_atr = (round(orb_data["range_pts"] / max(levels["atr"], 1), 3)
-                  if orb_data.get("valid") and levels.get("atr", 0) > 0 else 0.0)
-# ORB distance / daily ATR — how far price has traveled beyond the ORB edge.
-# Above: (current − ORB high) / ATR. Below: (ORB low − current) / ATR. Inside: 0.
-# Used in projection functions to scale move size when breakout has follow-through.
-if orb_data.get("valid") and levels.get("atr", 0) > 0:
-    _cur = orb_data["current"]; _atr_ref = max(levels["atr"], 1)
-    if _orb_status == "above":
-        _orb_distance_atr = round((_cur - orb_data["high"]) / _atr_ref, 3)
-    elif _orb_status == "below":
-        _orb_distance_atr = round((orb_data["low"] - _cur) / _atr_ref, 3)
-    else:
-        _orb_distance_atr = 0.0
-else:
-    _orb_distance_atr = 0.0
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
