@@ -857,7 +857,7 @@ def fetch_live():
             if _last_bar_ts.tzinfo is None:
                 _last_bar_ts = _last_bar_ts.tz_localize("UTC")
             _staleness = (datetime.now(timezone.utc) - _last_bar_ts).total_seconds()
-            if _staleness > 300:  # >5 min stale — don't show as live price
+            if _staleness > 1800:  # >30 min stale — don't show as live price (yfinance has ~10 min natural lag)
                 pass
             else:
                 results["es_price"] = round(_close_scalar(es_df, -1), 2)
