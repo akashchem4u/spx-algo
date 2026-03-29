@@ -1673,6 +1673,8 @@ def compute_group_weights():
         return {g: 1.0 for g in SIGNAL_GROUPS}
 
 _grp_weights = compute_group_weights()
+# Stamp when weights were computed so the UI can show a version, not silently recalculate
+_grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session (1h cache)
 
 # Re-score SSR using data-driven group weights
 _wg_s, _wg_w = [], []
@@ -1830,6 +1832,9 @@ with cL:
       <div style="font-size:9px;color:#374151;margin-bottom:8px">
         {"&nbsp;".join(f'<span style="color:{"#4ade80" if w>=1.2 else "#f87171" if w<=0.6 else "#64748b"}">{g[:4]}:{w}×</span>'
           for g, w in _grp_weights.items())}
+      <div style="font-size:9px;color:#374151;margin-top:3px">
+        Weights v{_grp_weights_ts} · 252d backtest · frozen 1h
+      </div>
       </div>
       <hr class="divider">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">
@@ -1955,594 +1960,664 @@ with cR:
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROW 3 — SIGNAL BREAKDOWN (2-column grid, full width)
+# ROW 3 — WHY THIS BIAS (active override chain)
 # ═══════════════════════════════════════════════════════════════════════════════
-with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell  (click to expand)", expanded=False):
-    bull_sigs = {k:v for k,v in signals.items() if v==1}
-    bear_sigs = {k:v for k,v in signals.items() if v==0}
-    # split into 3 columns to use full width
-    scol1, scol2, scol3 = st.columns(3)
-    all_sigs = [(k, 1) for k in bull_sigs] + [(k, 0) for k in bear_sigs]
-    third = (len(all_sigs) + 2) // 3
-    for ci, col in enumerate([scol1, scol2, scol3]):
-        chunk = all_sigs[ci*third:(ci+1)*third]
-        rows_html = "".join(
-            f'<div class="sig-row">'
-            f'<span>{"✅" if v else "❌"} {k}</span>'
-            f'<span style="color:{"#22c55e" if v else "#ef4444"};font-size:10px">{"BUY" if v else "SELL"}</span>'
-            f'</div>'
-            for k, v in chunk
-        )
-        col.markdown(f'<div style="background:#1e2130;border-radius:8px;padding:8px 12px">{rows_html}</div>',
-                     unsafe_allow_html=True)
+_why_rows = []
+
+# 1. Gap regime
+_gap_regime = ("Gap-Up" if live_gap > GAP_THRESHOLD
+               else "Gap-Down" if live_gap < -GAP_THRESHOLD else "Flat")
+_gap_c = "#4ade80" if live_gap > GAP_THRESHOLD else ("#f87171" if live_gap < -GAP_THRESHOLD else "#64748b")
+_why_rows.append(("Gap", f"{live_gap:+.0f} pts → {_gap_regime}", _gap_c,
+                  "Override: Pre-Bull Fade & Afternoon Trend → chop on gap-up" if live_gap > GAP_THRESHOLD else ""))
+
+# 2. VIX regime
+if vix_now >= VIX_FEAR_THRESHOLD:
+    _vix_regime_lbl = f"HIGH ({vix_now}) → Fear"
+    _vix_regime_c = "#f87171"
+    _vix_override = "Active: chop→bear, bull→chop (high-fear)"
+elif vix_now < VIX_CALM_THRESHOLD:
+    _vix_regime_lbl = f"LOW ({vix_now}) → Calm"
+    _vix_regime_c = "#4ade80"
+    _vix_override = "Active: bear→chop (low-vol range-bound)"
+else:
+    _vix_regime_lbl = f"MID ({vix_now}) → Normal"
+    _vix_regime_c = "#94a3b8"
+    _vix_override = "No override"
+_why_rows.append(("VIX Regime", _vix_regime_lbl, _vix_regime_c, _vix_override))
+
+# 3. ORB status
+if orb_data.get("valid"):
+    _orb_lbl = f"{orb_data['status'].capitalize()} range ({orb_data['high']}/{orb_data['low']})"
+    _orb_c = "#4ade80" if orb_data["status"] == "above" else ("#f87171" if orb_data["status"] == "below" else "#64748b")
+    _orb_ov = ("Active post 10 AM: chop→bull" if orb_data["status"] == "above"
+               else "Active post 10 AM: chop→bear" if orb_data["status"] == "below"
+               else "No override (inside ORB)")
+else:
+    _orb_lbl, _orb_c, _orb_ov = "ORB unavailable", "#475569", "Pre-market or no data"
+_why_rows.append(("ORB", _orb_lbl, _orb_c, _orb_ov))
+
+# 4. News override
+_news_abs = abs(_news_comp)
+_news_dir_lbl = "Bullish" if _news_comp > 0 else ("Bearish" if _news_comp < 0 else "Neutral")
+_news_ov_c = "#4ade80" if _news_comp > 0.25 else ("#f87171" if _news_comp < -0.25 else "#64748b")
+_news_ov_txt = (f"Active: chop→{'bull' if _news_comp>0 else 'bear'} (|score|={_news_abs:.2f}≥0.25)"
+                if _news_abs >= 0.25 else f"No override (|score|={_news_abs:.2f}<0.25)")
+_why_rows.append(("News", f"{_news_dir_lbl} ({_news_comp:+.3f})", _news_ov_c, _news_ov_txt))
+
+# 5. OpEx
+if _opex_friday:
+    _opex_lbl, _opex_c, _opex_ov = "OpEx Friday", "#f59e0b", "EOD Trend preserved directional (gamma unwind)"
+elif _opex_week:
+    _opex_lbl, _opex_c, _opex_ov = "OpEx Week (Mon/Tue pin)", "#f59e0b", "Chop windows reinforced Mon-Tue only"
+else:
+    _opex_lbl, _opex_c, _opex_ov = "Not OpEx", "#475569", "No override"
+_why_rows.append(("OpEx", _opex_lbl, _opex_c, _opex_ov))
+
+# 6. Current window actual bias (show what fired)
+_bias_fired, _bias_label = window_bias_at(now_hhmm, gap=live_gap, vix=vix_now,
+                                          news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+_bias_fired_c = BIAS_TEXT.get(_bias_fired, "#94a3b8")
+
+_why_html = "".join(
+    f'<div style="display:flex;justify-content:space-between;align-items:flex-start;'
+    f'padding:5px 0;border-bottom:1px solid #1a1f33;font-size:12px">'
+    f'<span style="color:#64748b;min-width:80px">{label}</span>'
+    f'<span style="color:{vc};font-weight:600;min-width:130px">{val}</span>'
+    f'<span style="color:#475569;font-size:11px">{ov}</span>'
+    f'</div>'
+    for label, val, vc, ov in _why_rows
+)
+
+st.markdown(
+    f'<div class="card" style="margin-bottom:8px">'
+    f'<h3 style="margin-bottom:8px">Why This Bias?</h3>'
+    f'<div style="font-size:11px;color:#475569;margin-bottom:8px">'
+    f'Active window: <b style="color:{_bias_fired_c}">{_bias_label}</b></div>'
+    f'{_why_html}'
+    f'</div>',
+    unsafe_allow_html=True
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROW 3b — 2-YEAR STATISTICAL WINDOW VALIDATION
+# TABS — split Live signal from Research/Validation
 # ═══════════════════════════════════════════════════════════════════════════════
-with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
-    _bt = run_extended_window_backtest()
-    if not _bt:
-        st.warning("Backtest data unavailable — yfinance 1h data requires a valid market data connection.")
-    else:
-        # Convert dict → flat DataFrame rows with sub-breakdowns
-        _bt_rows = []
-        for _wlbl, _ws in _bt.items():
-            _tot = _ws["total"]
-            _acc = round(_ws["correct"] / _tot * 100, 1) if _tot else 0
-            # Overall row
-            _bt_rows.append({
-                "Window": _wlbl,
-                "Bias": _ws["bias"],
-                "Acc%": f"{_acc}%",
-                "n": _tot,
-                "VIX Low": (f'{round(_ws["vix_low"]["c"]/_ws["vix_low"]["t"]*100,1)}%'
-                            if _ws["vix_low"]["t"] else "—"),
-                "VIX Mid": (f'{round(_ws["vix_mid"]["c"]/_ws["vix_mid"]["t"]*100,1)}%'
-                            if _ws["vix_mid"]["t"] else "—"),
-                "VIX High": (f'{round(_ws["vix_high"]["c"]/_ws["vix_high"]["t"]*100,1)}%'
-                             if _ws["vix_high"]["t"] else "—"),
-                "Gap↑": (f'{round(_ws["gap_up"]["c"]/_ws["gap_up"]["t"]*100,1)}%'
-                         if _ws["gap_up"]["t"] else "—"),
-                "Gap→": (f'{round(_ws["gap_flat"]["c"]/_ws["gap_flat"]["t"]*100,1)}%'
-                         if _ws["gap_flat"]["t"] else "—"),
-                "Gap↓": (f'{round(_ws["gap_down"]["c"]/_ws["gap_down"]["t"]*100,1)}%'
-                         if _ws["gap_down"]["t"] else "—"),
-                "Suggested": _ws.get("suggested_bias", _ws["bias"]),
-                "Flag": "⚠️ FLIP" if _ws.get("flip") else "",
-            })
-        _bt_df = pd.DataFrame(_bt_rows)
+_tab_live, _tab_research = st.tabs(["📈 Live Signal", "🔬 Research & Validation"])
 
-        # Flip warnings at top
-        _flips_df = _bt_df[_bt_df["Flag"] == "⚠️ FLIP"]
-        if not _flips_df.empty:
-            st.markdown("#### ⚠️ Bias Flip Suggestions (accuracy < 40% — current bias may be wrong)")
-            for _, _row in _flips_df.iterrows():
-                st.markdown(
-                    f'<div style="background:#450a0a;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:12px">'
-                    f'<b style="color:#f87171">{_row["Window"]}</b>'
-                    f' &nbsp;·&nbsp; current: <b>{_row["Bias"]}</b>'
-                    f' &nbsp;→&nbsp; suggested: <b style="color:#4ade80">{_row["Suggested"]}</b>'
-                    f' &nbsp;·&nbsp; accuracy: <b style="color:#f87171">{_row["Acc%"]}</b>'
-                    f' &nbsp;·&nbsp; n={_row["n"]} bars'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-        st.markdown("#### Full Window Accuracy by VIX Regime & Gap Type")
-        st.dataframe(_bt_df, use_container_width=True, hide_index=True)
+# ── Everything below this line that is "research" goes in _tab_research ───────
+# Signal Breakdown, 2-Year Backtest, Self-Improvement, Last-10-days Backtest
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
+# SIGNAL BREAKDOWN (Research tab)
 # ═══════════════════════════════════════════════════════════════════════════════
-try:
-    # Gap = today's open − prior close.
-    # Use the SPX daily "Open" column directly — robust even when live price
-    # is unavailable (spx_price falls back to yesterday's close, making diff = 0).
-    _spx_open  = spx["Open"].squeeze()
-    _spx_close = spx["Close"].squeeze()
-    if isinstance(_spx_open,  pd.DataFrame): _spx_open  = _spx_open.iloc[:,  0]
-    if isinstance(_spx_close, pd.DataFrame): _spx_close = _spx_close.iloc[:, 0]
-    if len(_spx_open) >= 2 and len(_spx_close) >= 2:
-        _today_open = float(_spx_open.iloc[-1])
-        _prev_close = float(_spx_close.iloc[-2])
-        live_gap = round(_today_open - _prev_close, 1)
-    else:
+with _tab_research:
+    with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell", expanded=False):
+        bull_sigs = {k:v for k,v in signals.items() if v==1}
+        bear_sigs = {k:v for k,v in signals.items() if v==0}
+        scol1, scol2, scol3 = st.columns(3)
+        all_sigs = [(k, 1) for k in bull_sigs] + [(k, 0) for k in bear_sigs]
+        third = (len(all_sigs) + 2) // 3
+        for ci, col in enumerate([scol1, scol2, scol3]):
+            chunk = all_sigs[ci*third:(ci+1)*third]
+            rows_html = "".join(
+                f'<div class="sig-row">'
+                f'<span>{"✅" if v else "❌"} {k}</span>'
+                f'<span style="color:{"#22c55e" if v else "#ef4444"};font-size:10px">{"BUY" if v else "SELL"}</span>'
+                f'</div>'
+                for k, v in chunk
+            )
+            col.markdown(f'<div style="background:#1e2130;border-radius:8px;padding:8px 12px">{rows_html}</div>',
+                         unsafe_allow_html=True)
+
+    with st.expander("📊 2-Year Statistical Window Validation (click to run — takes ~5s)", expanded=False):
+        st.caption("Offline accuracy of each TIME_WINDOW bias over 2 years of 1h data by VIX regime and gap type. Research surface — not a live signal.")
+        _bt = run_extended_window_backtest()
+        if not _bt:
+            st.warning("Backtest data unavailable — yfinance 1h data requires a valid market data connection.")
+        else:
+            _bt_rows = []
+            for _wlbl, _ws in _bt.items():
+                _tot = _ws["total"]
+                _acc = round(_ws["correct"] / _tot * 100, 1) if _tot else 0
+                _bt_rows.append({
+                    "Window": _wlbl, "Bias": _ws["bias"], "Acc%": f"{_acc}%", "n": _tot,
+                    "VIX Lo": (f'{round(_ws["vix_low"]["c"]/_ws["vix_low"]["t"]*100,1)}%' if _ws["vix_low"]["t"] else "—"),
+                    "VIX Mid": (f'{round(_ws["vix_mid"]["c"]/_ws["vix_mid"]["t"]*100,1)}%' if _ws["vix_mid"]["t"] else "—"),
+                    "VIX Hi": (f'{round(_ws["vix_high"]["c"]/_ws["vix_high"]["t"]*100,1)}%' if _ws["vix_high"]["t"] else "—"),
+                    "Gap↑": (f'{round(_ws["gap_up"]["c"]/_ws["gap_up"]["t"]*100,1)}%' if _ws["gap_up"]["t"] else "—"),
+                    "Gap→": (f'{round(_ws["gap_flat"]["c"]/_ws["gap_flat"]["t"]*100,1)}%' if _ws["gap_flat"]["t"] else "—"),
+                    "Gap↓": (f'{round(_ws["gap_down"]["c"]/_ws["gap_down"]["t"]*100,1)}%' if _ws["gap_down"]["t"] else "—"),
+                    "Suggested": _ws.get("suggested_bias", _ws["bias"]),
+                    "Flag": "⚠️ FLIP" if _ws.get("flip") else "",
+                })
+            _bt_df = pd.DataFrame(_bt_rows)
+            _flips_df = _bt_df[_bt_df["Flag"] == "⚠️ FLIP"]
+            if not _flips_df.empty:
+                st.markdown("**⚠️ Bias Flip Suggestions** (accuracy < 40%)")
+                for _, _row in _flips_df.iterrows():
+                    st.markdown(
+                        f'<div style="background:#450a0a;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:12px">'
+                        f'<b style="color:#f87171">{_row["Window"]}</b> &nbsp;·&nbsp; current: <b>{_row["Bias"]}</b>'
+                        f' → suggested: <b style="color:#4ade80">{_row["Suggested"]}</b>'
+                        f' &nbsp;·&nbsp; acc: <b style="color:#f87171">{_row["Acc%"]}</b> n={_row["n"]}'
+                        f'</div>', unsafe_allow_html=True)
+            st.dataframe(_bt_df, use_container_width=True, hide_index=True)
+
+
+with _tab_live:
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    try:
+        # Gap = today's open − prior close.
+        # Use the SPX daily "Open" column directly — robust even when live price
+        # is unavailable (spx_price falls back to yesterday's close, making diff = 0).
+        _spx_open  = spx["Open"].squeeze()
+        _spx_close = spx["Close"].squeeze()
+        if isinstance(_spx_open,  pd.DataFrame): _spx_open  = _spx_open.iloc[:,  0]
+        if isinstance(_spx_close, pd.DataFrame): _spx_close = _spx_close.iloc[:, 0]
+        if len(_spx_open) >= 2 and len(_spx_close) >= 2:
+            _today_open = float(_spx_open.iloc[-1])
+            _prev_close = float(_spx_close.iloc[-2])
+            live_gap = round(_today_open - _prev_close, 1)
+        else:
+            live_gap = 0.0
+    except Exception:
         live_gap = 0.0
-except Exception:
-    live_gap = 0.0
-_orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
-es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
-spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+    _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "inside"
+    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
 
-colA, colB = st.columns(2)
+    colA, colB = st.columns(2)
 
-with colA:
-    rows_html = ""
-    for r in es_rows:
-        bg  = BIAS_BG.get(r["win_bias"], "#1e293b")
-        tc  = BIAS_TEXT.get(r["win_bias"], "#94a3b8")
-        mc  = "#4ade80" if r["move"] >= 0 else "#f87171"
-        sgn = "+" if r["move"] >= 0 else ""
-        rows_html += (
-            f'<tr style="background:{bg}">'
-            f'<td class="pt" style="white-space:nowrap">{r["time"]}</td>'
-            f'<td class="pt" style="color:#64748b">{r["session"]}</td>'
-            f'<td class="pt" style="font-weight:700">{r["price"]:,}</td>'
-            f'<td class="pt" style="color:{mc}">{sgn}{r["move"]}</td>'
-            f'<td class="pt" style="color:#64748b">{r["rng_lo"]}–{r["rng_hi"]}</td>'
-            f'<td class="pt" style="color:{tc}">{BIAS_COLOR.get(r["win_bias"],"")} {r["win_label"]}</td>'
-            f'</tr>'
-        )
-    st.markdown(f"""
-    <div class="card">
-      <h3>ES Futures — 30-Min Projection &nbsp;·&nbsp; Next 23-Hour Session from Opening Bell</h3>
-      <div style="overflow-y:auto;max-height:400px">
-      <table class="proj-table">
-        <thead><tr>
-          <th>TIME (EST)</th><th>SESS</th><th>PROJECTED</th>
-          <th>MOVE</th><th>RANGE</th><th>WINDOW</th>
-        </tr></thead>
-        <tbody>{rows_html}</tbody>
-      </table></div>
-    </div>
-    <style>.pt{{padding:5px 8px;font-size:13px}}</style>
-    """, unsafe_allow_html=True)
-
-with colB:
-    spx_rows_html = ""
-    for r in spx_rows:
-        bg   = "#111827" if r["past"] else BIAS_BG.get(r["win_bias"], "#1e293b")
-        tc   = "#374151" if r["past"] else BIAS_TEXT.get(r["win_bias"], "#94a3b8")
-        pc   = "#374151" if r["past"] else "#f1f5f9"
-        sign = "+" if r["move"] >= 0 else ""
-        mc   = "#374151" if r["past"] else ("#4ade80" if r["move"] >= 0 else "#f87171")
-        past_tag = '<span style="font-size:10px;color:#374151"> (past)</span>' if r["past"] else ""
-        spx_rows_html += f"""
-        <tr style="background:{bg}">
-          <td style="padding:6px 10px;color:#94a3b8;font-size:12px;white-space:nowrap">{r['time']}{past_tag}</td>
-          <td style="padding:6px 10px;font-weight:700;font-size:14px;color:{pc}">{r['price']:,}</td>
-          <td style="padding:6px 8px;font-size:12px;color:{mc}">{sign}{r['move']}</td>
-          <td style="padding:6px 8px;font-size:11px;color:#64748b">{r['rng_lo']} – {r['rng_hi']}</td>
-          <td style="padding:6px 10px;font-size:12px;color:{tc}">{BIAS_COLOR.get(r['win_bias'],'')} {r['win_label']}</td>
-        </tr>"""
-
-    st.markdown(f"""
-    <div class="card">
-      <h3>SPX — Intraday Projection &nbsp;·&nbsp; RTH 9:30 AM – 4:00 PM EST</h3>
-      <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;color:#f1f5f9">
-        <thead>
-          <tr style="background:#0f1117">
-            <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b;letter-spacing:.8px">TIME (EST)</th>
-            <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">PROJECTED</th>
-            <th style="padding:7px 8px;text-align:left;font-size:11px;color:#64748b">MOVE</th>
-            <th style="padding:7px 8px;text-align:left;font-size:11px;color:#64748b">RANGE</th>
-            <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">WINDOW</th>
-          </tr>
-        </thead>
-        <tbody>{spx_rows_html}</tbody>
-      </table>
-      </div>
-      <div style="margin-top:10px;font-size:11px;color:#475569">
-        Weekend / after close → shows next trading session. Grayed rows = past slots during live session.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ROW 5 — WEEKLY PROJECTION
-# ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("<h4 style='margin:6px 0 10px;color:#94a3b8'>📅 Weekly Projection — Next 5 Trading Days</h4>",
-            unsafe_allow_html=True)
-
-weekly = generate_weekly_projections(spx_price, levels["atr"], score)
-
-week_cols = st.columns(5)
-for i, (col, r) in enumerate(zip(week_cols, weekly)):
-    bg_card  = {"bear": "#2d0a0a", "bull": "#0a2d1a", "neutral": "#1e2130"}[r["bias"]]
-    tc       = {"bear": "#f87171", "bull": "#4ade80",  "neutral": "#94a3b8"}[r["bias"]]
-    sign     = "+" if r["move"] >= 0 else ""
-    mc       = "#4ade80" if r["move"] >= 0 else "#f87171"
-    border   = {"bear": "#7f1d1d", "bull": "#14532d", "neutral": "#2d3250"}[r["bias"]]
-    with col:
+    with colA:
+        rows_html = ""
+        for r in es_rows:
+            bg  = BIAS_BG.get(r["win_bias"], "#1e293b")
+            tc  = BIAS_TEXT.get(r["win_bias"], "#94a3b8")
+            mc  = "#4ade80" if r["move"] >= 0 else "#f87171"
+            sgn = "+" if r["move"] >= 0 else ""
+            rows_html += (
+                f'<tr style="background:{bg}">'
+                f'<td class="pt" style="white-space:nowrap">{r["time"]}</td>'
+                f'<td class="pt" style="color:#64748b">{r["session"]}</td>'
+                f'<td class="pt" style="font-weight:700">{r["price"]:,}</td>'
+                f'<td class="pt" style="color:{mc}">{sgn}{r["move"]}</td>'
+                f'<td class="pt" style="color:#64748b">{r["rng_lo"]}–{r["rng_hi"]}</td>'
+                f'<td class="pt" style="color:{tc}">{BIAS_COLOR.get(r["win_bias"],"")} {r["win_label"]}</td>'
+                f'</tr>'
+            )
         st.markdown(f"""
-        <div style="background:{bg_card};border:1px solid {border};border-radius:12px;
-                    padding:18px 16px;text-align:center;margin-bottom:8px">
-          <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase">{r['day']}</div>
-          <div style="font-size:18px;font-weight:800;color:#f1f5f9;margin:4px 0">{r['date']}</div>
-          <div style="font-size:28px;margin:6px 0">{r['icon']}</div>
-          <div style="font-size:22px;font-weight:800;color:{tc};margin:4px 0">{r['price']:,}</div>
-          <div style="font-size:12px;color:{mc};margin-bottom:8px">{sign}{r['move']} pts</div>
-          <div style="font-size:11px;color:#64748b;border-top:1px solid {border};padding-top:8px;margin-top:4px">
-            <div>High: <b style="color:#f87171">{r['hi']:,}</b></div>
-            <div>Low: &nbsp;<b style="color:#4ade80">{r['lo']:,}</b></div>
+        <div class="card">
+          <h3>ES Futures — 30-Min Projection &nbsp;·&nbsp; Next 23-Hour Session from Opening Bell</h3>
+          <div style="overflow-y:auto;max-height:400px">
+          <table class="proj-table">
+            <thead><tr>
+              <th>TIME (EST)</th><th>SESS</th><th>PROJECTED</th>
+              <th>MOVE</th><th>RANGE</th><th>WINDOW</th>
+            </tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table></div>
+        </div>
+        <style>.pt{{padding:5px 8px;font-size:13px}}</style>
+        """, unsafe_allow_html=True)
+
+    with colB:
+        spx_rows_html = ""
+        for r in spx_rows:
+            bg   = "#111827" if r["past"] else BIAS_BG.get(r["win_bias"], "#1e293b")
+            tc   = "#374151" if r["past"] else BIAS_TEXT.get(r["win_bias"], "#94a3b8")
+            pc   = "#374151" if r["past"] else "#f1f5f9"
+            sign = "+" if r["move"] >= 0 else ""
+            mc   = "#374151" if r["past"] else ("#4ade80" if r["move"] >= 0 else "#f87171")
+            past_tag = '<span style="font-size:10px;color:#374151"> (past)</span>' if r["past"] else ""
+            spx_rows_html += f"""
+            <tr style="background:{bg}">
+              <td style="padding:6px 10px;color:#94a3b8;font-size:12px;white-space:nowrap">{r['time']}{past_tag}</td>
+              <td style="padding:6px 10px;font-weight:700;font-size:14px;color:{pc}">{r['price']:,}</td>
+              <td style="padding:6px 8px;font-size:12px;color:{mc}">{sign}{r['move']}</td>
+              <td style="padding:6px 8px;font-size:11px;color:#64748b">{r['rng_lo']} – {r['rng_hi']}</td>
+              <td style="padding:6px 10px;font-size:12px;color:{tc}">{BIAS_COLOR.get(r['win_bias'],'')} {r['win_label']}</td>
+            </tr>"""
+
+        st.markdown(f"""
+        <div class="card">
+          <h3>SPX — Intraday Projection &nbsp;·&nbsp; RTH 9:30 AM – 4:00 PM EST</h3>
+          <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;color:#f1f5f9">
+            <thead>
+              <tr style="background:#0f1117">
+                <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b;letter-spacing:.8px">TIME (EST)</th>
+                <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">PROJECTED</th>
+                <th style="padding:7px 8px;text-align:left;font-size:11px;color:#64748b">MOVE</th>
+                <th style="padding:7px 8px;text-align:left;font-size:11px;color:#64748b">RANGE</th>
+                <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">WINDOW</th>
+              </tr>
+            </thead>
+            <tbody>{spx_rows_html}</tbody>
+          </table>
           </div>
-          <div style="margin-top:8px;background:#0f1117;border-radius:5px;padding:2px 6px;
-                      font-size:10px;color:#64748b;display:inline-block">
-            Confidence: {r['conf']}
+          <div style="margin-top:10px;font-size:11px;color:#475569">
+            Weekend / after close → shows next trading session. Grayed rows = past slots during live session.
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# BACKTEST — Last 5 Trading Days  (Week of March 23–27, 2026)
-# ═══════════════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # ROW 5 — WEEKLY PROJECTION
+    # ═══════════════════════════════════════════════════════════════════════════════
+    st.markdown("<h4 style='margin:6px 0 10px;color:#94a3b8'>📅 Weekly Projection — Next 5 Trading Days</h4>",
+                unsafe_allow_html=True)
 
-UW_TOKEN = "378bfa59-6ee5-430d-b3d1-c0792fec2a78"
+    weekly = generate_weekly_projections(spx_price, levels["atr"], score)
 
-@st.cache_data(ttl=3600)
-def load_uw_market_tide(date_str):
-    """Fetch Unusual Whales market tide (bull/bear flow) for a given date YYYY-MM-DD."""
-    try:
-        import urllib.request, json as _json
-        url = f"https://api.unusualwhales.com/api/market/market-tide?date={date_str}&limit=100"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {UW_TOKEN}"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = _json.loads(r.read())
-        records = data.get("data", [])
-        if not records:
-            return None
-        bull_prem = sum(float(x.get("net_call_premium", 0) or 0) for x in records)
-        bear_prem = sum(float(x.get("net_put_premium",  0) or 0) for x in records)
-        pcr_uw    = round(abs(bear_prem) / bull_prem, 2) if bull_prem > 0 else 1.0
-        bias      = "Bullish" if bull_prem > abs(bear_prem) else "Bearish"
-        return {"bull": round(bull_prem/1e6,1), "bear": round(abs(bear_prem)/1e6,1),
-                "pcr": pcr_uw, "bias": bias, "records": len(records)}
-    except Exception:
-        return None
+    week_cols = st.columns(5)
+    for i, (col, r) in enumerate(zip(week_cols, weekly)):
+        bg_card  = {"bear": "#2d0a0a", "bull": "#0a2d1a", "neutral": "#1e2130"}[r["bias"]]
+        tc       = {"bear": "#f87171", "bull": "#4ade80",  "neutral": "#94a3b8"}[r["bias"]]
+        sign     = "+" if r["move"] >= 0 else ""
+        mc       = "#4ade80" if r["move"] >= 0 else "#f87171"
+        border   = {"bear": "#7f1d1d", "bull": "#14532d", "neutral": "#2d3250"}[r["bias"]]
+        with col:
+            st.markdown(f"""
+            <div style="background:{bg_card};border:1px solid {border};border-radius:12px;
+                        padding:18px 16px;text-align:center;margin-bottom:8px">
+              <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase">{r['day']}</div>
+              <div style="font-size:18px;font-weight:800;color:#f1f5f9;margin:4px 0">{r['date']}</div>
+              <div style="font-size:28px;margin:6px 0">{r['icon']}</div>
+              <div style="font-size:22px;font-weight:800;color:{tc};margin:4px 0">{r['price']:,}</div>
+              <div style="font-size:12px;color:{mc};margin-bottom:8px">{sign}{r['move']} pts</div>
+              <div style="font-size:11px;color:#64748b;border-top:1px solid {border};padding-top:8px;margin-top:4px">
+                <div>High: <b style="color:#f87171">{r['hi']:,}</b></div>
+                <div>Low: &nbsp;<b style="color:#4ade80">{r['lo']:,}</b></div>
+              </div>
+              <div style="margin-top:8px;background:#0f1117;border-radius:5px;padding:2px 6px;
+                          font-size:10px;color:#64748b;display:inline-block">
+                Confidence: {r['conf']}
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
 
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # BACKTEST — Last 5 Trading Days  (Week of March 23–27, 2026)
+    # ═══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=3600)
-def load_backtest_data():
-    """Load 5-day intraday + daily data for full-week backtest."""
-    spx_d = yf.download("^GSPC", period="100d", interval="1d", progress=False, auto_adjust=True)
-    vix_d = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
-    sectors_d = {}
-    for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
+    UW_TOKEN = "378bfa59-6ee5-430d-b3d1-c0792fec2a78"
+
+    @st.cache_data(ttl=3600)
+    def load_uw_market_tide(date_str):
+        """Fetch Unusual Whales market tide (bull/bear flow) for a given date YYYY-MM-DD."""
         try:
-            sectors_d[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+            import urllib.request, json as _json
+            url = f"https://api.unusualwhales.com/api/market/market-tide?date={date_str}&limit=100"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {UW_TOKEN}"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = _json.loads(r.read())
+            records = data.get("data", [])
+            if not records:
+                return None
+            bull_prem = sum(float(x.get("net_call_premium", 0) or 0) for x in records)
+            bear_prem = sum(float(x.get("net_put_premium",  0) or 0) for x in records)
+            pcr_uw    = round(abs(bear_prem) / bull_prem, 2) if bull_prem > 0 else 1.0
+            bias      = "Bullish" if bull_prem > abs(bear_prem) else "Bearish"
+            return {"bull": round(bull_prem/1e6,1), "bear": round(abs(bear_prem)/1e6,1),
+                    "pcr": pcr_uw, "bias": bias, "records": len(records)}
         except Exception:
-            sectors_d[t] = pd.DataFrame()
-
-    # period="20d" gives ~20 trading days of 5-min bars → covers 2 full weeks
-    spx_5m = yf.download("^GSPC", period="20d", interval="5m", progress=False, auto_adjust=True)
-    spx_5m.index = spx_5m.index.tz_convert(EST)
-    trading_days  = sorted(set(spx_5m.index.date))
-    day_series    = {d: spx_5m[spx_5m.index.date == d]["Close"].squeeze() for d in trading_days}
-    return spx_d, vix_d, sectors_d, day_series, trading_days
+            return None
 
 
-def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end):
-    day_5m = day_series.get(target_date)
-    if day_5m is None or len(day_5m) == 0:
-        return None
+    @st.cache_data(ttl=3600)
+    def load_backtest_data():
+        """Load 5-day intraday + daily data for full-week backtest."""
+        spx_d = yf.download("^GSPC", period="100d", interval="1d", progress=False, auto_adjust=True)
+        vix_d = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
+        sectors_d = {}
+        for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
+            try:
+                sectors_d[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+            except Exception:
+                sectors_d[t] = pd.DataFrame()
 
-    spx_base = spx_d.iloc[:-offset_from_end] if offset_from_end > 0 else spx_d
-    vix_base = vix_d.iloc[:-offset_from_end] if offset_from_end > 0 else vix_d
-    sec_base  = {k: v.iloc[:-offset_from_end] if offset_from_end > 0 else v for k, v in sectors_d.items()}
-
-    prev_close   = float(spx_base["Close"].squeeze().iloc[-1])
-    bt_score, bt_buys, bt_sells, _ = compute_ssr(spx_base, vix_base, pd.DataFrame(), sec_base)
-    bt_rating, bt_action, _, bt_color = ssr_meta(bt_score)
-    bt_direction = ssr_direction(bt_score)
-
-    h = spx_base["High"].squeeze(); l = spx_base["Low"].squeeze(); c = spx_base["Close"].squeeze()
-    tr     = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    bt_atr = float(tr.rolling(14).mean().iloc[-1])
-    slot_atr = bt_atr / 6.5
-
-    # VIX on this day — used for VIX regime window overrides
-    try:
-        vix_on_day = float(vix_base["Close"].squeeze().iloc[-1])
-    except Exception:
-        vix_on_day = 0.0
-
-    # Compute actual gap for this day (open − prior close) to drive gap-conditional windows
-    day_open  = float(day_5m.iloc[0])
-    day_gap   = round(day_open - prev_close, 1)
-
-    slots = ["09:30","10:00","10:30","10:45","11:00","11:15","11:30","12:00",
-             "13:00","13:15","13:30","14:00","14:30","15:00","15:30","16:00"]
-    # Anchor projection to open price when gap is significant (fixes systematic drift)
-    proj_price = day_open if abs(day_gap) > 20 else prev_close
-    projections = []
-    for s in slots:
-        win_bias, win_label = window_bias_at(s, gap=day_gap, vix=vix_on_day)
-        wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
-        move = slot_atr * (bt_direction * 0.55 + wf * 0.45)
-        proj_price = round(proj_price + move, 1)
-        projections.append({"slot": s, "proj": proj_price, "move": round(move,1),
-                             "bias": win_bias, "label": win_label})
-
-    def actual_at(hhmm):
-        hh, mm = map(int, hhmm.split(":"))
-        snap = day_5m[(day_5m.index.hour == hh) & (day_5m.index.minute >= mm)].head(1)
-        return round(float(snap.iloc[0]), 1) if len(snap) else None
-
-    results = []
-    for p in projections:
-        actual = actual_at(p["slot"])
-        if actual is None: continue
-        idx    = slots.index(p["slot"])
-        prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
-        actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
-        # Chop = flat/indeterminate — threshold scales with VIX.
-        # High-VIX days have larger noise, so a "flat" move can be larger.
-        # VIX=20 → 0.30× ATR; VIX=30 → 0.45× ATR; VIX=40 → 0.60× ATR.
-        _chop_thresh = slot_atr * min(0.6, 0.30 * max(1.0, vix_on_day / 20.0))
-        _flat = abs(actual - prev_a) < _chop_thresh
-        correct = (p["bias"] == "bear" and actual_dir == "bear") or \
-                  (p["bias"] == "bull" and actual_dir == "bull") or \
-                  (p["bias"] == "chop" and _flat)
-        results.append({**p, "actual": actual, "actual_dir": actual_dir,
-                        "correct": correct, "err": round(actual - p["proj"], 1)})
-
-    dir_acc = sum(1 for r in results if r["correct"]) / len(results) * 100 if results else 0
-    avg_err = sum(abs(r["err"]) for r in results) / len(results) if results else 0
-
-    return {
-        "score": bt_score, "buys": bt_buys, "sells": bt_sells,
-        "rating": bt_rating, "color": bt_color,
-        "prev_close": prev_close, "atr": round(bt_atr,1),
-        "day_open": float(day_5m.iloc[0]), "day_eod": float(day_5m.iloc[-1]),
-        "day_move": round(float(day_5m.iloc[-1]) - float(day_5m.iloc[0]), 1),
-        "day_gap": day_gap,
-        "date_label": target_date.strftime("%A %B %d, %Y"),
-        "vix_on_day": round(vix_on_day, 1),
-        "results": results, "dir_acc": round(dir_acc,1), "avg_err": round(avg_err,1),
-    }
+        # period="20d" gives ~20 trading days of 5-min bars → covers 2 full weeks
+        spx_5m = yf.download("^GSPC", period="20d", interval="5m", progress=False, auto_adjust=True)
+        spx_5m.index = spx_5m.index.tz_convert(EST)
+        trading_days  = sorted(set(spx_5m.index.date))
+        day_series    = {d: spx_5m[spx_5m.index.date == d]["Close"].squeeze() for d in trading_days}
+        return spx_d, vix_d, sectors_d, day_series, trading_days
 
 
-def render_backtest_day(bt, uw_data):
-    if bt is None:
-        st.warning("No intraday 5-min data available for this day.")
-        return
+    def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end):
+        day_5m = day_series.get(target_date)
+        if day_5m is None or len(day_5m) == 0:
+            return None
 
-    move_c     = "#f87171" if bt['day_move'] < 0 else "#4ade80"
-    uw_bias_c  = ("#4ade80" if uw_data and uw_data["bias"]=="Bullish" else "#f87171") if uw_data else "#64748b"
-    b1,b2,b3,b4,b5,b6 = st.columns(6)
-    for col, lbl, val, vc in [
-        (b1, "SSR (Prior eve)",  f"{bt['score']}/100",    bt['color']),
-        (b2, "Algo Rating",      bt['rating'].split()[-1], bt['color']),
-        (b3, "Actual Move",      f"{bt['day_move']:+.1f} pts", move_c),
-        (b4, "Dir Accuracy",     f"{bt['dir_acc']}%",
-             "#4ade80" if bt['dir_acc'] >= 60 else "#f59e0b"),
-        (b5, "Avg Price Error",  f"±{bt['avg_err']} pts", "#94a3b8"),
-        (b6, "UW Flow Bias",
-             uw_data["bias"] if uw_data else "N/A",
-             uw_bias_c),
-    ]:
-        col.markdown(
-            f'<div class="metric-tile"><div class="metric-label">{lbl}</div>'
-            f'<div style="font-size:18px;font-weight:800;color:{vc}">{val}</div></div>',
-            unsafe_allow_html=True)
+        spx_base = spx_d.iloc[:-offset_from_end] if offset_from_end > 0 else spx_d
+        vix_base = vix_d.iloc[:-offset_from_end] if offset_from_end > 0 else vix_d
+        sec_base  = {k: v.iloc[:-offset_from_end] if offset_from_end > 0 else v for k, v in sectors_d.items()}
 
-    st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
-    bc1, bc2 = st.columns([1.7, 1])
+        prev_close   = float(spx_base["Close"].squeeze().iloc[-1])
+        bt_score, bt_buys, bt_sells, _ = compute_ssr(spx_base, vix_base, pd.DataFrame(), sec_base)
+        bt_rating, bt_action, _, bt_color = ssr_meta(bt_score)
+        bt_direction = ssr_direction(bt_score)
 
-    with bc1:
+        h = spx_base["High"].squeeze(); l = spx_base["Low"].squeeze(); c = spx_base["Close"].squeeze()
+        tr     = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        bt_atr = float(tr.rolling(14).mean().iloc[-1])
+        slot_atr = bt_atr / 6.5
+
+        # VIX on this day — used for VIX regime window overrides
+        try:
+            vix_on_day = float(vix_base["Close"].squeeze().iloc[-1])
+        except Exception:
+            vix_on_day = 0.0
+
+        # Compute actual gap for this day (open − prior close) to drive gap-conditional windows
+        day_open  = float(day_5m.iloc[0])
+        day_gap   = round(day_open - prev_close, 1)
+
+        slots = ["09:30","10:00","10:30","10:45","11:00","11:15","11:30","12:00",
+                 "13:00","13:15","13:30","14:00","14:30","15:00","15:30","16:00"]
+        # Anchor projection to open price when gap is significant (fixes systematic drift)
+        proj_price = day_open if abs(day_gap) > 20 else prev_close
+        projections = []
+        for s in slots:
+            win_bias, win_label = window_bias_at(s, gap=day_gap, vix=vix_on_day)
+            wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
+            move = slot_atr * (bt_direction * 0.55 + wf * 0.45)
+            proj_price = round(proj_price + move, 1)
+            projections.append({"slot": s, "proj": proj_price, "move": round(move,1),
+                                 "bias": win_bias, "label": win_label})
+
+        def actual_at(hhmm):
+            hh, mm = map(int, hhmm.split(":"))
+            snap = day_5m[(day_5m.index.hour == hh) & (day_5m.index.minute >= mm)].head(1)
+            return round(float(snap.iloc[0]), 1) if len(snap) else None
+
+        results = []
+        for p in projections:
+            actual = actual_at(p["slot"])
+            if actual is None: continue
+            idx    = slots.index(p["slot"])
+            prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
+            actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
+            # Chop = flat/indeterminate — threshold scales with VIX.
+            # High-VIX days have larger noise, so a "flat" move can be larger.
+            # VIX=20 → 0.30× ATR; VIX=30 → 0.45× ATR; VIX=40 → 0.60× ATR.
+            _chop_thresh = slot_atr * min(0.6, 0.30 * max(1.0, vix_on_day / 20.0))
+            _flat = abs(actual - prev_a) < _chop_thresh
+            correct = (p["bias"] == "bear" and actual_dir == "bear") or \
+                      (p["bias"] == "bull" and actual_dir == "bull") or \
+                      (p["bias"] == "chop" and _flat)
+            results.append({**p, "actual": actual, "actual_dir": actual_dir,
+                            "correct": correct, "err": round(actual - p["proj"], 1)})
+
+        dir_acc = sum(1 for r in results if r["correct"]) / len(results) * 100 if results else 0
+        avg_err = sum(abs(r["err"]) for r in results) / len(results) if results else 0
+
+        return {
+            "score": bt_score, "buys": bt_buys, "sells": bt_sells,
+            "rating": bt_rating, "color": bt_color,
+            "prev_close": prev_close, "atr": round(bt_atr,1),
+            "day_open": float(day_5m.iloc[0]), "day_eod": float(day_5m.iloc[-1]),
+            "day_move": round(float(day_5m.iloc[-1]) - float(day_5m.iloc[0]), 1),
+            "day_gap": day_gap,
+            "date_label": target_date.strftime("%A %B %d, %Y"),
+            "vix_on_day": round(vix_on_day, 1),
+            "results": results, "dir_acc": round(dir_acc,1), "avg_err": round(avg_err,1),
+        }
+
+
+    def render_backtest_day(bt, uw_data):
+        if bt is None:
+            st.warning("No intraday 5-min data available for this day.")
+            return
+
+        move_c     = "#f87171" if bt['day_move'] < 0 else "#4ade80"
+        uw_bias_c  = ("#4ade80" if uw_data and uw_data["bias"]=="Bullish" else "#f87171") if uw_data else "#64748b"
+        b1,b2,b3,b4,b5,b6 = st.columns(6)
+        for col, lbl, val, vc in [
+            (b1, "SSR (Prior eve)",  f"{bt['score']}/100",    bt['color']),
+            (b2, "Algo Rating",      bt['rating'].split()[-1], bt['color']),
+            (b3, "Actual Move",      f"{bt['day_move']:+.1f} pts", move_c),
+            (b4, "Dir Accuracy",     f"{bt['dir_acc']}%",
+                 "#4ade80" if bt['dir_acc'] >= 60 else "#f59e0b"),
+            (b5, "Avg Price Error",  f"±{bt['avg_err']} pts", "#94a3b8"),
+            (b6, "UW Flow Bias",
+                 uw_data["bias"] if uw_data else "N/A",
+                 uw_bias_c),
+        ]:
+            col.markdown(
+                f'<div class="metric-tile"><div class="metric-label">{lbl}</div>'
+                f'<div style="font-size:18px;font-weight:800;color:{vc}">{val}</div></div>',
+                unsafe_allow_html=True)
+
+        st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
+        bc1, bc2 = st.columns([1.7, 1])
+
+        with bc1:
+            rows_html = ""
+            for r in bt["results"]:
+                win_tc  = BIAS_TEXT.get(r["bias"], "#94a3b8")
+                hit     = r["correct"]
+                hit_bg  = "rgba(34,197,94,0.12)" if hit else "rgba(248,113,113,0.10)"
+                tick    = "✅" if hit else "❌"
+                err_c   = "#4ade80" if abs(r["err"]) <= bt["atr"]*0.15 else ("#f59e0b" if abs(r["err"]) <= bt["atr"]*0.3 else "#f87171")
+                sign    = "+" if r["err"] >= 0 else ""
+                ad_icon = "🟢" if r["actual_dir"]=="bull" else ("🔴" if r["actual_dir"]=="bear" else "⚪")
+                rows_html += (
+                    f'<tr style="background:{hit_bg};border-bottom:1px solid #1a1f33">'
+                    f'<td style="padding:5px 10px;color:#94a3b8;font-size:12px">{to_ampm(r["slot"])}</td>'
+                    f'<td style="padding:5px 8px;font-size:11px;color:{win_tc}">{BIAS_COLOR.get(r["bias"],"")} {r["label"]}</td>'
+                    f'<td style="padding:5px 8px;font-weight:700;color:#94a3b8">{r["proj"]:,}</td>'
+                    f'<td style="padding:5px 8px;font-weight:700;color:#f1f5f9">{r["actual"]:,}</td>'
+                    f'<td style="padding:5px 8px;color:{err_c}">{sign}{r["err"]}</td>'
+                    f'<td style="padding:5px 8px">{ad_icon}</td>'
+                    f'<td style="padding:5px 10px;font-size:14px">{tick}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;border:1px solid #2d3250">'
+                f'<div style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase;margin-bottom:8px">'
+                f'Projected vs Actual — {bt["date_label"]}'
+                f' &nbsp;·&nbsp; Prior Close: {bt["prev_close"]:.1f}'
+                f' &nbsp;·&nbsp; Gap: {"+" if bt["day_gap"]>=0 else ""}{bt["day_gap"]:.1f} pts'
+                f' &nbsp;·&nbsp; Proj Base: {bt["day_open"]:.1f} ({"open anchored" if abs(bt["day_gap"])>20 else "prior close"})'
+                f' &nbsp;·&nbsp; ATR: {bt["atr"]}</div>'
+                f'<div style="overflow-y:auto;max-height:370px">'
+                f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9;font-size:12px">'
+                f'<thead><tr style="background:#0f1117">'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">TIME</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">WINDOW</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">PROJ</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ERR</th>'
+                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">DIR</th>'
+                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
+                f'</tr></thead><tbody>{rows_html}</tbody></table></div>'
+                f'<div style="margin-top:8px;font-size:10px;color:#475569">'
+                f'✅ Hit = direction matched &nbsp;·&nbsp; Error = actual − projected</div>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+        with bc2:
+            result_bg = "#0d2010" if bt['day_move'] < 0 else "#0a1f10"
+            uw_html   = ""
+            if uw_data:
+                pcr_c   = "#f87171" if uw_data["pcr"] > 1.0 else "#4ade80"
+                uw_html = (
+                    f'<div style="margin-top:10px;padding:8px;background:#0d1520;border-radius:6px">'
+                    f'<div style="font-size:10px;color:#64748b;margin-bottom:4px">🦅 Unusual Whales Flow</div>'
+                    f'<div style="display:flex;gap:10px;font-size:12px">'
+                    f'<span style="color:#4ade80">🟢 Bull ${uw_data["bull"]}M</span>'
+                    f'<span style="color:#f87171">🔴 Bear ${uw_data["bear"]}M</span></div>'
+                    f'<div style="margin-top:4px;font-size:12px">'
+                    f'P/C Ratio: <span style="color:{pcr_c};font-weight:700">{uw_data["pcr"]}</span>'
+                    f' &nbsp; Bias: <span style="color:{move_c};font-weight:700">{uw_data["bias"]}</span>'
+                    f'</div></div>'
+                )
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;border:1px solid #2d3250">'
+                f'<div style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase;margin-bottom:8px">Day Summary</div>'
+                f'<div style="padding:10px;background:{result_bg};border-radius:8px">'
+                f'<div style="font-size:10px;color:#64748b">Actual Result</div>'
+                f'<div style="font-size:17px;font-weight:800;color:{move_c};margin:3px 0">'
+                f'SPX {bt["day_open"]:,.1f} → {bt["day_eod"]:,.1f}</div>'
+                f'<div style="color:{move_c};font-size:13px">{bt["day_move"]:+.1f} pts on the day</div>'
+                f'</div>'
+                f'{uw_html}'
+                f'<div style="margin-top:10px;padding:8px;background:#0a0e1a;border-radius:6px">'
+                f'<div style="font-size:10px;color:#64748b;margin-bottom:4px">SSR Summary</div>'
+                f'<div style="font-size:12px;color:#cbd5e1">'
+                f'Score: <b>{bt["score"]}/100</b> &nbsp; '
+                f'Buys: <span style="color:#4ade80">{bt["buys"]}</span> &nbsp; '
+                f'Sells: <span style="color:#f87171">{bt["sells"]}</span></div>'
+                f'</div></div>',
+                unsafe_allow_html=True)
+
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # NEWS & ECONOMIC CALENDAR PANEL
+    # ═══════════════════════════════════════════════════════════════════════════════
+    _nc1, _nc2 = st.columns([1.6, 1])
+
+    with _nc1:
+        # ── Breaking News Feed ──────────────────────────────────────────────────
+        articles = news_data.get("articles", [])
+        comp     = news_data.get("composite_score", 0.0)
+        comp_lbl = news_data.get("label", "⚪ Neutral")
+        comp_c   = "#4ade80" if comp > 0.10 else ("#f87171" if comp < -0.10 else "#94a3b8")
+
+        # Category → display label + color
+        _CAT_DISPLAY = {
+            "OIL_SUPPLY_SHOCK": ("🛢️ OIL SHOCK",   "#f59e0b"),
+            "OIL_DROP":         ("🛢️ OIL DROP",    "#4ade80"),
+            "OIL_SPIKE":        ("🛢️ OIL SPIKE",   "#f87171"),
+            "IRAN_ESCALATION":  ("⚔️ IRAN",         "#f87171"),
+            "IRAN_DEESCALATION":("🕊️ IRAN DEAL",    "#4ade80"),
+            "RUSSIA_GEO":       ("⚔️ RUSSIA",        "#f87171"),
+            "CHINA_TAIWAN":     ("⚔️ TAIWAN",        "#f87171"),
+            "GEO_DEESCALATION": ("🕊️ DE-ESCAL",     "#4ade80"),
+            "TARIFF_BEARISH":   ("🚧 TARIFF",        "#f87171"),
+            "TARIFF_BULLISH":   ("🤝 TRADE DEAL",    "#4ade80"),
+            "FED_DOVISH":       ("🏦 FED DOVE",      "#4ade80"),
+            "FED_HAWKISH":      ("🏦 FED HAWK",      "#f87171"),
+            "CPI_HOT":          ("📊 CPI HOT",       "#f87171"),
+            "CPI_COOL":         ("📊 CPI COOL",      "#4ade80"),
+            "JOBS_STRONG":      ("👷 JOBS+",         "#f59e0b"),
+            "JOBS_WEAK":        ("👷 JOBS−",         "#f59e0b"),
+            "BANK_CRISIS":      ("🏦 BANK CRISIS",   "#b91c1c"),
+            "CREDIT_DOWNGRADE": ("📉 DOWNGRADE",     "#f87171"),
+            "FISCAL_CRISIS":    ("🏛️ FISCAL",        "#f87171"),
+            "FISCAL_RESOLUTION":("🏛️ FISCAL OK",    "#4ade80"),
+            "YIELD_SPIKE":      ("📈 YIELD↑",        "#f87171"),
+            "YIELD_DROP":       ("📈 YIELD↓",        "#4ade80"),
+            "EARNINGS_BEAT":    ("💹 EARN BEAT",     "#4ade80"),
+            "EARNINGS_MISS":    ("💹 EARN MISS",     "#f87171"),
+            "RECESSION_FEAR":   ("🔻 RECESSION",     "#f87171"),
+            "GROWTH_STRONG":    ("📈 GROWTH",        "#4ade80"),
+            "GENERIC":          ("",                 "#475569"),
+        }
+
         rows_html = ""
-        for r in bt["results"]:
-            win_tc  = BIAS_TEXT.get(r["bias"], "#94a3b8")
-            hit     = r["correct"]
-            hit_bg  = "rgba(34,197,94,0.12)" if hit else "rgba(248,113,113,0.10)"
-            tick    = "✅" if hit else "❌"
-            err_c   = "#4ade80" if abs(r["err"]) <= bt["atr"]*0.15 else ("#f59e0b" if abs(r["err"]) <= bt["atr"]*0.3 else "#f87171")
-            sign    = "+" if r["err"] >= 0 else ""
-            ad_icon = "🟢" if r["actual_dir"]=="bull" else ("🔴" if r["actual_dir"]=="bear" else "⚪")
+        for a in articles[:10]:
+            sc    = a["score"]
+            sc_c  = "#4ade80" if sc > 0.10 else ("#f87171" if sc < -0.10 else "#64748b")
+            badge = "🟢" if sc > 0.10 else ("🔴" if sc < -0.10 else "⚪")
+            src   = a.get("source","")[:14]
+            t_    = a.get("time","")[:16]
+            cat   = a.get("category","GENERIC")
+            note  = a.get("note","")
+            iw    = a.get("impact_weight", 1.0)
+            cat_lbl, cat_c = _CAT_DISPLAY.get(cat, ("", "#475569"))
+            cat_tag = (f' <span style="background:#1a1a2e;color:{cat_c};font-size:9px;'
+                       f'padding:1px 5px;border-radius:3px;font-weight:700">{cat_lbl}</span>'
+                       if cat_lbl else "")
+            # High-weight items get a causal note tooltip-style row
+            note_row = (f'<div style="font-size:9px;color:#475569;margin-top:1px;'
+                        f'font-style:italic">{note}</div>' if note and iw >= 2.5 else "")
             rows_html += (
-                f'<tr style="background:{hit_bg};border-bottom:1px solid #1a1f33">'
-                f'<td style="padding:5px 10px;color:#94a3b8;font-size:12px">{to_ampm(r["slot"])}</td>'
-                f'<td style="padding:5px 8px;font-size:11px;color:{win_tc}">{BIAS_COLOR.get(r["bias"],"")} {r["label"]}</td>'
-                f'<td style="padding:5px 8px;font-weight:700;color:#94a3b8">{r["proj"]:,}</td>'
-                f'<td style="padding:5px 8px;font-weight:700;color:#f1f5f9">{r["actual"]:,}</td>'
-                f'<td style="padding:5px 8px;color:{err_c}">{sign}{r["err"]}</td>'
-                f'<td style="padding:5px 8px">{ad_icon}</td>'
-                f'<td style="padding:5px 10px;font-size:14px">{tick}</td>'
-                f'</tr>'
+                f'<div style="padding:6px 8px;border-bottom:1px solid #1a1f33;display:flex;gap:8px;align-items:flex-start">'
+                f'<span style="font-size:14px;flex-shrink:0;margin-top:1px">{badge}</span>'
+                f'<div style="flex:1;min-width:0">'
+                f'<div style="font-size:12px;color:#e2e8f0;line-height:1.3">{a["title"][:120]}{cat_tag}</div>'
+                f'{note_row}'
+                f'<div style="font-size:10px;color:#475569;margin-top:2px">{src} · {t_} · wt:{iw:.1f}</div>'
+                f'</div>'
+                f'<span style="font-size:11px;color:{sc_c};font-weight:700;flex-shrink:0">{sc:+.2f}</span>'
+                f'</div>'
             )
+        if not rows_html:
+            rows_html = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">News unavailable — check connection</div>'
+
+        # Top-impact article banner
+        _top = news_data.get("top_impact")
+        _top_html = ""
+        if _top and _top.get("note"):
+            _tc = "#f87171" if comp < -0.05 else "#4ade80" if comp > 0.05 else "#f59e0b"
+            _top_html = (
+                f'<div style="margin:6px 10px;padding:8px 10px;background:#0d1520;'
+                f'border-left:3px solid {_tc};border-radius:4px;font-size:11px">'
+                f'<span style="color:{_tc};font-weight:700">⚡ TOP IMPACT [{_top["category"]}]</span>'
+                f'<div style="color:#94a3b8;margin-top:2px">{_top["note"]}</div>'
+                f'</div>'
+            )
+
         st.markdown(
-            f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;border:1px solid #2d3250">'
-            f'<div style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase;margin-bottom:8px">'
-            f'Projected vs Actual — {bt["date_label"]}'
-            f' &nbsp;·&nbsp; Prior Close: {bt["prev_close"]:.1f}'
-            f' &nbsp;·&nbsp; Gap: {"+" if bt["day_gap"]>=0 else ""}{bt["day_gap"]:.1f} pts'
-            f' &nbsp;·&nbsp; Proj Base: {bt["day_open"]:.1f} ({"open anchored" if abs(bt["day_gap"])>20 else "prior close"})'
-            f' &nbsp;·&nbsp; ATR: {bt["atr"]}</div>'
-            f'<div style="overflow-y:auto;max-height:370px">'
-            f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9;font-size:12px">'
-            f'<thead><tr style="background:#0f1117">'
-            f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">TIME</th>'
-            f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">WINDOW</th>'
-            f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">PROJ</th>'
-            f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL</th>'
-            f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ERR</th>'
-            f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">DIR</th>'
-            f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
-            f'</tr></thead><tbody>{rows_html}</tbody></table></div>'
-            f'<div style="margin-top:8px;font-size:10px;color:#475569">'
-            f'✅ Hit = direction matched &nbsp;·&nbsp; Error = actual − projected</div>'
+            f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 6px">'
+            f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📰 Market News · Causal-Chain Scored</span>'
+            f'<span style="font-size:12px;font-weight:700;color:{comp_c}">Composite: {comp_lbl} ({comp:+.3f})</span>'
+            f'</div>'
+            f'{_top_html}'
+            f'<div style="overflow-y:auto;max-height:360px">{rows_html}</div>'
             f'</div>',
             unsafe_allow_html=True)
 
-    with bc2:
-        result_bg = "#0d2010" if bt['day_move'] < 0 else "#0a1f10"
-        uw_html   = ""
-        if uw_data:
-            pcr_c   = "#f87171" if uw_data["pcr"] > 1.0 else "#4ade80"
-            uw_html = (
-                f'<div style="margin-top:10px;padding:8px;background:#0d1520;border-radius:6px">'
-                f'<div style="font-size:10px;color:#64748b;margin-bottom:4px">🦅 Unusual Whales Flow</div>'
-                f'<div style="display:flex;gap:10px;font-size:12px">'
-                f'<span style="color:#4ade80">🟢 Bull ${uw_data["bull"]}M</span>'
-                f'<span style="color:#f87171">🔴 Bear ${uw_data["bear"]}M</span></div>'
-                f'<div style="margin-top:4px;font-size:12px">'
-                f'P/C Ratio: <span style="color:{pcr_c};font-weight:700">{uw_data["pcr"]}</span>'
-                f' &nbsp; Bias: <span style="color:{move_c};font-weight:700">{uw_data["bias"]}</span>'
-                f'</div></div>'
+    with _nc2:
+        # ── Economic Calendar ───────────────────────────────────────────────────
+        today_str = date.today().strftime("%Y-%m-%d")
+        cal_rows  = ""
+        for (ev_date, ev_label, ev_type, ev_impact) in today_events:
+            d = datetime.strptime(ev_date, "%Y-%m-%d").date()
+            days_away = (d - date.today()).days
+            if days_away == 0:
+                day_tag = '<span style="background:#7f1d1d;color:#fca5a5;font-size:9px;padding:1px 6px;border-radius:3px;font-weight:700">TODAY</span>'
+            elif days_away == 1:
+                day_tag = '<span style="background:#1c1917;color:#f59e0b;font-size:9px;padding:1px 6px;border-radius:3px">TOMORROW</span>'
+            else:
+                day_tag = f'<span style="color:#64748b;font-size:10px">{d.strftime("%a %b %d")}</span>'
+            icon    = _EVENT_ICON.get(ev_type, "📌")
+            imp_c   = _EVENT_COLOR.get(ev_impact, "#94a3b8")
+            cal_rows += (
+                f'<div style="padding:8px 12px;border-bottom:1px solid #1a1f33;display:flex;gap:10px;align-items:center">'
+                f'<span style="font-size:18px">{icon}</span>'
+                f'<div style="flex:1">'
+                f'<div style="font-size:12px;color:#e2e8f0;font-weight:600">{ev_label}</div>'
+                f'<div style="margin-top:3px">{day_tag}</div>'
+                f'</div>'
+                f'<span style="font-size:10px;color:{imp_c};font-weight:700">{ev_impact}</span>'
+                f'</div>'
             )
+        if not cal_rows:
+            cal_rows = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">No major events this week</div>'
+
+        # Today's event impact on trading
+        today_types = {e[2] for e in today_events if e[0] == today_str}
+        event_note  = ""
+        if "FOMC" in today_types:
+            event_note = '<div style="margin:8px 12px;padding:8px;background:#2d1b00;border-radius:6px;font-size:11px;color:#f59e0b">⚡ <b>FOMC Day</b> — Windows 9:30–2:00 PM forced to CHOP. Expect explosion after 2 PM announcement.</div>'
+        elif "CPI" in today_types:
+            event_note = '<div style="margin:8px 12px;padding:8px;background:#1a1233;border-radius:6px;font-size:11px;color:#a78bfa">📊 <b>CPI Day</b> — First 30 min unreliable (knee-jerk reversal common). Wait for 10:00 AM re-test.</div>'
+        elif "NFP" in today_types:
+            event_note = '<div style="margin:8px 12px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">👷 <b>NFP Day</b> — First 30 min is noise. True direction sets after 10:00 AM.</div>'
+
         st.markdown(
-            f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;border:1px solid #2d3250">'
-            f'<div style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase;margin-bottom:8px">Day Summary</div>'
-            f'<div style="padding:10px;background:{result_bg};border-radius:8px">'
-            f'<div style="font-size:10px;color:#64748b">Actual Result</div>'
-            f'<div style="font-size:17px;font-weight:800;color:{move_c};margin:3px 0">'
-            f'SPX {bt["day_open"]:,.1f} → {bt["day_eod"]:,.1f}</div>'
-            f'<div style="color:{move_c};font-size:13px">{bt["day_move"]:+.1f} pts on the day</div>'
-            f'</div>'
-            f'{uw_html}'
-            f'<div style="margin-top:10px;padding:8px;background:#0a0e1a;border-radius:6px">'
-            f'<div style="font-size:10px;color:#64748b;margin-bottom:4px">SSR Summary</div>'
-            f'<div style="font-size:12px;color:#cbd5e1">'
-            f'Score: <b>{bt["score"]}/100</b> &nbsp; '
-            f'Buys: <span style="color:#4ade80">{bt["buys"]}</span> &nbsp; '
-            f'Sells: <span style="color:#f87171">{bt["sells"]}</span></div>'
-            f'</div></div>',
+            f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
+            f'<div style="padding:10px 14px 6px;font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📅 Economic Calendar — Next 5 Days</div>'
+            f'{event_note}'
+            f'<div style="overflow-y:auto;max-height:280px">{cal_rows}</div>'
+            f'</div>',
             unsafe_allow_html=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# NEWS & ECONOMIC CALENDAR PANEL
-# ═══════════════════════════════════════════════════════════════════════════════
-_nc1, _nc2 = st.columns([1.6, 1])
-
-with _nc1:
-    # ── Breaking News Feed ──────────────────────────────────────────────────
-    articles = news_data.get("articles", [])
-    comp     = news_data.get("composite_score", 0.0)
-    comp_lbl = news_data.get("label", "⚪ Neutral")
-    comp_c   = "#4ade80" if comp > 0.10 else ("#f87171" if comp < -0.10 else "#94a3b8")
-
-    # Category → display label + color
-    _CAT_DISPLAY = {
-        "OIL_SUPPLY_SHOCK": ("🛢️ OIL SHOCK",   "#f59e0b"),
-        "OIL_DROP":         ("🛢️ OIL DROP",    "#4ade80"),
-        "OIL_SPIKE":        ("🛢️ OIL SPIKE",   "#f87171"),
-        "IRAN_ESCALATION":  ("⚔️ IRAN",         "#f87171"),
-        "IRAN_DEESCALATION":("🕊️ IRAN DEAL",    "#4ade80"),
-        "RUSSIA_GEO":       ("⚔️ RUSSIA",        "#f87171"),
-        "CHINA_TAIWAN":     ("⚔️ TAIWAN",        "#f87171"),
-        "GEO_DEESCALATION": ("🕊️ DE-ESCAL",     "#4ade80"),
-        "TARIFF_BEARISH":   ("🚧 TARIFF",        "#f87171"),
-        "TARIFF_BULLISH":   ("🤝 TRADE DEAL",    "#4ade80"),
-        "FED_DOVISH":       ("🏦 FED DOVE",      "#4ade80"),
-        "FED_HAWKISH":      ("🏦 FED HAWK",      "#f87171"),
-        "CPI_HOT":          ("📊 CPI HOT",       "#f87171"),
-        "CPI_COOL":         ("📊 CPI COOL",      "#4ade80"),
-        "JOBS_STRONG":      ("👷 JOBS+",         "#f59e0b"),
-        "JOBS_WEAK":        ("👷 JOBS−",         "#f59e0b"),
-        "BANK_CRISIS":      ("🏦 BANK CRISIS",   "#b91c1c"),
-        "CREDIT_DOWNGRADE": ("📉 DOWNGRADE",     "#f87171"),
-        "FISCAL_CRISIS":    ("🏛️ FISCAL",        "#f87171"),
-        "FISCAL_RESOLUTION":("🏛️ FISCAL OK",    "#4ade80"),
-        "YIELD_SPIKE":      ("📈 YIELD↑",        "#f87171"),
-        "YIELD_DROP":       ("📈 YIELD↓",        "#4ade80"),
-        "EARNINGS_BEAT":    ("💹 EARN BEAT",     "#4ade80"),
-        "EARNINGS_MISS":    ("💹 EARN MISS",     "#f87171"),
-        "RECESSION_FEAR":   ("🔻 RECESSION",     "#f87171"),
-        "GROWTH_STRONG":    ("📈 GROWTH",        "#4ade80"),
-        "GENERIC":          ("",                 "#475569"),
-    }
-
-    rows_html = ""
-    for a in articles[:10]:
-        sc    = a["score"]
-        sc_c  = "#4ade80" if sc > 0.10 else ("#f87171" if sc < -0.10 else "#64748b")
-        badge = "🟢" if sc > 0.10 else ("🔴" if sc < -0.10 else "⚪")
-        src   = a.get("source","")[:14]
-        t_    = a.get("time","")[:16]
-        cat   = a.get("category","GENERIC")
-        note  = a.get("note","")
-        iw    = a.get("impact_weight", 1.0)
-        cat_lbl, cat_c = _CAT_DISPLAY.get(cat, ("", "#475569"))
-        cat_tag = (f' <span style="background:#1a1a2e;color:{cat_c};font-size:9px;'
-                   f'padding:1px 5px;border-radius:3px;font-weight:700">{cat_lbl}</span>'
-                   if cat_lbl else "")
-        # High-weight items get a causal note tooltip-style row
-        note_row = (f'<div style="font-size:9px;color:#475569;margin-top:1px;'
-                    f'font-style:italic">{note}</div>' if note and iw >= 2.5 else "")
-        rows_html += (
-            f'<div style="padding:6px 8px;border-bottom:1px solid #1a1f33;display:flex;gap:8px;align-items:flex-start">'
-            f'<span style="font-size:14px;flex-shrink:0;margin-top:1px">{badge}</span>'
-            f'<div style="flex:1;min-width:0">'
-            f'<div style="font-size:12px;color:#e2e8f0;line-height:1.3">{a["title"][:120]}{cat_tag}</div>'
-            f'{note_row}'
-            f'<div style="font-size:10px;color:#475569;margin-top:2px">{src} · {t_} · wt:{iw:.1f}</div>'
-            f'</div>'
-            f'<span style="font-size:11px;color:{sc_c};font-weight:700;flex-shrink:0">{sc:+.2f}</span>'
-            f'</div>'
-        )
-    if not rows_html:
-        rows_html = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">News unavailable — check connection</div>'
-
-    # Top-impact article banner
-    _top = news_data.get("top_impact")
-    _top_html = ""
-    if _top and _top.get("note"):
-        _tc = "#f87171" if comp < -0.05 else "#4ade80" if comp > 0.05 else "#f59e0b"
-        _top_html = (
-            f'<div style="margin:6px 10px;padding:8px 10px;background:#0d1520;'
-            f'border-left:3px solid {_tc};border-radius:4px;font-size:11px">'
-            f'<span style="color:{_tc};font-weight:700">⚡ TOP IMPACT [{_top["category"]}]</span>'
-            f'<div style="color:#94a3b8;margin-top:2px">{_top["note"]}</div>'
-            f'</div>'
-        )
-
-    st.markdown(
-        f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 6px">'
-        f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📰 Market News · Causal-Chain Scored</span>'
-        f'<span style="font-size:12px;font-weight:700;color:{comp_c}">Composite: {comp_lbl} ({comp:+.3f})</span>'
-        f'</div>'
-        f'{_top_html}'
-        f'<div style="overflow-y:auto;max-height:360px">{rows_html}</div>'
-        f'</div>',
-        unsafe_allow_html=True)
-
-with _nc2:
-    # ── Economic Calendar ───────────────────────────────────────────────────
-    today_str = date.today().strftime("%Y-%m-%d")
-    cal_rows  = ""
-    for (ev_date, ev_label, ev_type, ev_impact) in today_events:
-        d = datetime.strptime(ev_date, "%Y-%m-%d").date()
-        days_away = (d - date.today()).days
-        if days_away == 0:
-            day_tag = '<span style="background:#7f1d1d;color:#fca5a5;font-size:9px;padding:1px 6px;border-radius:3px;font-weight:700">TODAY</span>'
-        elif days_away == 1:
-            day_tag = '<span style="background:#1c1917;color:#f59e0b;font-size:9px;padding:1px 6px;border-radius:3px">TOMORROW</span>'
-        else:
-            day_tag = f'<span style="color:#64748b;font-size:10px">{d.strftime("%a %b %d")}</span>'
-        icon    = _EVENT_ICON.get(ev_type, "📌")
-        imp_c   = _EVENT_COLOR.get(ev_impact, "#94a3b8")
-        cal_rows += (
-            f'<div style="padding:8px 12px;border-bottom:1px solid #1a1f33;display:flex;gap:10px;align-items:center">'
-            f'<span style="font-size:18px">{icon}</span>'
-            f'<div style="flex:1">'
-            f'<div style="font-size:12px;color:#e2e8f0;font-weight:600">{ev_label}</div>'
-            f'<div style="margin-top:3px">{day_tag}</div>'
-            f'</div>'
-            f'<span style="font-size:10px;color:{imp_c};font-weight:700">{ev_impact}</span>'
-            f'</div>'
-        )
-    if not cal_rows:
-        cal_rows = '<div style="padding:16px;color:#475569;font-size:12px;text-align:center">No major events this week</div>'
-
-    # Today's event impact on trading
-    today_types = {e[2] for e in today_events if e[0] == today_str}
-    event_note  = ""
-    if "FOMC" in today_types:
-        event_note = '<div style="margin:8px 12px;padding:8px;background:#2d1b00;border-radius:6px;font-size:11px;color:#f59e0b">⚡ <b>FOMC Day</b> — Windows 9:30–2:00 PM forced to CHOP. Expect explosion after 2 PM announcement.</div>'
-    elif "CPI" in today_types:
-        event_note = '<div style="margin:8px 12px;padding:8px;background:#1a1233;border-radius:6px;font-size:11px;color:#a78bfa">📊 <b>CPI Day</b> — First 30 min unreliable (knee-jerk reversal common). Wait for 10:00 AM re-test.</div>'
-    elif "NFP" in today_types:
-        event_note = '<div style="margin:8px 12px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">👷 <b>NFP Day</b> — First 30 min is noise. True direction sets after 10:00 AM.</div>'
-
-    st.markdown(
-        f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;margin-bottom:14px">'
-        f'<div style="padding:10px 14px 6px;font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">📅 Economic Calendar — Next 5 Days</div>'
-        f'{event_note}'
-        f'<div style="overflow-y:auto;max-height:280px">{cal_rows}</div>'
-        f'</div>',
-        unsafe_allow_html=True)
 
 def aggregate_window_stats(all_bt_results):
     """
@@ -2595,283 +2670,289 @@ def _acc_color(d):
     return "#4ade80" if v >= 65 else ("#f59e0b" if v >= 45 else "#f87171")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SELF-IMPROVEMENT — Today's Live Prediction Accuracy
-# Compares this session's window predictions vs actual SPX intraday moves.
-# Refreshes every page reload (every 3 min) — accuracy improves as day progresses.
-# ═══════════════════════════════════════════════════════════════════════════════
-with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (click to expand)", expanded=False):
-    @st.cache_data(ttl=180)
-    def load_today_5m():
-        """Fetch today's 5-min SPX bars for live accuracy scoring."""
-        try:
-            df = yf.download("^GSPC", period="1d", interval="5m",
-                             progress=False, auto_adjust=True)
-            df.index = df.index.tz_convert(EST)
-            return df
-        except Exception:
-            return pd.DataFrame()
 
-    _today_5m = load_today_5m()
-    # Upper bound added: after 4 PM, market is closed and "today's" 5-min data is stale.
-    _rth_open  = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 9, 30))
-    _rth_close = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 16, 0))
-    _today_is_rth = (now_est.weekday() < 5 and _rth_open <= now_est <= _rth_close)
+with _tab_research:
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SELF-IMPROVEMENT — Today's Live Prediction Accuracy
+    # Compares this session's window predictions vs actual SPX intraday moves.
+    # Refreshes every page reload (every 3 min) — accuracy improves as day progresses.
+    # ═══════════════════════════════════════════════════════════════════════════════
+    with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (click to expand)", expanded=False):
+        @st.cache_data(ttl=180)
+        def load_today_5m():
+            """Fetch today's 5-min SPX bars for live accuracy scoring."""
+            try:
+                df = yf.download("^GSPC", period="1d", interval="5m",
+                                 progress=False, auto_adjust=True)
+                df.index = df.index.tz_convert(EST)
+                return df
+            except Exception:
+                return pd.DataFrame()
 
-    if _today_5m.empty or not _today_is_rth:
-        st.markdown(
-            '<div style="padding:14px;color:#475569;font-size:12px;text-align:center">'
-            'Live accuracy available during market hours (Mon–Fri 9:30 AM+ EST).'
-            '</div>', unsafe_allow_html=True)
-    else:
-        _5m_close = _today_5m["Close"].squeeze()
-        if isinstance(_5m_close, pd.DataFrame): _5m_close = _5m_close.iloc[:, 0]
-        _5m_open  = float(_5m_close.iloc[0]) if len(_5m_close) else spx_price
+        _today_5m = load_today_5m()
+        # Upper bound added: after 4 PM, market is closed and "today's" 5-min data is stale.
+        _rth_open  = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 9, 30))
+        _rth_close = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 16, 0))
+        _today_is_rth = (now_est.weekday() < 5 and _rth_open <= now_est <= _rth_close)
 
-        def _snap_at(hhmm):
-            hh, mm = map(int, hhmm.split(":"))
-            _mask = ((_today_5m.index.hour == hh) &
-                     (_today_5m.index.minute >= mm))
-            _s = _today_5m[_mask]["Close"].squeeze()
-            if isinstance(_s, pd.DataFrame): _s = _s.iloc[:, 0]
-            return round(float(_s.iloc[0]), 1) if len(_s) else None
-
-        _slots = ["09:30","10:00","10:30","11:00","11:30","12:00",
-                  "13:00","13:30","14:00","14:30","15:00","15:30","16:00"]
-        _today_gap  = round(spx_price - float(_5m_close.iloc[-2]) if len(_5m_close) > 1 else 0, 1)
-        _slot_atr   = levels["atr"] / 6.5
-
-        _today_results = []
-        _prev_actual   = _5m_open
-        for _sl in _slots:
-            _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
-            _actual  = _snap_at(_sl)
-            if _actual is None:
-                continue
-            _actual_dir = "bull" if _actual > _prev_actual else ("bear" if _actual < _prev_actual else "chop")
-            _chop_t     = _slot_atr * min(0.6, 0.30 * max(1.0, vix_now / 20.0))
-            _flat       = abs(_actual - _prev_actual) < _chop_t
-            _correct    = ((_wb == "bear" and _actual_dir == "bear") or
-                           (_wb == "bull" and _actual_dir == "bull") or
-                           (_wb == "chop" and _flat))
-            _today_results.append({
-                "slot": _sl, "bias": _wb, "label": _wl,
-                "actual": _actual, "actual_dir": _actual_dir,
-                "correct": _correct, "prev": _prev_actual,
-            })
-            _prev_actual = _actual
-
-        if _today_results:
-            _hits  = sum(1 for r in _today_results if r["correct"])
-            _total = len(_today_results)
-            _acc   = int(_hits / _total * 100)
-            _acc_c = "#4ade80" if _acc >= 65 else ("#f59e0b" if _acc >= 45 else "#f87171")
-
-            _rows_html = ""
-            for r in _today_results:
-                _tc   = BIAS_TEXT.get(r["bias"], "#94a3b8")
-                _tick = "✅" if r["correct"] else "❌"
-                _ad   = "🟢" if r["actual_dir"] == "bull" else ("🔴" if r["actual_dir"] == "bear" else "⚪")
-                _bg   = "rgba(34,197,94,0.10)" if r["correct"] else "rgba(248,113,113,0.08)"
-                _rows_html += (
-                    f'<tr style="background:{_bg};border-bottom:1px solid #1a1f33">'
-                    f'<td style="padding:5px 10px;color:#94a3b8;font-size:12px">{to_ampm(r["slot"])}</td>'
-                    f'<td style="padding:5px 8px;font-size:11px;color:{_tc}">{BIAS_COLOR.get(r["bias"],"")} {r["label"][:30]}</td>'
-                    f'<td style="padding:5px 8px;font-weight:700;color:#f1f5f9">{r["actual"]:,}</td>'
-                    f'<td style="padding:5px 8px;font-size:13px">{_ad}</td>'
-                    f'<td style="padding:5px 10px;font-size:14px">{_tick}</td>'
-                    f'</tr>'
-                )
-
-            # Learning insight: flag which windows are underperforming today
-            _worst  = [r["label"][:20] for r in _today_results if not r["correct"]]
-            _insight = ""
-            if len(_worst) >= 3:
-                _insight = f'<div style="margin-top:8px;padding:8px;background:#1a1000;border-radius:6px;font-size:11px;color:#f59e0b">⚠️ Windows missing today: {", ".join(set(_worst[:4]))} — consider flipping or skipping these</div>'
-            elif _acc >= 70:
-                _insight = f'<div style="margin-top:8px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">✅ Strong session — algorithm in sync with today\'s market regime</div>'
-
-            st.markdown(
-                f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;padding:14px 16px">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-                f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">🧠 Today\'s Accuracy — {now_est.strftime("%A %b %d")}</span>'
-                f'<span style="font-size:18px;font-weight:800;color:{_acc_c}">{_acc}% &nbsp;<span style="font-size:12px;color:#64748b">({_hits}/{_total} correct)</span></span>'
-                f'</div>'
-                f'<div style="overflow-y:auto;max-height:300px">'
-                f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9;font-size:12px">'
-                f'<thead><tr style="background:#0f1117">'
-                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">TIME</th>'
-                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">PREDICTED</th>'
-                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">SPX</th>'
-                f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL DIR</th>'
-                f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
-                f'</tr></thead><tbody>{_rows_html}</tbody></table></div>'
-                f'{_insight}'
-                f'<div style="margin-top:8px;font-size:10px;color:#475569">'
-                f'Updates every 3 min · Window bias includes VIX regime, gap, news sentiment overrides'
-                f'</div></div>',
-                unsafe_allow_html=True)
-        else:
+        if _today_5m.empty or not _today_is_rth:
             st.markdown(
                 '<div style="padding:14px;color:#475569;font-size:12px;text-align:center">'
-                'Waiting for intraday bars — check back after 9:35 AM EST.'
+                'Live accuracy available during market hours (Mon–Fri 9:30 AM+ EST).'
                 '</div>', unsafe_allow_html=True)
-
-with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
-    spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
-
-    last5 = trading_days_bt[-10:] if len(trading_days_bt) >= 10 else trading_days_bt
-    daily_dates_list = list(spx_d_bt.index.date)
-    total_daily      = len(spx_d_bt)
-
-    # Pre-compute offset per day: rows to trim so last row = prior day's close
-    offsets = {}
-    for td in last5:
-        try:
-            pos = daily_dates_list.index(td)
-            offsets[td] = total_daily - pos   # drop from pos onward
-        except ValueError:
-            offsets[td] = 1
-
-    # Summary grid — 2 rows of 5 for 10 days
-    def render_day_tile(col, td, ds):
-        if ds is not None and len(ds) > 0:
-            d_open  = float(ds.iloc[0])
-            d_close = float(ds.iloc[-1])
-            d_move  = round(d_close - d_open, 1)
-            mc = "#f87171" if d_move < 0 else "#4ade80"
-            col.markdown(
-                f'<div class="metric-tile" style="text-align:center">'
-                f'<div class="metric-label">{td.strftime("%a %b %d")}</div>'
-                f'<div style="font-size:16px;font-weight:800;color:{mc}">{d_move:+.1f}</div>'
-                f'<div style="font-size:10px;color:#64748b">{d_open:,.0f}→{d_close:,.0f}</div>'
-                f'</div>', unsafe_allow_html=True)
         else:
-            col.markdown(
-                f'<div class="metric-tile" style="text-align:center">'
-                f'<div class="metric-label">{td.strftime("%a %b %d")}</div>'
-                f'<div style="font-size:11px;color:#64748b">No data</div></div>',
+            _5m_close = _today_5m["Close"].squeeze()
+            if isinstance(_5m_close, pd.DataFrame): _5m_close = _5m_close.iloc[:, 0]
+            _5m_open  = float(_5m_close.iloc[0]) if len(_5m_close) else spx_price
+
+            def _snap_at(hhmm):
+                hh, mm = map(int, hhmm.split(":"))
+                _mask = ((_today_5m.index.hour == hh) &
+                         (_today_5m.index.minute >= mm))
+                _s = _today_5m[_mask]["Close"].squeeze()
+                if isinstance(_s, pd.DataFrame): _s = _s.iloc[:, 0]
+                return round(float(_s.iloc[0]), 1) if len(_s) else None
+
+            _slots = ["09:30","10:00","10:30","11:00","11:30","12:00",
+                      "13:00","13:30","14:00","14:30","15:00","15:30","16:00"]
+            # live_gap = today's daily Open − prior Close (computed once at page load,
+            # reused here so window_bias_at() sees the same gap regime as projections do)
+            _slot_atr   = levels["atr"] / 6.5
+
+            _today_results = []
+            _prev_actual   = _5m_open
+            for _sl in _slots:
+                _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week)
+                _actual  = _snap_at(_sl)
+                if _actual is None:
+                    continue
+                _actual_dir = "bull" if _actual > _prev_actual else ("bear" if _actual < _prev_actual else "chop")
+                _chop_t     = _slot_atr * min(0.6, 0.30 * max(1.0, vix_now / 20.0))
+                _flat       = abs(_actual - _prev_actual) < _chop_t
+                _correct    = ((_wb == "bear" and _actual_dir == "bear") or
+                               (_wb == "bull" and _actual_dir == "bull") or
+                               (_wb == "chop" and _flat))
+                _today_results.append({
+                    "slot": _sl, "bias": _wb, "label": _wl,
+                    "actual": _actual, "actual_dir": _actual_dir,
+                    "correct": _correct, "prev": _prev_actual,
+                })
+                _prev_actual = _actual
+
+            if _today_results:
+                _hits  = sum(1 for r in _today_results if r["correct"])
+                _total = len(_today_results)
+                _acc   = int(_hits / _total * 100)
+                _acc_c = "#4ade80" if _acc >= 65 else ("#f59e0b" if _acc >= 45 else "#f87171")
+
+                _rows_html = ""
+                for r in _today_results:
+                    _tc   = BIAS_TEXT.get(r["bias"], "#94a3b8")
+                    _tick = "✅" if r["correct"] else "❌"
+                    _ad   = "🟢" if r["actual_dir"] == "bull" else ("🔴" if r["actual_dir"] == "bear" else "⚪")
+                    _bg   = "rgba(34,197,94,0.10)" if r["correct"] else "rgba(248,113,113,0.08)"
+                    _rows_html += (
+                        f'<tr style="background:{_bg};border-bottom:1px solid #1a1f33">'
+                        f'<td style="padding:5px 10px;color:#94a3b8;font-size:12px">{to_ampm(r["slot"])}</td>'
+                        f'<td style="padding:5px 8px;font-size:11px;color:{_tc}">{BIAS_COLOR.get(r["bias"],"")} {r["label"][:30]}</td>'
+                        f'<td style="padding:5px 8px;font-weight:700;color:#f1f5f9">{r["actual"]:,}</td>'
+                        f'<td style="padding:5px 8px;font-size:13px">{_ad}</td>'
+                        f'<td style="padding:5px 10px;font-size:14px">{_tick}</td>'
+                        f'</tr>'
+                    )
+
+                # Partial-day insight — flag underperforming windows without overclaiming
+                _worst  = [r["label"][:20] for r in _today_results if not r["correct"]]
+                _insight = ""
+                if len(_worst) >= 3:
+                    _insight = (f'<div style="margin-top:8px;padding:8px;background:#1a1000;border-radius:6px;font-size:11px;color:#f59e0b">'
+                                f'⚠️ Misses so far today: {", ".join(set(_worst[:4]))} — small sample, check end-of-day</div>')
+                elif _acc >= 70:
+                    _insight = (f'<div style="margin-top:8px;padding:8px;background:#0d2010;border-radius:6px;font-size:11px;color:#4ade80">'
+                                f'✅ Strong so far today ({_hits}/{_total} windows) — partial session, not a complete sample</div>')
+
+                st.markdown(
+                    f'<div style="background:#1e2130;border-radius:10px;border:1px solid #2d3250;padding:14px 16px">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+                    f'<span style="font-size:10px;color:#64748b;letter-spacing:1.4px;text-transform:uppercase">'
+                    f'📍 Today So Far — {now_est.strftime("%A %b %d")} &nbsp;·&nbsp; n={_total} slots</span>'
+                    f'<span style="font-size:18px;font-weight:800;color:{_acc_c}">{_acc}% &nbsp;<span style="font-size:12px;color:#64748b">({_hits}/{_total})</span></span>'
+                    f'</div>'
+                    f'<div style="overflow-y:auto;max-height:300px">'
+                    f'<table style="width:100%;border-collapse:collapse;color:#f1f5f9;font-size:12px">'
+                    f'<thead><tr style="background:#0f1117">'
+                    f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">TIME</th>'
+                    f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">PREDICTED</th>'
+                    f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">SPX</th>'
+                    f'<th style="padding:5px 8px;text-align:left;color:#64748b;font-size:10px">ACTUAL DIR</th>'
+                    f'<th style="padding:5px 10px;text-align:left;color:#64748b;font-size:10px">HIT</th>'
+                    f'</tr></thead><tbody>{_rows_html}</tbody></table></div>'
+                    f'{_insight}'
+                    f'<div style="margin-top:8px;font-size:10px;color:#475569">'
+                    f'Partial-day sample — resets each session. For statistical validation see Research tab. Updates every 3 min.'
+                    f'</div></div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    '<div style="padding:14px;color:#475569;font-size:12px;text-align:center">'
+                    'Waiting for intraday bars — check back after 9:35 AM EST.'
+                    '</div>', unsafe_allow_html=True)
+
+    with st.expander("🔬 Backtest — Last 10 Trading Days  (click to expand)", expanded=False):
+        spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt = load_backtest_data()
+
+        last5 = trading_days_bt[-10:] if len(trading_days_bt) >= 10 else trading_days_bt
+        daily_dates_list = list(spx_d_bt.index.date)
+        total_daily      = len(spx_d_bt)
+
+        # Pre-compute offset per day: rows to trim so last row = prior day's close
+        offsets = {}
+        for td in last5:
+            try:
+                pos = daily_dates_list.index(td)
+                offsets[td] = total_daily - pos   # drop from pos onward
+            except ValueError:
+                offsets[td] = 1
+
+        # Summary grid — 2 rows of 5 for 10 days
+        def render_day_tile(col, td, ds):
+            if ds is not None and len(ds) > 0:
+                d_open  = float(ds.iloc[0])
+                d_close = float(ds.iloc[-1])
+                d_move  = round(d_close - d_open, 1)
+                mc = "#f87171" if d_move < 0 else "#4ade80"
+                col.markdown(
+                    f'<div class="metric-tile" style="text-align:center">'
+                    f'<div class="metric-label">{td.strftime("%a %b %d")}</div>'
+                    f'<div style="font-size:16px;font-weight:800;color:{mc}">{d_move:+.1f}</div>'
+                    f'<div style="font-size:10px;color:#64748b">{d_open:,.0f}→{d_close:,.0f}</div>'
+                    f'</div>', unsafe_allow_html=True)
+            else:
+                col.markdown(
+                    f'<div class="metric-tile" style="text-align:center">'
+                    f'<div class="metric-label">{td.strftime("%a %b %d")}</div>'
+                    f'<div style="font-size:11px;color:#64748b">No data</div></div>',
+                    unsafe_allow_html=True)
+
+        if last5:
+            # Row 1: older 5 days
+            row1 = last5[:5]
+            cols1 = st.columns(5)
+            for col, td in zip(cols1, row1):
+                render_day_tile(col, td, day_series_bt.get(td))
+            # Row 2: more recent 5 days
+            if len(last5) > 5:
+                row2 = last5[5:]
+                cols2 = st.columns(5)
+                for col, td in zip(cols2, row2):
+                    render_day_tile(col, td, day_series_bt.get(td))
+
+        st.markdown("<hr style='border:1px solid #1e2130;margin:12px 0'>", unsafe_allow_html=True)
+
+        # Pre-compute all day results (needed for calibration table)
+        all_bt_results = []
+        for td in last5:
+            all_bt_results.append(
+                run_backtest_for_day(td, day_series_bt, spx_d_bt, vix_d_bt,
+                                     sectors_d_bt, daily_dates_list, offsets.get(td, 1))
+            )
+
+        # Per-day tabs
+        tab_labels = [td.strftime("%a %b %d") for td in last5]
+        tabs = st.tabs(tab_labels)
+        for tab, td, bt_day in zip(tabs, last5, all_bt_results):
+            with tab:
+                uw_day = load_uw_market_tide(td.strftime("%Y-%m-%d"))
+                render_backtest_day(bt_day, uw_day)
+
+        # ── Algorithm Calibration Table ──────────────────────────────────────────
+        st.markdown("<hr style='border:1px solid #1e2130;margin:18px 0'>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:11px;color:#64748b;letter-spacing:1.4px;"
+            "text-transform:uppercase;margin-bottom:10px'>📐 Window Calibration — Accuracy by VIX Regime & Gap</div>",
+            unsafe_allow_html=True)
+
+        w_stats = aggregate_window_stats(all_bt_results)
+
+        if w_stats:
+            # Overall accuracy across all windows
+            total_c = sum(s["correct"] for s in w_stats.values())
+            total_t = sum(s["total"]   for s in w_stats.values())
+            overall_acc = int(total_c / total_t * 100) if total_t else 0
+            overall_c   = "#4ade80" if overall_acc >= 65 else ("#f59e0b" if overall_acc >= 45 else "#f87171")
+
+            st.markdown(
+                f'<div style="margin-bottom:10px;font-size:13px;color:#94a3b8">'
+                f'Overall directional accuracy across all windows & days: '
+                f'<b style="color:{overall_c};font-size:16px">{overall_acc}%</b> '
+                f'({total_c}/{total_t} correct)</div>',
                 unsafe_allow_html=True)
 
-    if last5:
-        # Row 1: older 5 days
-        row1 = last5[:5]
-        cols1 = st.columns(5)
-        for col, td in zip(cols1, row1):
-            render_day_tile(col, td, day_series_bt.get(td))
-        # Row 2: more recent 5 days
-        if len(last5) > 5:
-            row2 = last5[5:]
-            cols2 = st.columns(5)
-            for col, td in zip(cols2, row2):
-                render_day_tile(col, td, day_series_bt.get(td))
-
-    st.markdown("<hr style='border:1px solid #1e2130;margin:12px 0'>", unsafe_allow_html=True)
-
-    # Pre-compute all day results (needed for calibration table)
-    all_bt_results = []
-    for td in last5:
-        all_bt_results.append(
-            run_backtest_for_day(td, day_series_bt, spx_d_bt, vix_d_bt,
-                                 sectors_d_bt, daily_dates_list, offsets.get(td, 1))
-        )
-
-    # Per-day tabs
-    tab_labels = [td.strftime("%a %b %d") for td in last5]
-    tabs = st.tabs(tab_labels)
-    for tab, td, bt_day in zip(tabs, last5, all_bt_results):
-        with tab:
-            uw_day = load_uw_market_tide(td.strftime("%Y-%m-%d"))
-            render_backtest_day(bt_day, uw_day)
-
-    # ── Algorithm Calibration Table ──────────────────────────────────────────
-    st.markdown("<hr style='border:1px solid #1e2130;margin:18px 0'>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:11px;color:#64748b;letter-spacing:1.4px;"
-        "text-transform:uppercase;margin-bottom:10px'>📐 Window Calibration — Accuracy by VIX Regime & Gap</div>",
-        unsafe_allow_html=True)
-
-    w_stats = aggregate_window_stats(all_bt_results)
-
-    if w_stats:
-        # Overall accuracy across all windows
-        total_c = sum(s["correct"] for s in w_stats.values())
-        total_t = sum(s["total"]   for s in w_stats.values())
-        overall_acc = int(total_c / total_t * 100) if total_t else 0
-        overall_c   = "#4ade80" if overall_acc >= 65 else ("#f59e0b" if overall_acc >= 45 else "#f87171")
-
-        st.markdown(
-            f'<div style="margin-bottom:10px;font-size:13px;color:#94a3b8">'
-            f'Overall directional accuracy across all windows & days: '
-            f'<b style="color:{overall_c};font-size:16px">{overall_acc}%</b> '
-            f'({total_c}/{total_t} correct)</div>',
-            unsafe_allow_html=True)
-
-        BIAS_ICON = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
-        header = (
-            '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#f1f5f9">'
-            '<thead><tr style="background:#0f1117">'
-            '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">WINDOW</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">BIAS</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">OVERALL</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&lt;18</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX 18-25</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&gt;25</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP UP</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">FLAT</th>'
-            '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP DOWN</th>'
-            '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">INSIGHT</th>'
-            '</tr></thead><tbody>'
-        )
-        rows_html = ""
-        for lbl, s in w_stats.items():
-            ov_pct = int(s["correct"]/s["total"]*100) if s["total"] else 0
-            ov_c   = "#4ade80" if ov_pct >= 65 else ("#f59e0b" if ov_pct >= 45 else "#f87171")
-            bias_icon = BIAS_ICON.get(s["bias"], "⚪")
-
-            # Auto-generate insight
-            insight = ""
-            if s["vix_high"]["t"] >= 3:
-                vh = int(s["vix_high"]["c"]/s["vix_high"]["t"]*100)
-                if vh < 45 and s["bias"] != "bear":
-                    insight = f'⚠️ Only {vh}% on VIX>25 — consider bear override'
-                elif vh >= 70 and s["bias"] == "bear":
-                    insight = f'✅ Strong {vh}% bear hit on VIX>25'
-            if not insight and s["gap_up"]["t"] >= 3:
-                gu = int(s["gap_up"]["c"]/s["gap_up"]["t"]*100)
-                if gu < 40:
-                    insight = f'⚠️ Only {gu}% on gap-up days'
-            if not insight and ov_pct >= 70:
-                insight = "✅ Reliable"
-            if not insight and ov_pct < 40 and s["total"] >= 5:
-                insight = "🔴 Flip or skip this window"
-
-            rows_html += (
-                f'<tr style="border-bottom:1px solid #1a1f33">'
-                f'<td style="padding:5px 10px;font-size:12px">{lbl}</td>'
-                f'<td style="padding:5px 8px;text-align:center">{bias_icon} {s["bias"]}</td>'
-                f'<td style="padding:5px 8px;text-align:center;font-weight:700;color:{ov_c}">{ov_pct}% <span style="font-size:10px;color:#475569">({s["correct"]}/{s["total"]})</span></td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_low"])}">{_pct(s["vix_low"])}</td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_mid"])}">{_pct(s["vix_mid"])}</td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_high"])}">{_pct(s["vix_high"])}</td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_up"])}">{_pct(s["gap_up"])}</td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_flat"])}">{_pct(s["gap_flat"])}</td>'
-                f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_down"])}">{_pct(s["gap_down"])}</td>'
-                f'<td style="padding:5px 10px;font-size:11px;color:#94a3b8">{insight}</td>'
-                f'</tr>'
+            BIAS_ICON = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
+            header = (
+                '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#f1f5f9">'
+                '<thead><tr style="background:#0f1117">'
+                '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">WINDOW</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">BIAS</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">OVERALL</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&lt;18</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX 18-25</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">VIX&gt;25</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP UP</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">FLAT</th>'
+                '<th style="padding:6px 8px;text-align:center;color:#64748b;font-size:10px">GAP DOWN</th>'
+                '<th style="padding:6px 10px;text-align:left;color:#64748b;font-size:10px">INSIGHT</th>'
+                '</tr></thead><tbody>'
             )
-        st.markdown(
-            f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;'
-            f'border:1px solid #2d3250;overflow-x:auto">'
-            f'{header}{rows_html}</tbody></table></div>',
-            unsafe_allow_html=True)
+            rows_html = ""
+            for lbl, s in w_stats.items():
+                ov_pct = int(s["correct"]/s["total"]*100) if s["total"] else 0
+                ov_c   = "#4ade80" if ov_pct >= 65 else ("#f59e0b" if ov_pct >= 45 else "#f87171")
+                bias_icon = BIAS_ICON.get(s["bias"], "⚪")
 
-        st.markdown(
-            '<div style="font-size:10px;color:#475569;margin-top:6px">'
-            '🟢 ≥65% accurate &nbsp;·&nbsp; 🟡 45-64% &nbsp;·&nbsp; 🔴 &lt;45% &nbsp;·&nbsp; '
-            'VIX&lt;18 = calm/range-bound &nbsp;·&nbsp; VIX&gt;25 = fear/trending &nbsp;·&nbsp; '
-            'Minimum 3 samples shown per cell</div>',
-            unsafe_allow_html=True)
+                # Auto-generate insight
+                insight = ""
+                if s["vix_high"]["t"] >= 3:
+                    vh = int(s["vix_high"]["c"]/s["vix_high"]["t"]*100)
+                    if vh < 45 and s["bias"] != "bear":
+                        insight = f'⚠️ Only {vh}% on VIX>25 — consider bear override'
+                    elif vh >= 70 and s["bias"] == "bear":
+                        insight = f'✅ Strong {vh}% bear hit on VIX>25'
+                if not insight and s["gap_up"]["t"] >= 3:
+                    gu = int(s["gap_up"]["c"]/s["gap_up"]["t"]*100)
+                    if gu < 40:
+                        insight = f'⚠️ Only {gu}% on gap-up days'
+                if not insight and ov_pct >= 70:
+                    insight = "✅ Reliable"
+                if not insight and ov_pct < 40 and s["total"] >= 5:
+                    insight = "🔴 Flip or skip this window"
+
+                rows_html += (
+                    f'<tr style="border-bottom:1px solid #1a1f33">'
+                    f'<td style="padding:5px 10px;font-size:12px">{lbl}</td>'
+                    f'<td style="padding:5px 8px;text-align:center">{bias_icon} {s["bias"]}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;font-weight:700;color:{ov_c}">{ov_pct}% <span style="font-size:10px;color:#475569">({s["correct"]}/{s["total"]})</span></td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_low"])}">{_pct(s["vix_low"])}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_mid"])}">{_pct(s["vix_mid"])}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["vix_high"])}">{_pct(s["vix_high"])}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_up"])}">{_pct(s["gap_up"])}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_flat"])}">{_pct(s["gap_flat"])}</td>'
+                    f'<td style="padding:5px 8px;text-align:center;color:{_acc_color(s["gap_down"])}">{_pct(s["gap_down"])}</td>'
+                    f'<td style="padding:5px 10px;font-size:11px;color:#94a3b8">{insight}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="background:#1e2130;border-radius:10px;padding:14px 16px;'
+                f'border:1px solid #2d3250;overflow-x:auto">'
+                f'{header}{rows_html}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+            st.markdown(
+                '<div style="font-size:10px;color:#475569;margin-top:6px">'
+                '🟢 ≥65% accurate &nbsp;·&nbsp; 🟡 45-64% &nbsp;·&nbsp; 🔴 &lt;45% &nbsp;·&nbsp; '
+                'VIX&lt;18 = calm/range-bound &nbsp;·&nbsp; VIX&gt;25 = fear/trending &nbsp;·&nbsp; '
+                'Minimum 3 samples shown per cell</div>',
+                unsafe_allow_html=True)
 
 
 st.markdown("""
