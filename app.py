@@ -26,7 +26,7 @@ TIME_WINDOWS = [
     ("10:30", "10:45", "Bull→Bear Transition",   "chop"),
     # Bear Dom split: 10:45 & 11:00 & 11:30 changed to chop (35-45% as bear = misleading)
     # 11:15 kept as bear (65% hit rate — only reliable sub-slot)
-    ("10:45", "11:00", "Intraday Bounce",        "chop"),
+    ("10:45", "11:00", "Bear Dom Bounce",         "chop"),
     ("11:00", "11:15", "Intraday Bounce",        "chop"),
     ("11:15", "11:30", "Bear Continuation",      "bear"),
     ("11:30", "12:00", "Intraday Chop",          "chop"),
@@ -300,6 +300,20 @@ _NEWS_IMPACTS = [
       "china military taiwan","pla taiwan","china invad taiwan"],
      "CHINA_TAIWAN", 3.0, "any", "bear",
      "Taiwan tension → semiconductor supply chain collapse + tech selloff → sharply bearish"),
+
+    # ── INDIA / PAKISTAN ─────────────────────────────────────────────────────
+    (["india pakistan war","india pakistan conflict","india pakistan attack",
+      "india pakistan strike","india pakistan nuclear","pakistan missile",
+      "islamabad attack","india pakistan escalat","line of control attack",
+      "kashmir war","kashmir conflict","pakistan india tension","india pakistan clashes"],
+     "INDIA_PAKISTAN_ESCALATION", 2.5, "any", "bear",
+     "India-Pakistan conflict → nuclear risk premium + EM flight + oil route disruption → bearish"),
+
+    (["india pakistan peace","india pakistan talks","india pakistan ceasefire",
+      "islamabad talks","india pakistan deal","india pakistan truce",
+      "kashmir peace","india pakistan de-escalat","india pakistan diplomacy"],
+     "INDIA_PAKISTAN_DEESCALATION", 2.0, "any", "bull",
+     "India-Pakistan de-escalation → South Asia stability + EM risk-on → bullish"),
 
     (["ceasefire","peace deal","de-escalat","peace agreement","hostage deal",
       "conflict ends","war ends","truce signed","peace talks succeed"],
@@ -1165,6 +1179,11 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                 return "chop", label + " (gap-up→chop)"
             if label == "Afternoon Trend" and gap > GAP_THRESHOLD:
                 return "chop", label + " (gap-up→chop)"
+            # Gap-down override: Bull Window loses reliability on large gap-down opens.
+            # On gap-down >25pts, the 10:00-10:30 bounce attempt is uncertain — treat as chop.
+            # (VIX > 25 already handles this via hi-VIX→chop, but gap-down at VIX 18-25 is missed.)
+            if label == "Bull Window" and gap < -GAP_THRESHOLD:
+                return "chop", label + " (gap-down→chop)"
 
             # ── VIX fear regime (VIX > 25) ─────────────────────────────────
             # In high-fear trending markets, intraday "chop" rarely materialises;
@@ -1239,12 +1258,16 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
 
 
 def ssr_direction(score):
-    """Normalised directional factor from SSR: -1.0 … +1.0"""
-    if   score <= 35: return -1.00
-    elif score <= 44: return -0.60
-    elif score <= 54: return  0.00
-    elif score <= 65: return  0.60
-    else:             return  1.00
+    """
+    Normalised directional factor from SSR: -1.0 … +1.0
+    Smooth piecewise-linear interpolation — eliminates step-function cliff edges
+    that caused 0.60-point jumps at score boundaries (35/36, 44/45, 54/55, 65/66).
+    Breakpoints preserve the same regime anchors as the old step function:
+      ≤35 → -1.0 (strong bear), 40 → -0.6, 50 → 0.0, 60 → +0.6, ≥65 → +1.0
+    """
+    return float(np.interp(score,
+                           [0,   35,   40,   50,  60,  65,  100],
+                           [-1.0,-1.0, -0.6,  0.0, 0.6, 1.0, 1.0]))
 
 
 def is_es_active(dt_est):
@@ -1295,12 +1318,19 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     # (market makers hold price near max-pain strike, suppressing ATR)
     _opex_factor = 0.85 if opex else 1.0
 
-    # ATR per 30 minutes by session type — scaled by VIX regime + OpEx compression.
-    # RTH: 13 slots × 0.077 = 1.00× daily_atr, matching SPX profile total (sum=1.0).
-    # This ensures ES and SPX arrive at the same projected RTH close (before fair-value spread).
-    # Was 0.09 (13 slots = 1.17×) which caused ES to project ~17% larger RTH moves than SPX.
+    # ATR per 30-minute ES slot — front-loaded to match real intraday vol distribution.
+    # Each hour bucket holds two 30-min slots; fractions mirror the SPX hourly ATR profile
+    # (sum of all 13 RTH slots = 1.00× daily_atr, identical budget to SPX projection).
+    # 9 AM:  2×0.14 = 0.28  (open volatility spike)
+    # 10 AM: 2×0.09 = 0.18  (settling from open)
+    # 11 AM: 2×0.06 = 0.12  (morning fade)
+    # 12 PM: 2×0.04 = 0.08  (lunch — minimal movement)
+    # 13 PM: 2×0.045= 0.09  (PM setup)
+    # 14 PM: 2×0.055= 0.11  (PM trend)
+    # 15 PM: 1×0.09 = 0.09  (power-hour close)  → total = 1.00×
+    _ES_RTH_PROFILE = {9: 0.14, 10: 0.09, 11: 0.06, 12: 0.04, 13: 0.045, 14: 0.055, 15: 0.09}
     def slot_atr(h):
-        if 9 <= h < 16:  return daily_atr * 0.077 * _vx * _opex_factor
+        if 9 <= h < 16:  return daily_atr * _ES_RTH_PROFILE.get(h, 0.077) * _vx * _opex_factor
         if 16 <= h < 17: return daily_atr * 0.035 * _vx * _opex_factor
         return           daily_atr * 0.025 * _vx
 
