@@ -2132,7 +2132,7 @@ def compute_historical_analysis():
         _sec = {}
         for _t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
             try:
-                _sec[_t] = yf.download(_t, period="1y", interval="1d", progress=False, auto_adjust=True)
+                _sec[_t] = yf.download(_t, period="2y", interval="1d", progress=False, auto_adjust=True)
             except Exception:
                 _sec[_t] = pd.DataFrame()
 
@@ -2163,14 +2163,24 @@ def compute_historical_analysis():
         _base_h = 0; _base_t = 0
         # Ablation: per core signal — hits with all signals vs hits without this signal
         _core_sigs = [s for s, tr in SIGNAL_TIERS.items() if tr == "core"]
-        _abl = {s: {"h_all":0, "h_excl":0, "t":0} for s in _core_sigs}
+        # Ablation tracks:
+        #   t      = total directional calls made WITH this signal (denominator)
+        #   h_all  = correct directional calls WITH this signal
+        #   h_excl = correct directional calls WITHOUT this signal (same denominator)
+        #   t_excl = directional calls that remain directional WITHOUT this signal
+        #            (used for coverage rate: t_excl/t = fraction of calls preserved)
+        _abl = {s: {"h_all":0, "h_excl":0, "t":0, "t_excl":0} for s in _core_sigs}
 
         for _i in range(200, _n - 1):
             try:
                 _spx_sl = _spx.iloc[:_i + 1]
                 _vix_sl = _vix.iloc[:_i + 1]
-                _sec_sl = {k: v.iloc[:_i + 1] for k, v in _sec.items() if not v.empty and len(v) > _i}
                 _dt  = _spx.index[_i].date()
+                # Align sector slices by date (not row index) to avoid misalignment
+                # when sector history is shorter or has different trading day count.
+                _cutoff_ts = pd.Timestamp(_dt)
+                _sec_sl = {k: v[v.index <= _cutoff_ts]
+                           for k, v in _sec.items() if not v.empty}
                 _aof = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
                 _sc, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl, as_of_dt=_aof)
 
@@ -2219,19 +2229,26 @@ def compute_historical_analysis():
                 _regime["opex"][_ok]["t"] += 1
                 if _correct: _regime["opex"][_ok]["h"] += 1
 
-                # Signal ablation — recompute core score without each signal
+                # Signal ablation — recompute core score without each signal.
+                # Only count rows where the FULL model made a directional call.
+                # If removing the signal makes the score neutral → record as coverage
+                # loss (t_excl stays at t, but we skip adding to h_excl for that row).
                 for _sig in _core_sigs:
                     if _sig not in _sigs: continue
                     _sigs_excl = {k: v for k, v in _sigs.items()
                                   if SIGNAL_TIERS.get(k) == "core" and k != _sig}
-                    _sc_excl = _grp_score(_sigs_excl)
+                    _sc_excl   = _grp_score(_sigs_excl)
                     _bull_excl = _sc_excl >= 55
                     _bear_excl = _sc_excl <= 44
-                    _c_all  = _correct
-                    _c_excl = (_bull_excl and _up) or (_bear_excl and _dn)
-                    _abl[_sig]["t"]     += 1
-                    _abl[_sig]["h_all"] += 1 if _c_all  else 0
-                    _abl[_sig]["h_excl"]+= 1 if _c_excl else 0
+                    _neutral_excl = not _bull_excl and not _bear_excl
+                    _abl[_sig]["t"]     += 1          # always: full model was directional
+                    _abl[_sig]["h_all"] += 1 if _correct else 0
+                    if not _neutral_excl:
+                        # Excluded model still makes a call — measure accuracy
+                        _c_excl = (_bull_excl and _up) or (_bear_excl and _dn)
+                        _abl[_sig]["h_excl"] += 1 if _c_excl else 0
+                        _abl[_sig]["t_excl"] += 1
+                    # else: removing signal → neutral → coverage loss; h_excl unchanged
             except Exception:
                 continue
 
@@ -3090,25 +3107,30 @@ with _tab_research:
             for _sig, _ad in _abl.items():
                 if _ad["t"] < 10: continue
                 _acc_all  = int(_ad["h_all"]  / _ad["t"] * 100)
-                _acc_excl = int(_ad["h_excl"] / _ad["t"] * 100)
-                _delta    = _acc_all - _acc_excl
+                # Accuracy w/o signal: measure only on rows where excluded model still directional
+                _acc_excl = int(_ad["h_excl"] / _ad["t_excl"] * 100) if _ad["t_excl"] >= 5 else None
+                # Coverage = fraction of original directional calls preserved after removal
+                _coverage = int(_ad["t_excl"] / _ad["t"] * 100) if _ad["t"] else 100
+                _delta    = (_acc_all - _acc_excl) if _acc_excl is not None else None
                 _grp_name = next((g for g, sigs in SIGNAL_GROUPS.items() if _sig in sigs), "—")
-                _abl_rows.append((_sig, _grp_name, _acc_all, _acc_excl, _delta, _ad["t"]))
-            # Sort by delta descending (biggest contributors first)
-            _abl_rows.sort(key=lambda x: x[4], reverse=True)
+                _abl_rows.append((_sig, _grp_name, _acc_all, _acc_excl, _delta, _coverage, _ad["t"]))
+            # Sort by delta descending (biggest contributors first); None deltas go to end
+            _abl_rows.sort(key=lambda x: (x[4] is None, -(x[4] or 0)))
             if _abl_rows:
                 _tbl_html = ""
-                for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows:
-                    _dc = "#4ade80" if _dlt > 1 else ("#f87171" if _dlt < -1 else "#94a3b8")
-                    _sign = "+" if _dlt >= 0 else ""
-                    _icon = "✅" if _dlt > 1 else ("⚠️" if _dlt < -1 else "➖")
+                for _sig, _grp, _acc_a, _acc_e, _dlt, _cov, _n in _abl_rows:
+                    _dlt_str  = (f'{"+" if _dlt >= 0 else ""}{_dlt}pp') if _dlt is not None else "—"
+                    _dc = ("#4ade80" if (_dlt or 0) > 1 else ("#f87171" if (_dlt or 0) < -1 else "#94a3b8"))
+                    _icon = "✅" if (_dlt or 0) > 1 else ("⚠️" if (_dlt or 0) < -1 else "➖")
+                    _cov_c = "#94a3b8" if _cov >= 90 else ("#f59e0b" if _cov >= 75 else "#f87171")
                     _tbl_html += (
                         f'<tr style="border-bottom:1px solid #1a1f33">'
                         f'<td style="padding:4px 10px;font-size:11px">{_icon} {_sig}</td>'
                         f'<td style="padding:4px 6px;font-size:10px;color:#64748b">{_grp}</td>'
                         f'<td style="padding:4px 6px;font-size:12px;font-weight:700;color:#94a3b8">{_acc_a}%</td>'
-                        f'<td style="padding:4px 6px;font-size:12px;color:#64748b">{_acc_e}%</td>'
-                        f'<td style="padding:4px 10px;font-size:13px;font-weight:800;color:{_dc}">{_sign}{_dlt}pp</td>'
+                        f'<td style="padding:4px 6px;font-size:12px;color:#64748b">{"—" if _acc_e is None else f"{_acc_e}%"}</td>'
+                        f'<td style="padding:4px 10px;font-size:13px;font-weight:800;color:{_dc}">{_dlt_str}</td>'
+                        f'<td style="padding:4px 6px;font-size:11px;color:{_cov_c}">{_cov}%</td>'
                         f'<td style="padding:4px 6px;font-size:10px;color:#475569">n={_n}</td>'
                         f'</tr>'
                     )
@@ -3121,10 +3143,11 @@ with _tab_research:
                     f'<th style="padding:5px 6px;color:#64748b;font-size:10px">ACC W/ SIG</th>'
                     f'<th style="padding:5px 6px;color:#64748b;font-size:10px">ACC W/O SIG</th>'
                     f'<th style="padding:5px 10px;color:#64748b;font-size:10px">DELTA</th>'
+                    f'<th style="padding:5px 6px;color:#64748b;font-size:10px">COVERAGE</th>'
                     f'<th style="padding:5px 6px;color:#64748b;font-size:10px">N</th>'
                     f'</tr></thead><tbody>{_tbl_html}</tbody></table></div>',
                     unsafe_allow_html=True)
-                st.caption("✅ = signal adds edge  ⚠️ = may be noise  ➖ = neutral  |  delta >±1pp is meaningful at n≥50")
+                st.caption("✅ = adds edge  ⚠️ = noise  ➖ = neutral  ·  Coverage = % of directional calls preserved without the signal  ·  delta >±1pp meaningful at n≥50")
                 # Auto-write ablation summary to Codex/ for the other agent to read
                 try:
                     _rpt_lines = [
@@ -3132,17 +3155,19 @@ with _tab_research:
                         f"Generated: {now_est.strftime('%Y-%m-%d %H:%M')} ET  "
                         f"· Baseline accuracy: {_ha2['baseline_hits']}/{_ha2['baseline_total']} "
                         f"({int(_ha2['baseline_hits']/_ha2['baseline_total']*100) if _ha2['baseline_total'] else 0}%)\n",
-                        "| Signal | Group | Acc w/ | Acc w/o | Delta | N | Verdict |",
-                        "|--------|-------|--------|---------|-------|---|---------|",
+                        "| Signal | Group | Acc w/ | Acc w/o | Delta | Coverage | N | Verdict |",
+                        "|--------|-------|--------|---------|-------|----------|---|---------|",
                     ]
-                    for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows:
-                        _verdict = "✅ adds edge" if _dlt > 1 else ("⚠️ may be noise" if _dlt < -1 else "➖ neutral")
-                        _sign = "+" if _dlt >= 0 else ""
-                        _rpt_lines.append(f"| {_sig} | {_grp} | {_acc_a}% | {_acc_e}% | {_sign}{_dlt}pp | {_n} | {_verdict} |")
+                    for _sig, _grp, _acc_a, _acc_e, _dlt, _cov, _n in _abl_rows:
+                        _verdict = "✅ adds edge" if (_dlt or 0) > 1 else ("⚠️ may be noise" if (_dlt or 0) < -1 else "➖ neutral")
+                        _dlt_s = f'{"+" if (_dlt or 0) >= 0 else ""}{_dlt}pp' if _dlt is not None else "—"
+                        _acc_e_s = f"{_acc_e}%" if _acc_e is not None else "—"
+                        _rpt_lines.append(f"| {_sig} | {_grp} | {_acc_a}% | {_acc_e_s} | {_dlt_s} | {_cov}% | {_n} | {_verdict} |")
                     _rpt_lines.append("\n**Signals with negative delta (noise candidates):**")
-                    _noisy = [f"- {_sig} ({_grp}) delta={_dlt}pp n={_n}"
-                              for _sig, _grp, _acc_a, _acc_e, _dlt, _n in _abl_rows if _dlt < -1]
+                    _noisy = [f"- {_sig} ({_grp}) delta={_dlt}pp coverage={_cov}% n={_n}"
+                              for _sig, _grp, _acc_a, _acc_e, _dlt, _cov, _n in _abl_rows if (_dlt or 0) < -1]
                     _rpt_lines += (_noisy if _noisy else ["- None identified"])
+                    _rpt_lines.append("\n_Note: Acc w/o and Delta computed only on rows where excluded model still makes a directional call. Coverage = % of original directional calls preserved._")
                     os.makedirs("Codex", exist_ok=True)
                     with open("Codex/ablation-report.md", "w") as _rf:
                         _rf.write("\n".join(_rpt_lines) + "\n")
@@ -4247,12 +4272,18 @@ with _tab_research:
             except Exception:
                 pass
             _recent = _ledger_rows[-30:][::-1]   # last 30, newest first
+            # Exclude flat days and neutral SSR from accuracy calculation.
+            # Only measure directional calls (SSR ≥55 or ≤44) on directional outcomes (bull/bear).
             _hits_c = sum(1 for r in _recent
                           if r.get("actual_dir","").strip()
+                          and r["actual_dir"] in ("bull","bear")
                           and ((r["actual_dir"] == "bull" and int(r.get("live_adj_ssr",50)) >= 55)
-                               or (r["actual_dir"] == "bear" and int(r.get("live_adj_ssr",50)) <= 44)
-                               or r["actual_dir"] == "flat"))
-            _tot_known = sum(1 for r in _recent if r.get("actual_dir","").strip())
+                               or (r["actual_dir"] == "bear" and int(r.get("live_adj_ssr",50)) <= 44)))
+            _tot_known = sum(1 for r in _recent
+                             if r.get("actual_dir","").strip()
+                             and r["actual_dir"] in ("bull","bear")
+                             and (int(r.get("live_adj_ssr",50)) >= 55
+                                  or int(r.get("live_adj_ssr",50)) <= 44))
             _ldg_acc   = int(_hits_c / _tot_known * 100) if _tot_known else 0
             _ldg_c     = "#4ade80" if _ldg_acc >= 60 else ("#f59e0b" if _ldg_acc >= 45 else "#f87171")
             if _tot_known:
