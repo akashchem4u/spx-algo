@@ -1186,7 +1186,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     direction = ssr_direction(score)
 
@@ -1245,6 +1245,13 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             else:
                 _dir_w, _win_w = 0.55, 0.45
 
+            # ORB momentum boost: when price has traveled past the ORB edge,
+            # the breakout has follow-through — scale the window weight up slightly.
+            # Only applies during RTH (9–16 EST) when ORB status is confirmed.
+            # Capped at 1.3× to prevent runaway projection on large ORB gaps.
+            if orb_distance_atr > 0.0 and orb_status in ("above", "below") and 9 <= t.hour < 16:
+                wf *= min(1.3, 1.0 + orb_distance_atr * 0.5)
+
             # Outside-hours slots: no window bias, SSR direction drives overnight drift
             if win_bias == "neutral":
                 move = satr * direction * 0.60 * _dir_conf
@@ -1286,7 +1293,7 @@ def next_trading_day(from_date):
     return d  # fallback
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     direction = ssr_direction(score)
     # VIX regime scaling — same thresholds as ES projections
@@ -1342,7 +1349,12 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
             _dir_w, _win_w = 0.50, 0.50
         else:
             _dir_w, _win_w = 0.55, 0.45
-        move        = _slot_atr * (direction * _dir_w + win_factor * _win_w) * _dir_conf + _revert
+        # ORB momentum boost: scale window factor when price has moved past ORB edge.
+        # Same logic as ES: capped at 1.3×, only during RTH, only when confirmed.
+        _wf_boosted = win_factor
+        if orb_distance_atr > 0.0 and orb_status in ("above", "below"):
+            _wf_boosted *= min(1.3, 1.0 + orb_distance_atr * 0.5)
+        move        = _slot_atr * (direction * _dir_w + _wf_boosted * _win_w) * _dir_conf + _revert
         price = round(price + move, 1)
         day_label = session_date.strftime("%a") if all_future else ""
         rows.append({
@@ -2130,6 +2142,19 @@ _orb_status = orb_data.get("status", "inside") if orb_data.get("valid") else "in
 # 0.0 when ORB is not valid (before 9:45 or on errors).
 _orb_range_atr = (round(orb_data["range_pts"] / max(levels["atr"], 1), 3)
                   if orb_data.get("valid") and levels.get("atr", 0) > 0 else 0.0)
+# ORB distance / daily ATR — how far price has traveled beyond the ORB edge.
+# Above: (current − ORB high) / ATR. Below: (ORB low − current) / ATR. Inside: 0.
+# Used in projection functions to scale move size when breakout has follow-through.
+if orb_data.get("valid") and levels.get("atr", 0) > 0:
+    _cur = orb_data["current"]; _atr_ref = max(levels["atr"], 1)
+    if _orb_status == "above":
+        _orb_distance_atr = round((_cur - orb_data["high"]) / _atr_ref, 3)
+    elif _orb_status == "below":
+        _orb_distance_atr = round((orb_data["low"] - _cur) / _atr_ref, 3)
+    else:
+        _orb_distance_atr = 0.0
+else:
+    _orb_distance_atr = 0.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 3 — WHY THIS BIAS (active override chain)
@@ -2394,8 +2419,8 @@ with _tab_live:
     # ROW 4 — HOURLY PROJECTIONS (ES left, SPX right)
     # live_gap and _orb_status computed at module level above (before tabs)
     # ═══════════════════════════════════════════════════════════════════════════════
-    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
-    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
+    es_rows  = generate_es_projections(es_price,  levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+    spx_rows = generate_spx_projections(spx_price, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
 
     colA, colB = st.columns(2)
 
