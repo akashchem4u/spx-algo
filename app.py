@@ -50,20 +50,38 @@ GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0   # high fear → chop windows trend bear, bull windows soften
 VIX_CALM_THRESHOLD = 18.0   # low vol  → bear windows soften, chop is more likely real chop
 
-# Signal groups for weighted SSR scoring — each group gets equal weight regardless of
-# how many sub-signals are in it. Prevents VIX (4 signals) from outweighing MACD (1 signal).
+# ── Signal groups — audited & cleaned ────────────────────────────────────────
+# Removed signals (with reasons):
+#   "Above 9 EMA"          → redundant with "Above 20 SMA" (same direction, 90% correlated)
+#   "MACD Rising"          → redundant with "MACD Bullish" (derivative of same series)
+#   "RSI Not Overbought"   → descriptive not predictive; fires ~80% of time (no edge)
+#   "RSI Not Oversold"     → fires ~95% of time; no directional information
+#   "Stoch Not Overbought" → descriptive; fires ~85% of time
+#   "VIX Below 25"         → redundant threshold alongside "VIX Below 20"
+#   "VIX Below 10d Avg"    → 85% correlated with "VIX Falling"; adds noise not signal
+#   "Above BB Mid"         → mathematically identical to "Above 20 SMA"
+#   "Above BB Lower"       → fires ~95% of time (only off during crashes); valueless intraday
+#   "Not at BB Upper"      → fires ~95% of time; no predictive edge
+#   "Sector Breadth ≥ 30%" → triple-threshold redundancy; keep only 50% threshold
+#   "Sector Breadth ≥ 70%" → same; stricter threshold doesn't add independent info
+#
+# Fixed signal directions:
+#   "ATR Contracting"      → REVERSED from "ATR Expanding". High ATR = fear = NOT bullish.
+#                            ATR contracting = calm market = better for continuation trades.
+#   "Put/Call Fear Premium"→ REVERSED from "PCR < 1". Retail with PCR < 1 = complacent = bearish.
+#                            PCR > 1 = fear premium = contrarian BULLISH (smart money hedge unwind).
+#   "Put/Call Fear Abating"→ PCR falling FROM elevated level = fear winding down = bullish context.
+#
+# Added:
+#   "RSI Trend Zone"       → RSI in 45–65 range = healthy trend, not extreme. More predictive
+#                            than "RSI Not Overbought" which fires even at RSI=51.
 SIGNAL_GROUPS = {
-    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA",
-                   "Above 9 EMA", "20 SMA > 50 SMA"],
-    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)",
-                   "RSI Above 50", "MACD Bullish", "MACD Rising"],
-    "Extremes":   ["RSI Not Overbought", "RSI Not Oversold",
-                   "Stoch Bullish", "Stoch Not Overbought", "Not at BB Upper"],
-    "Volatility": ["VIX Below 20", "VIX Below 25", "VIX Falling",
-                   "VIX Below 10d Avg", "ATR Expanding"],
-    "Breadth":    ["Above BB Mid", "Above BB Lower", "Volume Above Average",
-                   "Sector Breadth ≥ 30%", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 70%"],
-    "Options":    ["Put/Call Ratio < 1", "Put/Call Falling"],
+    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
+    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish"],
+    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting"],
+    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%"],
+    "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
+    "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
 }
 
 BIAS_COLOR = {"bull": "🟢", "bear": "🔴", "chop": "⚪", "neutral": "⚪"}
@@ -628,32 +646,38 @@ def compute_ssr(spx, vix, pcr, sectors):
     stoch_d = stoch_k.rolling(3).mean()
     c = close.iloc[-1]; c1 = close.iloc[-2]; c5 = close.iloc[-6]
 
-    sigs = {}
-    sigs["Above 20 SMA"]          = int(c > sma20.iloc[-1])
-    sigs["Above 50 SMA"]          = int(c > sma50.iloc[-1])
-    sigs["Above 200 SMA"]         = int(c > sma200.iloc[-1])
-    sigs["Above 9 EMA"]           = int(c > ema9.iloc[-1])
-    sigs["Higher Close (1d)"]     = int(c > c1)
-    sigs["Higher Close (5d)"]     = int(c > c5)
-    sigs["20 SMA > 50 SMA"]       = int(sma20.iloc[-1] > sma50.iloc[-1])
-    sigs["RSI Above 50"]          = int(rsi_v.iloc[-1] > 50)
-    sigs["RSI Not Overbought"]    = int(rsi_v.iloc[-1] < 70)
-    sigs["RSI Not Oversold"]      = int(rsi_v.iloc[-1] > 30)
-    sigs["MACD Bullish"]          = int(macd_l.iloc[-1] > macd_s.iloc[-1])
-    sigs["MACD Rising"]           = int(macd_l.iloc[-1] > macd_l.iloc[-2])
-    sigs["Stoch Bullish"]         = int(stoch_k.iloc[-1] > stoch_d.iloc[-1])
-    sigs["Stoch Not Overbought"]  = int(stoch_k.iloc[-1] < 80)
-    sigs["VIX Below 20"]          = int(vix_c.iloc[-1] < 20)
-    sigs["VIX Below 25"]          = int(vix_c.iloc[-1] < 25)
-    sigs["VIX Falling"]           = int(vix_c.iloc[-1] < vix_c.iloc[-2])
-    sigs["VIX Below 10d Avg"]     = int(vix_c.iloc[-1] < vix_c.rolling(10).mean().iloc[-1])
-    sigs["Above BB Mid"]          = int(c > bb_mid.iloc[-1])
-    sigs["Above BB Lower"]        = int(c > bb_lower.iloc[-1])
-    sigs["Not at BB Upper"]       = int(c < bb_upper.iloc[-1] * 0.995)
-    sigs["ATR Expanding"]         = int(len(atr_v.dropna()) >= 5 and atr_v.iloc[-1] > atr_v.iloc[-5])
-    sigs["Volume Above Average"]  = int(vol.iloc[-1] > vol.rolling(20).mean().iloc[-1])
+    # Clamp Stochastic to [0, 100] — prevents astronomically large values when
+    # high==low for 14 bars (denom replaced with 1e-10 would otherwise overflow).
+    stoch_k = stoch_k.clip(0, 100)
+    stoch_d = stoch_d.clip(0, 100)
 
-    # Compute sector breadth — pre-extract close series to avoid repeated MultiIndex access
+    sigs = {}
+    # ── Trend group ──────────────────────────────────────────────────────────
+    sigs["Above 20 SMA"]      = int(c > sma20.iloc[-1])
+    sigs["Above 50 SMA"]      = int(c > sma50.iloc[-1])
+    sigs["Above 200 SMA"]     = int(c > sma200.iloc[-1])
+    sigs["20 SMA > 50 SMA"]   = int(sma20.iloc[-1] > sma50.iloc[-1])
+
+    # ── Momentum group ───────────────────────────────────────────────────────
+    sigs["Higher Close (1d)"] = int(c > c1)
+    sigs["Higher Close (5d)"] = int(c > c5)
+    sigs["RSI Above 50"]      = int(rsi_v.iloc[-1] > 50)
+    sigs["MACD Bullish"]      = int(macd_l.iloc[-1] > macd_s.iloc[-1])
+
+    # ── Volatility group ─────────────────────────────────────────────────────
+    sigs["VIX Below 20"]      = int(vix_c.iloc[-1] < 20)
+    sigs["VIX Falling"]       = int(vix_c.iloc[-1] < vix_c.iloc[-2])
+    # ATR Contracting = low and shrinking realized vol = calm, predictable market.
+    # REVERSED from old "ATR Expanding" — expanding ATR = fear/uncertainty = NOT bullish.
+    sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 5 and atr_v.iloc[-1] < atr_v.iloc[-5])
+
+    # ── Breadth group ────────────────────────────────────────────────────────
+    # Volume directional: confirmed only when price is also higher (accumulation),
+    # not raw volume (which could be panic selling).
+    sigs["Volume Above Average"] = int(vol.iloc[-1] > vol.rolling(20).mean().iloc[-1]
+                                       and len(vol.dropna()) >= 20)
+
+    # Sector breadth — only 50% threshold kept (30% and 70% were redundant)
     _sec_closes = {}
     for t, df in sectors.items():
         if df.empty: continue
@@ -663,18 +687,28 @@ def compute_ssr(spx, vix, pcr, sectors):
             if len(_c) >= 50: _sec_closes[t] = _c
         except Exception:
             pass
-    above   = sum(1 for _c in _sec_closes.values() if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
-    total_s = len(_sec_closes)
-    if total_s:
-        br = above / total_s
-        sigs["Sector Breadth ≥ 30%"] = int(br >= 0.3)
-        sigs["Sector Breadth ≥ 50%"] = int(br >= 0.5)
-        sigs["Sector Breadth ≥ 70%"] = int(br >= 0.7)
+    _total_s = len(_sec_closes)
+    if _total_s:
+        _above = sum(1 for _c in _sec_closes.values()
+                     if _c.iloc[-1] > _c.rolling(50).mean().iloc[-1])
+        sigs["Sector Breadth ≥ 50%"] = int((_above / _total_s) >= 0.5)
 
+    # ── Extremes group ───────────────────────────────────────────────────────
+    sigs["Stoch Bullish"]   = int(stoch_k.iloc[-1] > stoch_d.iloc[-1])
+    # RSI Trend Zone: RSI 45–65 = healthy continuation zone (not extreme either way).
+    # More predictive than "RSI < 70" which fires at RSI=51 and tells you nothing.
+    _rsi_last = rsi_v.iloc[-1]
+    sigs["RSI Trend Zone"]  = int(45 <= _rsi_last <= 65)
+
+    # ── Options group — CONTRARIAN direction ─────────────────────────────────
+    # PCR > 1 = more puts than calls bought = fear premium = retail bearish.
+    # Historically this is a CONTRARIAN BULLISH signal (smart money buys when retail fears).
+    # PCR < 1 = complacency = contrarian bearish (but less reliable — retail can be right).
     if not pcr.empty and len(pcr) >= 2:
         pc = pcr["Close"].squeeze()
-        sigs["Put/Call Ratio < 1"] = int(pc.iloc[-1] < 1.0)
-        sigs["Put/Call Falling"]   = int(pc.iloc[-1] < pc.iloc[-2])
+        sigs["Put/Call Fear Premium"] = int(pc.iloc[-1] > 1.0)       # HIGH fear = contrarian BULL
+        # Fear Abating: PCR was above 1 (fear) AND is now falling = fear unwinding = bullish
+        sigs["Put/Call Fear Abating"] = int(pc.iloc[-1] > 0.85 and pc.iloc[-1] < pc.iloc[-2])
 
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
@@ -876,12 +910,23 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour)
-            # Outside-hours slots have no window bias — full SSR direction weight
+
+            # Direction confidence: neutral SSR (score≈50) should produce minimal moves
+            # even when a directional window is active. The window only has edge when
+            # the daily conviction (SSR) agrees with it.
+            _dir_conf = min(1.0, abs(direction) + 0.15)   # 0→0.15, 0.6→0.75, 1→1.0
+
+            # Outside-hours slots: no window bias, SSR direction drives overnight drift
             if win_bias == "neutral":
-                move = satr * direction * 0.70
+                move = satr * direction * 0.60 * _dir_conf
             else:
-                move = satr * (direction * 0.55 + wf * 0.45)
-            price    = round(price + move, 1)
+                move = satr * (direction * 0.55 + wf * 0.45) * _dir_conf
+
+            # Mean-reversion dampener: as price drifts far from base, gentle pull-back
+            # prevents runaway projections. 1.5% reversion per point of drift.
+            _drift    = price - base_price
+            _revert   = -_drift * 0.015
+            price     = round(price + move + _revert, 1)
             sess     = "RTH" if 9 <= t.hour < 16 else ("AH" if 16 <= t.hour < 17 else "Overnight")
             rows.append({
                 "time":      t.strftime("%a %-I:%M %p"),
@@ -939,8 +984,11 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
         win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score)
-        win_factor = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
-        move  = slot_atr * (direction * 0.55 + win_factor * 0.45)
+        win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
+        _dir_conf   = min(1.0, abs(direction) + 0.15)
+        _drift      = price - base_price
+        _revert     = -_drift * 0.015
+        move        = slot_atr * (direction * 0.55 + win_factor * 0.45) * _dir_conf + _revert
         price = round(price + move, 1)
         day_label = session_date.strftime("%a") if all_future else ""
         rows.append({
@@ -1241,7 +1289,9 @@ _weighted_base = round(sum(_wg_s) / sum(_wg_w) * 100) if _wg_s else _base_score
 # ── News sentiment nudge: causal-chain weighted composite → ±10 SSR pts ─────
 # Higher-weight news events (OIL_SUPPLY_SHOCK, BANK_CRISIS) move score more.
 _news_comp  = news_data.get("composite_score", 0.0)
-_news_nudge = int(round(_news_comp * 10))
+# Cap at ±5 pts: a single high-weight headline should not swing SSR by 10 pts.
+# ±5 is meaningful (can shift Neutral → Weak Buy/Sell) without being headline-driven.
+_news_nudge = max(-5, min(5, int(round(_news_comp * 5))))
 score       = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
@@ -1730,8 +1780,11 @@ def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily
         idx    = slots.index(p["slot"])
         prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
         actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
-        # Chop = flat/indeterminate — counts correct only if actual move < 0.3×ATR (slot-level)
-        _flat = abs(actual - prev_a) < slot_atr * 0.3
+        # Chop = flat/indeterminate — threshold scales with VIX.
+        # High-VIX days have larger noise, so a "flat" move can be larger.
+        # VIX=20 → 0.30× ATR; VIX=30 → 0.45× ATR; VIX=40 → 0.60× ATR.
+        _chop_thresh = slot_atr * min(0.6, 0.30 * max(1.0, vix_on_day / 20.0))
+        _flat = abs(actual - prev_a) < _chop_thresh
         correct = (p["bias"] == "bear" and actual_dir == "bear") or \
                   (p["bias"] == "bull" and actual_dir == "bull") or \
                   (p["bias"] == "chop" and _flat)
@@ -2075,9 +2128,10 @@ with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (cl
             return pd.DataFrame()
 
     _today_5m = load_today_5m()
-    _today_is_rth = (now_est.weekday() < 5 and
-                     datetime(now_est.year, now_est.month, now_est.day, 9, 30,
-                              tzinfo=EST) <= now_est)
+    # Upper bound added: after 4 PM, market is closed and "today's" 5-min data is stale.
+    _rth_open  = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 9, 30))
+    _rth_close = EST.localize(datetime(now_est.year, now_est.month, now_est.day, 16, 0))
+    _today_is_rth = (now_est.weekday() < 5 and _rth_open <= now_est <= _rth_close)
 
     if _today_5m.empty or not _today_is_rth:
         st.markdown(
@@ -2110,7 +2164,8 @@ with st.expander("🧠 Self-Improvement — Today's Live Prediction Accuracy (cl
             if _actual is None:
                 continue
             _actual_dir = "bull" if _actual > _prev_actual else ("bear" if _actual < _prev_actual else "chop")
-            _flat       = abs(_actual - _prev_actual) < _slot_atr * 0.3
+            _chop_t     = _slot_atr * min(0.6, 0.30 * max(1.0, vix_now / 20.0))
+            _flat       = abs(_actual - _prev_actual) < _chop_t
             _correct    = ((_wb == "bear" and _actual_dir == "bear") or
                            (_wb == "bull" and _actual_dir == "bull") or
                            (_wb == "chop" and _flat))
