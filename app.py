@@ -2099,6 +2099,35 @@ with st.spinner("Fetching market data..."):
 
 vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
 
+# Live pre-market VIX: CBOE publishes VIX starting ~3:15 AM ET.
+# After 3 AM, fetch 1-minute intraday VIX to replace the stale prior-day close.
+# Cached 60s — same as app refresh — so it stays current through the pre-open session.
+@st.cache_data(ttl=60)
+def _fetch_premarket_vix():
+    try:
+        _v = yf.download("^VIX", period="1d", interval="1m", progress=False, auto_adjust=True)
+        if _v.empty:
+            return None
+        _c = _v["Close"].squeeze()
+        if isinstance(_c, pd.DataFrame): _c = _c.iloc[:, 0]
+        _c = _c.dropna()
+        if len(_c) == 0:
+            return None
+        return round(float(_c.iloc[-1]), 2)
+    except Exception:
+        return None
+
+_now_est_vix = datetime.now(EST)
+_vix_premarket_active = (
+    _now_est_vix.weekday() < 5 and
+    (_now_est_vix.hour > 3 or (_now_est_vix.hour == 3 and _now_est_vix.minute >= 15)) and
+    _now_est_vix.hour < 16
+)
+if _vix_premarket_active:
+    _live_vix = _fetch_premarket_vix()
+    if _live_vix and _live_vix > 0:
+        vix_now = _live_vix
+
 # Data quality flags — shown as badges in the UI so traders know which signals are live
 _pcr_ok       = not pcr.empty
 _sector_count = sum(1 for df in sectors.values() if not df.empty)
