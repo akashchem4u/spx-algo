@@ -1295,9 +1295,12 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
     # (market makers hold price near max-pain strike, suppressing ATR)
     _opex_factor = 0.85 if opex else 1.0
 
-    # ATR per 30 minutes by session type — scaled by VIX regime + OpEx compression
+    # ATR per 30 minutes by session type — scaled by VIX regime + OpEx compression.
+    # RTH: 13 slots × 0.077 = 1.00× daily_atr, matching SPX profile total (sum=1.0).
+    # This ensures ES and SPX arrive at the same projected RTH close (before fair-value spread).
+    # Was 0.09 (13 slots = 1.17×) which caused ES to project ~17% larger RTH moves than SPX.
     def slot_atr(h):
-        if 9 <= h < 16:  return daily_atr * 0.09  * _vx * _opex_factor
+        if 9 <= h < 16:  return daily_atr * 0.077 * _vx * _opex_factor
         if 16 <= h < 17: return daily_atr * 0.035 * _vx * _opex_factor
         return           daily_atr * 0.025 * _vx
 
