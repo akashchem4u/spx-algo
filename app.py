@@ -89,6 +89,9 @@ SIGNAL_GROUPS = {
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
                    "VIX 3d Spike"],              # 3-day VIX surge = fear expansion = bear
+    "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
+                   "52w Range Top 20%",           # near yearly highs = momentum continuation
+                   "Above BB Mid"],              # above 20d BB midline = short-term bull context
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -895,6 +898,28 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         _hyg_rising = macro.get("hyg_tlt_rising", True)
         sigs["Credit Spread Calm"]    = int(_hyg_rising)  # HYG/TLT rising = credit risk-on
 
+    # ── Distance and positioning signals ─────────────────────────────────────
+    # These capture "where are we in the range" — not captured by trend or momentum above.
+    if len(close) >= 252:
+        _high_52w = close.rolling(252).max().iloc[-1]
+        _low_52w  = close.rolling(252).min().iloc[-1]
+        _range_52w = max(_high_52w - _low_52w, 1)
+        # Position in 52-week range: >80% of range = near highs (bull), <20% = near lows (bear)
+        _range_pos = (c - _low_52w) / _range_52w
+        sigs["52w Range Upper Half"] = int(_range_pos > 0.5)   # above midpoint of annual range
+        sigs["52w Range Top 20%"]    = int(_range_pos > 0.80)  # near yearly highs = momentum
+    elif len(close) >= 20:
+        # Use 20-day range as fallback
+        _high_20 = high.rolling(20).max().iloc[-1]
+        _low_20  = low.rolling(20).min().iloc[-1]
+        _r20     = max(_high_20 - _low_20, 1)
+        _pos_20  = (c - _low_20) / _r20
+        sigs["52w Range Upper Half"] = int(_pos_20 > 0.5)
+        sigs["52w Range Top 20%"]    = int(_pos_20 > 0.80)
+
+    # Bollinger Band position: price above midline = mild bull context
+    sigs["Above BB Mid"]         = int(c > bb_mid.iloc[-1])
+
     buys  = sum(1 for v in sigs.values() if v == 1)
     sells = sum(1 for v in sigs.values() if v == 0)
 
@@ -1191,10 +1216,12 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             else:
                 move = satr * (direction * _dir_w + wf * _win_w) * _dir_conf
 
-            # Mean-reversion dampener: as price drifts far from base, gentle pull-back
-            # prevents runaway projections. 1.5% reversion per point of drift.
+            # Regime-aware mean-reversion dampener: drift-from-base pull-back.
+            # High-VIX trending days allow trend to run (less reversion).
+            # Low-VIX range-bound days revert more firmly.
             _drift    = price - base_price
-            _revert   = -_drift * 0.015
+            _rev_rate = 0.008 if vix > VIX_FEAR_THRESHOLD else (0.020 if (0 < vix < VIX_CALM_THRESHOLD) else 0.015)
+            _revert   = -_drift * _rev_rate
             price     = round(price + move + _revert, 1)
             sess     = "RTH" if 9 <= t.hour < 16 else ("AH" if 16 <= t.hour < 17 else "Overnight")
             rows.append({
@@ -1263,7 +1290,8 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
-        _revert     = -_drift * 0.015
+        _rev_rate   = 0.008 if vix > VIX_FEAR_THRESHOLD else (0.020 if (0 < vix < VIX_CALM_THRESHOLD) else 0.015)
+        _revert     = -_drift * _rev_rate
         # Adaptive slot ATR: front-loaded to match real intraday vol distribution
         _slot_atr   = daily_atr * _atr_profile[min(idx, len(_atr_profile)-1)] * _vx * _opex_factor
         # Regime-aware blend (mirrors ES logic above)
