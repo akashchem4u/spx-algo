@@ -927,24 +927,31 @@ def fetch_live():
     try:
         es_df = yf.download("ES=F", period="2d", interval="1m", progress=False, auto_adjust=True)
         if not es_df.empty:
-            _last_bar_ts = es_df.index[-1]
-            if _last_bar_ts.tzinfo is None:
-                _last_bar_ts = _last_bar_ts.tz_localize("UTC")
-            _staleness = (datetime.now(timezone.utc) - _last_bar_ts).total_seconds()
-            if _staleness > 1800:  # >30 min stale — don't show as live price (yfinance has ~10 min natural lag)
-                pass
+            # Convert index to EST first — avoids UTC offset confusion with yfinance timestamps
+            es_df.index = es_df.index.tz_convert(EST)
+            _last_bar_est  = es_df.index[-1]
+            _now_est_check = datetime.now(EST)
+            _staleness_min = (_now_est_check - _last_bar_est).total_seconds() / 60
+            # ES trades 23h/day (closed 5–6 PM ET). Accept bars up to 30 min stale.
+            # Reject if last bar date is >1 calendar day behind (catches Friday bars on Sunday).
+            _bar_date = _last_bar_est.date()
+            _now_date = _now_est_check.date()
+            _day_gap  = (_now_date - _bar_date).days
+            _is_fresh = _staleness_min <= 30 and _day_gap <= 1
+            if not _is_fresh:
+                pass  # stale — show "—" rather than wrong price
             else:
                 results["es_price"] = round(_close_scalar(es_df, -1), 2)
                 prev_close = _close_scalar(es_df, -2) if len(es_df) > 1 else results["es_price"]
                 results["es_change"] = round(results["es_price"] - prev_close, 2)
                 results["es_pct"]    = round((results["es_change"] / prev_close) * 100, 2) if prev_close else 0.0
-                results["es_ts"]     = es_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
+                results["es_ts"]     = _last_bar_est.strftime("%I:%M %p EST")
             # Overnight range: 4 PM yesterday → 9:30 AM today (ES pre-market)
             # Position in this range = where price sits (0=overnight low, 1=overnight high)
             # Use wall-clock date (not last-bar date) so Sunday pre-6 PM doesn't anchor
             # to Thursday's overnight session (last bar = Friday, would pull the wrong night).
             try:
-                es_df.index = es_df.index.tz_convert(EST)
+                # index already converted to EST above
                 _today = datetime.now(EST).date()
                 _yesterday = _today - timedelta(days=1)
                 _on = es_df[
