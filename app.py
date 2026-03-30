@@ -408,6 +408,41 @@ _NEWS_IMPACTS = [
      "TRUMP_POLICY_BULL", 2.5, "any", "bull",
      "Trump market-positive action → deregulation/tax/deal catalyst → bullish"),
 
+    # ── TRUMP WAR / PEACE NEGOTIATIONS ───────────────────────────────────────
+    # Trump-brokered peace deals are high-impact bullish: war premium unwind,
+    # commodity relief, risk-on rotation. Failures/escalations are bearish.
+    (["trump ukraine deal","trump russia deal","trump peace deal","trump brokered",
+      "trump negotiat","trump mediat","trump ceasefire ukraine","trump end war",
+      "trump stops war","trump halts war","trump russia ukraine","trump putin deal",
+      "trump zelenskyy deal","trump zelensky deal","trump ukraine peace",
+      "ukraine ceasefire","russia ceasefire","russia ukraine deal",
+      "russia ukraine peace","russia ukraine truce","russia ukraine agreement",
+      "russia ukraine negotiat","ukraine truce","war ends ukraine",
+      "trump hostage deal","trump hostage negotiat","trump hamas deal",
+      "trump gaza deal","trump gaza ceasefire","trump middle east deal",
+      "trump iran deal","trump iran negotiat","trump iran peace",
+      "trump calls putin","trump meets putin","trump putin call","trump xi call",
+      "trump calls xi","trump meets xi","trump summit","trump meeting with",
+      "trump negotiating","trump brokering","trump broker peace",
+      "trump peace summit","trump peace talks","trump-brokered ceasefire",
+      "trump framework","trump proposes peace","trump peace plan",
+      "peace deal reached","ceasefire reached","truce reached","agreement reached",
+      "negotiations succeed","deal imminent","breakthrough talks"],
+     "TRUMP_PEACE_DEAL", 3.5, "any", "bull",
+     "Trump peace deal/ceasefire → war premium unwind + commodity relief + risk-on → bullish"),
+
+    (["trump war","trump escalat","trump threatens war","trump military action",
+      "trump deploys troops","trump sends troops","trump airstrikes",
+      "trump bombs","trump attack order","trump strikes","trump threatens china",
+      "trump threatens russia","trump threatens iran","trump threatens north korea",
+      "trump threatens eu","trump threatens nato","trump nato withdraw",
+      "trump pulls out nato","trump nato exit","trump pulls troops",
+      "peace talks fail","negotiations collapse","ceasefire breaks","truce violated",
+      "deal collapses","talks break down","negotiations fail","deal falls apart",
+      "ukraine rejected","russia rejected","ceasefire rejected","trump rejected"],
+     "TRUMP_WAR_ESCALATION", 3.5, "any", "bear",
+     "Trump war escalation/failed negotiations → geopolitical risk premium + flight to safety → bearish"),
+
     # ── FED / MONETARY POLICY ────────────────────────────────────────────────
     (["rate cut","fed cuts","fed lower","dovish","interest rate cut",
       "powell dovish","fed pivot","easing cycle","quantitative easing",
@@ -516,8 +551,10 @@ _CATEGORY_AMP = {
     "CHINA_TAIWAN":      1.2,   # semiconductor supply chain = instant tech selloff
     "TARIFF_BEARISH":    1.2,   # market has been hypersensitive to tariff news in 2025-26
     "TARIFF_BULLISH":    1.2,
-    "TRUMP_POLICY_BEAR": 1.2,   # Trump policy actions are high-volatility market movers
-    "TRUMP_POLICY_BULL": 1.1,
+    "TRUMP_POLICY_BEAR":    1.2,   # Trump policy actions are high-volatility market movers
+    "TRUMP_POLICY_BULL":    1.1,
+    "TRUMP_PEACE_DEAL":     1.3,   # war premium unwind = instant multi-asset risk-on
+    "TRUMP_WAR_ESCALATION": 1.3,   # geopolitical shock = instant flight to safety
     "FED_DOVISH":        1.1,
     "FED_HAWKISH":       1.1,
 }
