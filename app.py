@@ -368,16 +368,45 @@ _NEWS_IMPACTS = [
     (["new tariff","tariff hike","tariff increas","tariff imposed","tariff announc",
       "trade war escal","trade war widen","tariff expand","trump tariff",
       "china tariff","reciprocal tariff","tariffs on","tariff threat",
-      "section 301","section 232","import tax","import duty"],
+      "section 301","section 232","import tax","import duty",
+      "25% tariff","50% tariff","100% tariff","145% tariff",
+      "tariff china","tariff eu","tariff canada","tariff mexico",
+      "trump imposes","trump slaps tariff","trump hits","trump raises tariff",
+      "universal tariff","blanket tariff","broad tariff","sweeping tariff"],
      "TARIFF_BEARISH", 3.5, "any", "bear",
      "Tariffs → supply chain costs + retaliation risk + margin compression → bearish"),
 
     (["tariff pause","tariff delay","tariff exempt","tariff cut","tariff reduc",
       "trade deal","trade agreement","trade truce","tariff remov","tariff drop",
       "tariff lift","trade war end","trade war resolv","tariff rollback",
-      "tariff suspend"],
+      "tariff suspend","tariff waiver","tariff relief","tariff reprieve",
+      "trade ceasefire","trade framework","trade pact","deal reached china",
+      "deal reached eu","trump drops tariff","trump cuts tariff",
+      "trump pauses tariff","90-day pause","tariff 90 day"],
      "TARIFF_BULLISH", 3.5, "any", "bull",
      "Tariff relief → supply chain normalization + margin recovery + risk-on → bullish"),
+
+    # ── TRUMP EXECUTIVE / POLICY ACTIONS ─────────────────────────────────────
+    (["trump signs","trump order","executive order","trump executive",
+      "trump fires","trump dismisses","trump removes","trump ousts",
+      "doge cuts","doge slash","spending cuts","federal layoffs","mass federal",
+      "trump budget cut","government spending cut","trump slash",
+      "trump threatens","trump warns markets","trump warns economy",
+      "trump demands fed","trump calls for rate","trump attacks fed",
+      "trump fires powell","trump replace powell","trump fed chair",
+      "trump nationaliz","trump seize","trump invoke","trump emergency",
+      "trump sanctions","trump ban","trump restrict","trump block"],
+     "TRUMP_POLICY_BEAR", 3.0, "any", "bear",
+     "Trump disruptive policy action → regulatory/fiscal uncertainty + market shock → bearish"),
+
+    (["trump deal","trump agreement","trump signs deal","trump trade win",
+      "trump deregulat","trump cuts regulation","trump tax cut","trump stimulus",
+      "trump infrastructure","trump announces deal","trump reaches deal",
+      "trump ceasefire","trump peace","trump withdraws threat","trump backs down",
+      "trump lifts ban","trump removes restriction","market-friendly trump",
+      "trump positive","trump economy strong","trump markets"],
+     "TRUMP_POLICY_BULL", 2.5, "any", "bull",
+     "Trump market-positive action → deregulation/tax/deal catalyst → bullish"),
 
     # ── FED / MONETARY POLICY ────────────────────────────────────────────────
     (["rate cut","fed cuts","fed lower","dovish","interest rate cut",
@@ -487,6 +516,8 @@ _CATEGORY_AMP = {
     "CHINA_TAIWAN":      1.2,   # semiconductor supply chain = instant tech selloff
     "TARIFF_BEARISH":    1.2,   # market has been hypersensitive to tariff news in 2025-26
     "TARIFF_BULLISH":    1.2,
+    "TRUMP_POLICY_BEAR": 1.2,   # Trump policy actions are high-volatility market movers
+    "TRUMP_POLICY_BULL": 1.1,
     "FED_DOVISH":        1.1,
     "FED_HAWKISH":       1.1,
 }
@@ -651,6 +682,12 @@ def load_news(vix_now=0.0):
     articles += _parse_rss("https://www.forexlive.com/feed/news",               "ForexLive",    max_items=15)
     # FinancialJuice: real-time breaking market
     articles += _parse_rss("https://www.financialjuice.com/feed.aspx?q=market", "FinancialJuice",max_items=15)
+    # Reuters Politics: fastest on Trump executive orders, White House policy actions
+    articles += _parse_rss("https://feeds.reuters.com/reuters/politicsNews",    "Reuters-Politics", max_items=15)
+    # Reuters Business/Finance: macro + corporate + tariff headlines
+    articles += _parse_rss("https://feeds.reuters.com/reuters/businessNews",    "Reuters-Biz",  max_items=12)
+    # Politico: White House policy, executive orders, Trump announcements
+    articles += _parse_rss("https://www.politico.com/rss/politicopicks.xml",    "Politico",     max_items=12)
     # BBC Middle East: dedicated Iran/Israel/Houthi/Gulf feed (verified)
     articles += _parse_rss("https://feeds.bbci.co.uk/news/world/middle_east/rss.xml", "BBC-ME", max_items=12)
     # Jerusalem Post: IDF/Iran/Israel breaking news — fastest on IDF/Hormuz events (verified)
