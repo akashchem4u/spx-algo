@@ -2470,6 +2470,106 @@ def compute_historical_analysis():
         return {}
 
 
+@st.cache_data(ttl=3600)
+def _signal_drift_check(n_days: int = 10, flag_threshold: float = 0.70):
+    """
+    Scan each core signal over the last n_days completed trading days.
+
+    A signal is "drifting" when its direction has been WRONG on ≥ flag_threshold
+    fraction of recent evaluable days:
+      • stuck_bull  — signal = 1 (bullish) but next-day SPX fell > 5 pts
+      • stuck_bear  — signal = 0 (bearish) but next-day SPX rose  > 5 pts
+
+    Only days where the outcome is unambiguous (±5 pt threshold) are counted.
+    Returns a list of dicts sorted by wrong_pct desc:
+      [{name, wrong_days, total_days, wrong_pct, direction}, ...]
+    """
+    try:
+        _spx = yf.download("^GSPC", period="60d", interval="1d",
+                           progress=False, auto_adjust=True)
+        _vix = yf.download("^VIX",  period="60d", interval="1d",
+                           progress=False, auto_adjust=True)
+        _sec = {}
+        for _t in ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]:
+            try:
+                _sec[_t] = yf.download(_t, period="60d", interval="1d",
+                                        progress=False, auto_adjust=True)
+            except Exception:
+                _sec[_t] = pd.DataFrame()
+
+        _close = _spx["Close"].squeeze()
+        if isinstance(_close, pd.DataFrame): _close = _close.iloc[:, 0]
+        _n = len(_spx)
+        if _n < n_days + 15:
+            return []
+
+        # Per-signal trackers: {sig_name: {"wrong": 0, "total": 0, "stuck": ""}}
+        _core_sigs = [s for s, tr in SIGNAL_TIERS.items() if tr == "core"]
+        _tracker   = {s: {"wrong": 0, "total": 0, "stuck": ""} for s in _core_sigs}
+
+        # We evaluate on the last n_days bars that have a "next day" outcome
+        _eval_start = _n - 1 - n_days   # bar index of first evaluation day
+        if _eval_start < 30:
+            _eval_start = 30             # need at least 30 bars for reliable indicators
+
+        for _i in range(_eval_start, _n - 1):
+            _spx_sl = _spx.iloc[:_i + 1]
+            _vix_sl = _vix.iloc[:_i + 1]
+            _dt     = _spx.index[_i].date()
+            _cutoff = pd.Timestamp(_dt)
+            _sec_sl = {k: v[v.index <= _cutoff] for k, v in _sec.items() if not v.empty}
+            _aof    = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
+
+            try:
+                _, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl,
+                                             as_of_dt=_aof)
+            except Exception:
+                continue
+
+            _nxt = float(_close.iloc[_i + 1])
+            _cur = float(_close.iloc[_i])
+            _next_up = _nxt > _cur + 5    # clear bull outcome
+            _next_dn = _nxt < _cur - 5    # clear bear outcome
+            if not _next_up and not _next_dn:
+                continue   # ambiguous day — skip to avoid noise
+
+            for _sig in _core_sigs:
+                if _sig not in _sigs:
+                    continue
+                _val = _sigs[_sig]   # 1 = bullish call, 0 = bearish call
+                _wrong = False
+                _dir   = ""
+                if _val == 1 and _next_dn:       # signal said bull, market fell
+                    _wrong = True; _dir = "stuck_bull"
+                elif _val == 0 and _next_up:     # signal said bear, market rose
+                    _wrong = True; _dir = "stuck_bear"
+                _tracker[_sig]["total"] += 1
+                if _wrong:
+                    _tracker[_sig]["wrong"] += 1
+                    if not _tracker[_sig]["stuck"]:
+                        _tracker[_sig]["stuck"] = _dir
+
+        # Collect drifting signals
+        _drifting = []
+        for _sig, _d in _tracker.items():
+            if _d["total"] < 5:
+                continue   # not enough evaluable days — skip
+            _pct = _d["wrong"] / _d["total"]
+            if _pct >= flag_threshold:
+                _drifting.append({
+                    "name":       _sig,
+                    "wrong_days": _d["wrong"],
+                    "total_days": _d["total"],
+                    "wrong_pct":  round(_pct * 100),
+                    "direction":  _d["stuck"],
+                })
+
+        _drifting.sort(key=lambda x: x["wrong_pct"], reverse=True)
+        return _drifting
+    except Exception:
+        return []
+
+
 _grp_weights = compute_group_weights(today_date=now_est.date())
 # Stamp when weights were computed so the UI can show a version, not silently recalculate
 _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session (1h cache)
@@ -2715,6 +2815,128 @@ st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 2 — SSR DETAIL | INTRADAY WINDOWS | KEY LEVELS + TRADE PLAN
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── Regime-aware accuracy badge (shown in SSR card) ──────────────────────────
+# Pull the current VIX+gap regime accuracy from the historical analysis so the
+# investor can see: "In past days like today (hi-VIX gap-up), model was right X%"
+_regime_acc_html = ""
+try:
+    _ha_live = compute_historical_analysis()
+    if _ha_live:
+        _vk_live = "high" if vix_now > VIX_FEAR_THRESHOLD else ("low" if vix_now < VIX_CALM_THRESHOLD else "mid")
+        _vk_lbl  = {"high": "Hi-VIX", "mid": "Mid-VIX", "low": "Lo-VIX"}[_vk_live]
+        _vk_data = _ha_live["regime"]["vix"].get(_vk_live, {"h": 0, "t": 0})
+        _gk_live = "up" if live_gap > GAP_THRESHOLD else ("down" if live_gap < -GAP_THRESHOLD else "flat")
+        _gk_lbl  = {"up": "Gap-Up", "down": "Gap-Dn", "flat": "Flat"}[_gk_live]
+        _gk_data = _ha_live["regime"]["gap"].get(_gk_live, {"h": 0, "t": 0})
+        def _acc_badge(lbl, d):
+            if d["t"] < 10: return ""
+            pct = int(d["h"] / d["t"] * 100)
+            c   = "#4ade80" if pct >= 60 else ("#f59e0b" if pct >= 50 else "#f87171")
+            return (f'<span style="background:#0f1117;border:1px solid {c}33;border-radius:4px;'
+                    f'padding:2px 7px;font-size:10px;color:{c}">'
+                    f'{lbl}: <b>{pct}%</b> <span style="color:#475569">n={d["t"]}</span></span>')
+        _vk_badge = _acc_badge(_vk_lbl, _vk_data)
+        _gk_badge = _acc_badge(_gk_lbl, _gk_data)
+        if _vk_badge or _gk_badge:
+            _regime_acc_html = (
+                f'<div style="margin:4px 0 6px">'
+                f'<div style="font-size:9px;color:#475569;letter-spacing:.8px;margin-bottom:4px">REGIME ACCURACY (2yr backtest)</div>'
+                f'<div style="display:flex;gap:5px;flex-wrap:wrap">{_vk_badge}{_gk_badge}</div>'
+                f'</div>'
+            )
+except Exception:
+    pass
+
+# ── Multi-timeframe alignment warning ────────────────────────────────────────
+# Daily SSR vs weekly trend (200 SMA proxy). A bear SSR below a bullish 200 SMA
+# = counter-trend trade — lower conviction. Flag it visibly on the score card.
+_mtf_warning_html = ""
+try:
+    _above_200  = signals.get("Above 200 SMA", 1)     # 1 = price above 200 SMA (weekly bull)
+    _above_50   = signals.get("Above 50 SMA",  1)     # 1 = medium-term trend bull
+    _daily_bull = score >= 55
+    _daily_bear = score <= 44
+    _weekly_bull = bool(_above_200)
+    _weekly_bear = not bool(_above_200)
+    if _daily_bear and _weekly_bull:
+        _mtf_warning_html = (
+            '<div style="background:#1c1408;border:1px solid #854d0e;border-radius:5px;'
+            'padding:5px 8px;font-size:10px;color:#fbbf24;margin:4px 0">'
+            '⚠️ <b>Counter-trend signal</b> — SSR is bearish but price is above 200 SMA '
+            '(weekly trend is bullish). Lower conviction on downside calls.</div>'
+        )
+    elif _daily_bull and _weekly_bear:
+        _mtf_warning_html = (
+            '<div style="background:#1a0a0a;border:1px solid #7f1d1d;border-radius:5px;'
+            'padding:5px 8px;font-size:10px;color:#fca5a5;margin:4px 0">'
+            '⚠️ <b>Counter-trend signal</b> — SSR is bullish but price is below 200 SMA '
+            '(weekly trend is bearish). Lower conviction on upside calls.</div>'
+        )
+    elif _daily_bull and _weekly_bull and _above_50:
+        _mtf_warning_html = (
+            '<div style="background:#0d1f0d;border:1px solid #166534;border-radius:5px;'
+            'padding:5px 8px;font-size:10px;color:#86efac;margin:4px 0">'
+            '✅ <b>Aligned</b> — SSR bullish + above 50 & 200 SMA (all timeframes agree).</div>'
+        )
+except Exception:
+    pass
+
+# ── VIX-implied expected day range ────────────────────────────────────────────
+# ATR × VIX-scaling factor gives the probabilistic day range expectation.
+# Shown on the banner so traders can size positions before the open.
+_exp_range_html = ""
+try:
+    if levels["atr"] > 0 and spx_price > 0:
+        import numpy as _np
+        _vx_scale  = float(_np.interp(vix_now, [0, 20, 25, 30, 35, 100], [1.0, 1.15, 1.35, 1.60, 2.0, 2.0]))
+        _exp_range = round(levels["atr"] * _vx_scale, 0)
+        _mid_price = _proj_spx_open if _proj_spx_open else spx_price
+        _exp_lo    = round(_mid_price - _exp_range / 2, 0)
+        _exp_hi    = round(_mid_price + _exp_range / 2, 0)
+        _exp_range_html = (
+            f'<span style="font-size:11px;color:#94a3b8"> &nbsp;·&nbsp; '
+            f'Exp range: <b style="color:#f59e0b">{int(_exp_lo):,}–{int(_exp_hi):,}</b>'
+            f' <span style="color:#475569">({int(_exp_range)} pts · ATR×{_vx_scale:.2f})</span></span>'
+        )
+except Exception:
+    pass
+
+# ── Signal drift monitor ──────────────────────────────────────────────────────
+# Flag any core signal that has been WRONG on 7+ of the last 10 evaluable days.
+# "Wrong" = signal said bull (1) but market fell >5 pts the next day, or
+#           signal said bear (0) but market rose >5 pts the next day.
+# Drifting signals get a red-amber alert box inside the SSR card so the analyst
+# knows the signal is temporarily unreliable and should be discounted.
+_drift_alert_html = ""
+try:
+    _drifting_sigs = _signal_drift_check(n_days=10, flag_threshold=0.70)
+    if _drifting_sigs:
+        _drift_rows = ""
+        for _ds in _drifting_sigs:
+            _stuck_lbl = ("📈 stuck bull" if _ds["direction"] == "stuck_bull"
+                          else "📉 stuck bear")
+            _drift_rows += (
+                f'<div style="display:flex;justify-content:space-between;'
+                f'border-bottom:1px solid #3f1515;padding:2px 0">'
+                f'<span style="color:#fca5a5">{_ds["name"]}</span>'
+                f'<span style="color:#f87171">{_ds["wrong_days"]}/{_ds["total_days"]} wrong '
+                f'({_ds["wrong_pct"]}%) &nbsp; <span style="color:#9ca3af">{_stuck_lbl}</span></span>'
+                f'</div>'
+            )
+        _drift_alert_html = (
+            '<div style="background:#1f0808;border:1px solid #7f1d1d;border-radius:6px;'
+            'padding:7px 10px;margin:6px 0;font-size:10px">'
+            '<div style="color:#fca5a5;font-weight:700;letter-spacing:.5px;margin-bottom:4px">'
+            '⚠️ SIGNAL DRIFT ALERT (last 10 days)</div>'
+            f'{_drift_rows}'
+            '<div style="color:#6b7280;font-size:9px;margin-top:5px">'
+            'These signals have been systematically wrong recently. '
+            'Treat their contribution to SSR with lower weight until drift resolves.</div>'
+            '</div>'
+        )
+except Exception:
+    pass
+
 cL, cM, cR = st.columns([1, 1.5, 1.5])
 
 # ── Left: SSR Detail ──────────────────────────────────────────────────────────
@@ -2767,6 +2989,9 @@ with cL:
         Weights v{_grp_weights_ts} · 252d backtest · frozen 1h
       </div>
       </div>
+      {_regime_acc_html}
+      {_mtf_warning_html}
+      {_drift_alert_html}
       <hr class="divider">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">
         <div style="background:#0d2010;border-radius:6px;padding:6px 8px;text-align:center">
@@ -2964,7 +3189,8 @@ if _pre_market and live["es_price"]:
         f'Implied Gap: {_implied_gap:+.1f} pts ({_implied_gap_pct:+.2f}%) → {_gap_regime_lbl}</div>'
         f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
         f'ES {es_price:,.1f} vs SPX last close {levels["current"]:,.1f} · '
-        f'Projected RTH open: <b style="color:{_gap_color}">{_proj_open_display:,.1f}</b> · '
+        f'Projected RTH open: <b style="color:{_gap_color}">{_proj_open_display:,.1f}</b>'
+        f'{_exp_range_html} · '
         f'{"Gap-down override: Bull Window → chop" if _implied_gap < -GAP_THRESHOLD else "Gap-up override: Pre-Bull Fade → chop" if _implied_gap > GAP_THRESHOLD else "No override threshold crossed"}'
         f'</div>'
         f'</div>'
