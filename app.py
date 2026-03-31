@@ -2698,13 +2698,52 @@ st.markdown(f"""
   </div>
 </div>
 <div style="background:#1a1f35;border:1px solid #2d3250;border-left:3px solid #f59e0b;
-            border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:11px;color:#94a3b8">
+            border-radius:6px;padding:6px 14px;margin-bottom:6px;font-size:11px;color:#94a3b8">
   ⚠️ <b style="color:#f59e0b">Educational model only.</b>
   The SSR score and projections are algorithmic outputs — <b>not financial advice.</b>
   Past backtest accuracy does not guarantee future results.
   All trading decisions are solely your responsibility.
 </div>
 """, unsafe_allow_html=True)
+
+# ── UI Trust Surface ──────────────────────────────────────────────────────────
+# Compact status bar showing data freshness, model version, and provider health.
+# Investors and operators can see at a glance: is the data live? which model?
+# when was the backtest run? are all providers healthy?
+_es_status_color = "#4ade80" if live.get("es_price") else "#f87171"
+_es_status_txt   = f"ES live @ {live['es_ts']}" if live.get("es_price") and live.get("es_ts") else "ES stale"
+_spx_status_color = "#4ade80" if live.get("spx_price") else "#f59e0b"
+_spx_status_txt   = f"SPX @ {live['spx_ts']}" if live.get("spx_price") and live.get("spx_ts") else "SPX delayed"
+_sectors_ok       = _sector_count == _sector_total
+_sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
+_sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
+_vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
+_vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
+_model_ver  = "SSR-v3 · 2yr backtest · 28 core signals"
+_weights_ts = _grp_weights_ts
+
+def _trust_chip(label, color, title=""):
+    return (
+        f'<span title="{title}" style="background:#0f1117;border:1px solid {color}44;'
+        f'border-radius:4px;padding:2px 7px;font-size:10px;color:{color};'
+        f'white-space:nowrap">{label}</span>'
+    )
+
+_trust_html = (
+    '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;'
+    'margin-bottom:12px;padding:5px 10px;background:#0d1117;border:1px solid #1e293b;'
+    'border-radius:6px">'
+    f'<span style="font-size:9px;color:#475569;letter-spacing:.8px;margin-right:4px">PROVIDER STATUS</span>'
+    + _trust_chip(_es_status_txt,   _es_status_color,   "ES Futures last bar timestamp")
+    + _trust_chip(_spx_status_txt,  _spx_status_color,  "SPX last price timestamp")
+    + _trust_chip(_vix_status_txt,  _vix_status_color,  "VIX fear index")
+    + _trust_chip(_sector_status_txt, _sector_status_color, "Sector data coverage")
+    + f'<span style="font-size:9px;color:#334155;margin:0 4px">│</span>'
+    + _trust_chip(f"Model: {_model_ver}", "#475569", "Scoring model version and backtest scope")
+    + _trust_chip(f"Weights: {_weights_ts}", "#334155", "Group weight cache timestamp (refreshes hourly)")
+    + '</div>'
+)
+st.markdown(_trust_html, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW 1 — METRICS STRIP  (8 tiles)
