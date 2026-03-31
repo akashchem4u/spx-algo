@@ -2206,7 +2206,15 @@ with st.spinner("Fetching market data..."):
     orb_data = compute_orb()
     macro_data = fetch_macro_signals()
 
-vix_now = round(vix["Close"].squeeze().iloc[-1], 2)
+# Guard against empty VIX data (yfinance can return empty on Streamlit Cloud).
+# Fall back to 20.0 (neutral VIX) so the app keeps running and shows a warning.
+try:
+    _vix_c = vix["Close"].squeeze() if not vix.empty else pd.Series(dtype=float)
+    if isinstance(_vix_c, pd.DataFrame): _vix_c = _vix_c.iloc[:, 0]
+    _vix_c = _vix_c.dropna()
+    vix_now = round(float(_vix_c.iloc[-1]), 2) if len(_vix_c) > 0 else 20.0
+except Exception:
+    vix_now = 20.0  # safe neutral fallback — VIX unavailable
 
 # Live pre-market VIX: CBOE publishes VIX starting ~3:15 AM ET.
 # After 3 AM, fetch 1-minute intraday VIX to replace the stale prior-day close.
