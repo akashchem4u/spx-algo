@@ -1392,7 +1392,7 @@ def is_opex_friday(ref_date=None):
 
 
 def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False,
-                   event_types=None, weekday=None, orb_range_atr=0.0):
+                   event_types=None, weekday=None, orb_range_atr=0.0, atr=0.0):
     """
     Return (bias, label) for a given HH:MM.
     gap           = today's open − prior close (positive = gap-up, negative = gap-down).
@@ -1402,16 +1402,22 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
     opex          = True if current week is standard monthly options expiration week.
     orb_range_atr = ORB width / daily ATR. When > 0 and < 0.12, the ORB is too narrow
                     to be a reliable breakout signal — override is suppressed.
+    atr           = daily ATR in points — used to classify gap size relative to volatility.
 
     Override hierarchy (highest priority first):
       1. Gap-up > 25pts  → Pre-Bull Fade & Afternoon Trend become chop
-      2. VIX > 25 (fear) → chop windows become bear; bull windows become chop
-      3. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
-      4. Economic event  → FOMC/CPI/NFP time-of-day overrides
-      5. OpEx week       → mid-session chop reinforced; EOD Trend directional preserved
-      6. ORB breakout    → price outside opening range shifts chop→directional (post 10 AM)
-      7. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
+      2. Hi-VIX + small gap-up (gap/ATR < 0.4) → Bull Window stays bull (gap-fade bounce)
+      3. VIX > 25 (fear) → chop windows become bear; bull windows become chop;
+                           EOD Trend neutralised to chop (late reversal risk is high)
+      4. VIX < 18 (calm) → bear windows soften to chop (range-bound low-vol)
+      5. Economic event  → FOMC/CPI/NFP time-of-day overrides
+      6. OpEx week       → mid-session chop reinforced; EOD Trend directional preserved
+      7. ORB breakout    → price outside opening range shifts chop→directional (post 10 AM)
+      8. News sentiment  → strong news (|score|≥0.25) shifts chop→directional
     """
+    # Pre-compute ATR-relative gap size (0 = unknown ATR, skip ratio logic)
+    _gap_atr_ratio = abs(gap) / atr if atr > 0 else 0.0
+    _small_gap_up  = gap > GAP_THRESHOLD and _gap_atr_ratio < 0.4   # gap-up but < 0.4× ATR
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
             # ── Gap-conditional overrides ──────────────────────────────────
@@ -1425,10 +1431,21 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
             if label == "Bull Window" and gap < -GAP_THRESHOLD:
                 return "chop", label + " (gap-down→chop)"
 
+            # ── Hi-VIX small gap-up: Bull Window stays bull (gap-fade bounce) ──
+            # When VIX > 25 and gap-up is small relative to ATR (< 0.4×),
+            # the 10:00–10:30 Bull Window reflects a reliable gap-fade bounce attempt
+            # before the downtrend resumes. Keep it as bull — don't override to chop.
+            if vix > VIX_FEAR_THRESHOLD and _small_gap_up and label == "Bull Window":
+                return "bull", "Bull Window (hi-VIX gap-fade bounce)"
+
             # ── VIX fear regime (VIX > 25) ─────────────────────────────────
             # In high-fear trending markets, intraday "chop" rarely materialises;
             # selling pressure bleeds through. Bull windows lose reliability.
+            # EOD Trend (15:30–16:00) is neutralised to chop in hi-VIX: late
+            # reversals are common and a clean bear trend in the last 30m is unreliable.
             if vix > VIX_FEAR_THRESHOLD and label not in ("Open Volatility", "AH Bull Window (ES)"):
+                if label == "EOD Trend":
+                    return "chop", label + " (hi-VIX→reversal risk)"
                 if bias == "chop":
                     return "bear", label + " (hi-VIX→bear)"
                 if bias == "bull":
@@ -1592,7 +1609,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
             _is_open_bell = (t == open_t)  # first slot of the session
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour, is_open_bell=_is_open_bell)
 
@@ -1705,7 +1722,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -1991,7 +2008,7 @@ def run_extended_window_backtest():
                 mbias, mlabel = window_bias_at(
                     hhmm, gap=gap_val, vix=vix_val,
                     event_types=_hist_evts, weekday=dt.weekday(),
-                    opex=_is_opex_h)
+                    opex=_is_opex_h, atr=0.0)  # no historical ATR map; skip ratio logic
                 if mlabel == "Outside Hours": continue
 
                 prev_c = float(close_1h.iloc[i-1])
@@ -3026,7 +3043,7 @@ _why_rows.append(("OpEx", _opex_lbl, _opex_c, _opex_ov))
 # 6. Current window actual bias (show what fired)
 _bias_fired, _bias_label = window_bias_at(now_hhmm, gap=live_gap, vix=vix_now,
                                           news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
-                                          orb_range_atr=_orb_range_atr)
+                                          orb_range_atr=_orb_range_atr, atr=levels["atr"])
 _bias_fired_c = BIAS_TEXT.get(_bias_fired, "#94a3b8")
 
 _why_html = "".join(
@@ -3671,7 +3688,7 @@ with _tab_live:
             win_bias, win_label = window_bias_at(
                 s, gap=day_gap, vix=vix_on_day,
                 event_types=_bt_evts, weekday=target_date.weekday(),
-                opex=_bt_is_opex)
+                opex=_bt_is_opex, atr=_daily_atr)
             wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
             # Use adaptive per-slot ATR (front-loaded morning vol)
             _si  = slots.index(s)
@@ -4134,7 +4151,7 @@ with _tab_research:
             # (same reference the day backtest uses), not the 9:30 bar's own close.
             _prev_actual   = _session_prior_close
             for _sl in _slots:
-                _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr)
+                _wb, _wl = window_bias_at(_sl, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, atr=levels["atr"])
                 _actual  = _snap_at(_sl)
                 if _actual is None:
                     continue
