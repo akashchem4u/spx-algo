@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-03-31T07:59:39.273508-05:00",
+  "timezone": "America/Chicago",
+  "project": "/Users/amummaneni/Desktop/Codex/Projects/spx-algo",
+  "profile": "behavior",
+  "profile_expectation": "syntax gate plus backtest/report evidence note for behavior changes",
+  "head_short": "500b3b7",
+  "head_long": "500b3b765f3204b5807d8bfb822fa655752f80d3",
+  "worktree_clean": false,
+  "git_status": [
+    "M Codex/README.md",
+    "?? Codex/session-reviews/",
+    "?? Codex/status-audit-20260331.md",
+    "?? Codex/validation-artifacts/",
+    "?? scripts/"
+  ],
+  "recent_commits": [
+    "500b3b7 Fix IndexError crash: guard vix_now against empty yfinance response",
+    "e826c2b Add UI trust surface bar: data freshness, model version, provider status",
+    "047f02b Session 2026-03-30: signal drift monitor, regime accuracy, VIX range, MTF warning",
+    "31f9599 360\u00b0 audit fixes: 6 HIGH/MEDIUM issues resolved",
+    "8ab8117 3 algo optimizations: hi-VIX gap-fade bounce, ATR-relative gap, EOD reversal",
+    "e0c11b1 Fix ES staleness check: compare in EST, add day-gap guard"
+  ],
+  "commands": [
+    {
+      "label": "py_compile",
+      "command": [
+        "/usr/local/bin/python3",
+        "-m",
+        "py_compile",
+        "app.py"
+      ],
+      "returncode": 0,
+      "ok": true,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "ok": true,
+  "app_metadata": {
+    "model_version": "SSR-v3 \u00b7 2yr backtest \u00b7 28 core signals",
+    "gap_threshold": "25.0"
+  },
+  "evidence_notes": [
+    "IndexError crash fix: vix_now guard committed at 500b3b7. 3-year walk-forward already run this session (reports/model-review-20260331-001251.md)"
+  ],
+  "artifact_checks": {
+    "ablation_report_present": false,
+    "shadow_ledger_present": false
+  },
+  "summary": ""
+}

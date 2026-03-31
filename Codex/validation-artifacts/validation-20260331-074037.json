@@ -1,0 +1,52 @@
+{
+  "generated_at": "2026-03-31T07:40:37.077924-05:00",
+  "timezone": "America/Chicago",
+  "project": "/Users/amummaneni/Desktop/Codex/Projects/spx-algo",
+  "profile": "behavior",
+  "profile_expectation": "syntax gate plus backtest/report evidence note for behavior changes",
+  "head_short": "e826c2b",
+  "head_long": "e826c2b8aa51bbc68f7f8754dcdd8b71b89a0a3f",
+  "worktree_clean": false,
+  "git_status": [
+    "M Codex/README.md",
+    "?? Codex/status-audit-20260331.md",
+    "?? scripts/"
+  ],
+  "recent_commits": [
+    "e826c2b Add UI trust surface bar: data freshness, model version, provider status",
+    "047f02b Session 2026-03-30: signal drift monitor, regime accuracy, VIX range, MTF warning",
+    "31f9599 360\u00b0 audit fixes: 6 HIGH/MEDIUM issues resolved",
+    "8ab8117 3 algo optimizations: hi-VIX gap-fade bounce, ATR-relative gap, EOD reversal",
+    "e0c11b1 Fix ES staleness check: compare in EST, add day-gap guard",
+    "08c01ca Expand Trump war/deal/negotiation taxonomy"
+  ],
+  "commands": [
+    {
+      "label": "py_compile",
+      "command": [
+        "/usr/local/bin/python3",
+        "-m",
+        "py_compile",
+        "app.py"
+      ],
+      "returncode": 0,
+      "ok": true,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "ok": true,
+  "app_metadata": {
+    "model_version": "SSR-v3 \u00b7 2yr backtest \u00b7 28 core signals",
+    "gap_threshold": "25.0"
+  },
+  "evidence_notes": [
+    "py_compile passed locally during this run",
+    "Network-backed market backtests were not rerun by this automation command"
+  ],
+  "artifact_checks": {
+    "ablation_report_present": false,
+    "shadow_ledger_present": false
+  },
+  "summary": "Session 2026-03-31: validation artifact flow and session-review automation added to Codex review channel."
+}
