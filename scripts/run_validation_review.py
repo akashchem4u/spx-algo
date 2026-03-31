@@ -13,6 +13,7 @@ does not depend on importing app.py or touching live market providers.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -30,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CODEX_DIR = ROOT / "Codex"
 VALIDATION_DIR = CODEX_DIR / "validation-artifacts"
 SESSION_DIR = CODEX_DIR / "session-reviews"
+ABLATION_REPORT = CODEX_DIR / "ablation-report.md"
+SHADOW_LEDGER = CODEX_DIR / "shadow-ledger.csv"
 EST = pytz.timezone("America/Chicago")
 
 
@@ -148,6 +151,32 @@ def _ensure_dirs() -> None:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _artifact_checks() -> dict[str, object]:
+    ablation_status = "missing"
+    if ABLATION_REPORT.exists():
+        try:
+            text = ABLATION_REPORT.read_text(encoding="utf-8")
+        except Exception:
+            text = ""
+        ablation_status = "placeholder" if "Status: pending runtime generation" in text else "present"
+
+    shadow_status = "missing"
+    shadow_rows = 0
+    if SHADOW_LEDGER.exists():
+        try:
+            with SHADOW_LEDGER.open(newline="", encoding="utf-8") as fh:
+                shadow_rows = len(list(csv.DictReader(fh)))
+        except Exception:
+            shadow_rows = 0
+        shadow_status = "present" if shadow_rows else "empty"
+
+    return {
+        "ablation_report_status": ablation_status,
+        "shadow_ledger_status": shadow_status,
+        "shadow_ledger_rows": shadow_rows,
+    }
+
+
 def _lines(items: Iterable[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else "- none"
 
@@ -240,10 +269,7 @@ def build_artifact_payload(args: argparse.Namespace) -> tuple[dict, list[Command
         "ok": all(item.ok for item in gate_commands),
         "app_metadata": metadata,
         "evidence_notes": args.evidence_note,
-        "artifact_checks": {
-            "ablation_report_present": (CODEX_DIR / "ablation-report.md").exists(),
-            "shadow_ledger_present": (CODEX_DIR / "shadow-ledger.csv").exists(),
-        },
+        "artifact_checks": _artifact_checks(),
         "summary": args.summary.strip(),
         "backtest_result": backtest_result,
     }
@@ -338,8 +364,9 @@ def write_validation_artifacts(payload: dict) -> tuple[Path, Path]:
             "",
             "## Artifact Checks",
             "",
-            f"- `Codex/ablation-report.md`: `{'present' if payload['artifact_checks']['ablation_report_present'] else 'missing'}`",
-            f"- `Codex/shadow-ledger.csv`: `{'present' if payload['artifact_checks']['shadow_ledger_present'] else 'missing'}`",
+            f"- `Codex/ablation-report.md`: `{payload['artifact_checks']['ablation_report_status']}`",
+            f"- `Codex/shadow-ledger.csv`: `{payload['artifact_checks']['shadow_ledger_status']}`"
+            f" · rows=`{payload['artifact_checks']['shadow_ledger_rows']}`",
             "",
             "## Evidence Notes",
             "",
