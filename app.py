@@ -59,7 +59,7 @@ VIX_CALM_THRESHOLD = 18.0   # low vol  → bear windows soften, chop is more lik
 #   "Stoch Not Overbought" → descriptive; fires ~85% of time
 #   "VIX Below 25"         → redundant threshold alongside "VIX Below 20"
 #   "VIX Below 10d Avg"    → 85% correlated with "VIX Falling"; adds noise not signal
-#   "Above BB Mid"         → mathematically identical to "Above 20 SMA"
+#   "Above BB Mid"         → RETAINED in Position group (short-term trend context)
 #   "Above BB Lower"       → fires ~95% of time (only off during crashes); valueless intraday
 #   "Not at BB Upper"      → fires ~95% of time; no predictive edge
 #   "Sector Breadth ≥ 30%" → triple-threshold redundancy; keep only 50% threshold
@@ -860,13 +860,17 @@ def load_news(vix_now=0.0):
         comp = comp * (len(articles) / 5.0)
 
     label    = "🟢 Bullish" if comp > 0.10 else ("🔴 Bearish" if comp < -0.10 else "⚪ Neutral")
-    bull_pct = int(sum(1 for a in articles if a["score"] > 0.1)  / len(articles) * 100)
-    bear_pct = int(sum(1 for a in articles if a["score"] < -0.1) / len(articles) * 100)
-
-    # Find highest-impact article for display
-    top = max(articles, key=lambda a: a["impact_weight"] * abs(a["score"]) if a["score"] != 0 else 0)
-    top_impact = {"category": top["category"], "note": top["note"],
-                  "weight": top["impact_weight"], "title": top["title"][:80]} if top["score"] != 0 else None
+    # Guard against empty articles list (no feeds returned data)
+    if articles:
+        bull_pct = int(sum(1 for a in articles if a["score"] > 0.1)  / len(articles) * 100)
+        bear_pct = int(sum(1 for a in articles if a["score"] < -0.1) / len(articles) * 100)
+        top = max(articles, key=lambda a: a["impact_weight"] * abs(a["score"]) if a["score"] != 0 else 0)
+        top_impact = {"category": top["category"], "note": top["note"],
+                      "weight": top["impact_weight"], "title": top["title"][:80]} if top["score"] != 0 else None
+    else:
+        bull_pct   = 0
+        bear_pct   = 0
+        top_impact = None
 
     return {
         "articles":        articles[:25],   # show up to 25 with 10+ feeds
@@ -905,7 +909,7 @@ def fetch_data():
             sectors[t] = pd.DataFrame()
     old_err = sys.stderr; sys.stderr = io.StringIO()
     try:
-        pcr = yf.download("^CPC", period="10d", interval="1d", progress=False, auto_adjust=True)
+        pcr = yf.download("^CPC", period="60d", interval="1d", progress=False, auto_adjust=True)
     except Exception:
         pcr = pd.DataFrame()
     sys.stderr = old_err
@@ -2271,8 +2275,8 @@ _opex_friday = is_opex_friday()
 # Each signal group is weighted by how well it correlated with actual SPX
 # direction over the last 10 trading days.  Groups with >70% hit rate get
 # boosted (up to 1.8×); groups with <50% hit rate get penalised (down to 0.4×).
-@st.cache_data(ttl=3600)
-def compute_group_weights(today_date=None):  # today_date busts cache at midnight even within 1h TTL
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_group_weights(today_date=None):  # today_date param IS the cache key — different date = new cache entry = midnight bust
     """Derive per-group weights by correlating each group's vote with actual day direction."""
     try:
         _spx_d, _vix_d, _sec_d, _day_s, _days, _ = load_backtest_data()
@@ -2578,7 +2582,7 @@ BIAS_TEXT = {"bull":"#4ade80","bear":"#f87171","chop":"#94a3b8","neutral":"#94a3
 
 # ── HEADER ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
   <div>
     <h1 style="margin:0;font-size:24px;font-weight:800">📈 SPX Algo</h1>
     <p style="margin:2px 0 0;color:#64748b;font-size:12px">Player224-style · Signal Strength Rating · Trade Plan · Projections</p>
@@ -2592,6 +2596,13 @@ st.markdown(f"""
       🔄 refresh in <b id="spx-refresh-badge" style="color:#94a3b8">{_REFRESH_SECS}s</b>
     </span>
   </div>
+</div>
+<div style="background:#1a1f35;border:1px solid #2d3250;border-left:3px solid #f59e0b;
+            border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:11px;color:#94a3b8">
+  ⚠️ <b style="color:#f59e0b">Educational model only.</b>
+  The SSR score and projections are algorithmic outputs — <b>not financial advice.</b>
+  Past backtest accuracy does not guarantee future results.
+  All trading decisions are solely your responsibility.
 </div>
 """, unsafe_allow_html=True)
 
@@ -3078,6 +3089,15 @@ _tab_live, _tab_research = st.tabs(["📈 Live Signal", "🔬 Research & Validat
 # SIGNAL BREAKDOWN (Research tab)
 # ═══════════════════════════════════════════════════════════════════════════════
 with _tab_research:
+    st.markdown("""
+    <div style="background:#1a1f35;border:1px solid #2d3250;border-left:3px solid #475569;
+                border-radius:6px;padding:6px 14px;margin-bottom:10px;font-size:11px;color:#64748b">
+      🔬 <b style="color:#94a3b8">Research & Validation</b> — All statistics are
+      <b>backtested on historical data</b> and do not guarantee future accuracy.
+      In-sample window: first 9 months. Out-of-sample: remaining ~1.8 years.
+      Small regime bins (&lt;10 samples) should be interpreted with caution.
+    </div>
+    """, unsafe_allow_html=True)
     with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell · Core SSR: {_core_ssr} · Live-Adj: {score}", expanded=False):
         _INTRADAY_SIGS = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
         # Tier label + color for each signal
