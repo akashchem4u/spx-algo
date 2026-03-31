@@ -1,0 +1,6 @@
+date,ssr_score,direction_call,actual_outcome,correct,vix,regime,eval_window,notes
+2026-03-20,40,BEAR,UP,false,22.8,mid_vix,1d,bear trapped — surprise relief rally
+2026-03-24,23,BEAR,UP,false,23.1,mid_vix,1d,two consecutive misses on bear call
+2026-03-25,32,BEAR,DN,true,24.5,mid_vix,1d,bear confirmed — tariff pressure
+2026-03-26,23,BEAR,DN,true,26.4,high_vix,1d,bear confirmed — continued selloff
+2026-03-27,23,BEAR,DN,true,28.1,high_vix,1d,bear confirmed — VIX spike follow-through
