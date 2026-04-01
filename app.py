@@ -1150,6 +1150,20 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # VIX Below 15: ultra-calm regime tier. Pairs with "VIX Below 20" for gradient:
     # VIX 16-20 fires one signal; VIX <15 fires both — stronger low-vol bull context.
     sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15)
+
+    # ── hi-VIX structural dampening ──────────────────────────────────────────
+    # When VIX > 25, "VIX Below 20" and "VIX Below 15" are guaranteed zeros —
+    # they don't detect new deterioration, they just confirm VIX is already elevated.
+    # Leaving them in the Volatility group score creates artificial bear drag that
+    # compounds with the hi-VIX window overrides in window_bias_at().
+    # Solution: remove them from sigs so the group score reflects only the dynamic
+    # VIX signals (Falling, 3d Relief, No Spike, 1d Down) which still carry real
+    # directional information even in high-VIX environments.
+    _vix_now = float(vix_c.iloc[-1]) if len(vix_c) > 0 else 0.0
+    if _vix_now > VIX_FEAR_THRESHOLD:
+        sigs.pop("VIX Below 20", None)
+        sigs.pop("VIX Below 15", None)
+
     # VIX rate-of-change signals: capture fear acceleration/deceleration
     # that the point-in-time VIX level misses. 3-day window balances noise vs signal.
     if len(vix_c) >= 4:
@@ -1422,17 +1436,26 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
     # Pre-compute ATR-relative gap size (0 = unknown ATR, skip ratio logic)
     _gap_atr_ratio = abs(gap) / atr if atr > 0 else 0.0
     _small_gap_up  = gap > GAP_THRESHOLD and _gap_atr_ratio < 0.4   # gap-up but < 0.4× ATR
+    # Catalyst-aligned gap: strong news (|news_score| ≥ 0.25) that confirms the gap direction.
+    # A macro catalyst (e.g. geopolitical de-escalation, surprise Fed pivot) means the gap
+    # is fundamentally driven — it should NOT be faded and should NOT be suppressed by the
+    # hi-VIX bull→chop override.  Both the gap-fade and the hi-VIX demotion are bypassed.
+    _gap_catalyst_aligned = (
+        (gap > GAP_THRESHOLD  and news_score >=  0.25) or
+        (gap < -GAP_THRESHOLD and news_score <= -0.25)
+    )
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
             # ── Gap-conditional overrides ──────────────────────────────────
-            if label == "Pre-Bull Fade" and gap > GAP_THRESHOLD:
+            # Skip gap-fade when a macro catalyst confirms the gap direction.
+            if label == "Pre-Bull Fade" and gap > GAP_THRESHOLD and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-up→chop)"
-            if label == "Afternoon Trend" and gap > GAP_THRESHOLD:
+            if label == "Afternoon Trend" and gap > GAP_THRESHOLD and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-up→chop)"
             # Gap-down override: Bull Window loses reliability on large gap-down opens.
             # On gap-down >25pts, the 10:00-10:30 bounce attempt is uncertain — treat as chop.
             # (VIX > 25 already handles this via hi-VIX→chop, but gap-down at VIX 18-25 is missed.)
-            if label == "Bull Window" and gap < -GAP_THRESHOLD:
+            if label == "Bull Window" and gap < -GAP_THRESHOLD and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-down→chop)"
 
             # ── Hi-VIX small gap-up: Bull Window stays bull (gap-fade bounce) ──
@@ -1447,13 +1470,17 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
             # selling pressure bleeds through. Bull windows lose reliability.
             # EOD Trend (15:30–16:00) is neutralised to chop in hi-VIX: late
             # reversals are common and a clean bear trend in the last 30m is unreliable.
+            # Exception: catalyst-aligned gap-up preserves bull-biased windows even in
+            # hi-VIX — a macro catalyst is a stronger signal than the regime override.
             if vix > VIX_FEAR_THRESHOLD and label not in ("Open Volatility", "AH Bull Window (ES)"):
                 if label == "EOD Trend":
                     return "chop", label + " (hi-VIX→reversal risk)"
                 if bias == "chop":
                     return "bear", label + " (hi-VIX→bear)"
-                if bias == "bull":
+                if bias == "bull" and not _gap_catalyst_aligned:
                     return "chop", label + " (hi-VIX→chop)"
+                if bias == "bull" and _gap_catalyst_aligned:
+                    return "bull", label + " (catalyst-confirmed)"
 
             # ── VIX calm regime (VIX < 18) ─────────────────────────────────
             # Low-vol rangebound: bear windows tend to mean-revert instead of trend.
@@ -1735,8 +1762,11 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         # Adaptive slot ATR: front-loaded to match real intraday vol distribution
         _slot_atr   = daily_atr * _atr_profile[min(idx, len(_atr_profile)-1)] * _vx * _opex_factor
         # Regime-aware blend (mirrors ES logic above)
+        # Borderline score (35–65) means SSR is near-neutral — reduce direction weight
+        # in hi-VIX to avoid projecting strong directional moves from a weak signal.
+        _score_borderline = 35 < score < 65
         if vix > VIX_FEAR_THRESHOLD:
-            _dir_w, _win_w = 0.70, 0.30
+            _dir_w, _win_w = (0.55, 0.45) if _score_borderline else (0.70, 0.30)
         elif 0 < vix < VIX_CALM_THRESHOLD:
             _dir_w, _win_w = 0.40, 0.60
         elif gap < -GAP_THRESHOLD:
@@ -3988,8 +4018,9 @@ with _tab_live:
             _p   = _bt_atr_profile[_si] if _si < len(_bt_atr_profile) else 0.07
             _s_atr = bt_atr * _p
             # Regime-aware blend — same logic as generate_spx_projections()
+            _bt_score_borderline = 35 < bt_score < 65
             if vix_on_day > VIX_FEAR_THRESHOLD:
-                _dw, _ww = 0.70, 0.30
+                _dw, _ww = (0.55, 0.45) if _bt_score_borderline else (0.70, 0.30)
             elif 0 < vix_on_day < VIX_CALM_THRESHOLD:
                 _dw, _ww = 0.40, 0.60
             elif day_gap < -GAP_THRESHOLD:
