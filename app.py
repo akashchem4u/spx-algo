@@ -3981,7 +3981,7 @@ with _tab_live:
             win_bias, win_label = window_bias_at(
                 s, gap=day_gap, vix=vix_on_day,
                 event_types=_bt_evts, weekday=target_date.weekday(),
-                opex=_bt_is_opex, atr=_daily_atr)
+                opex=_bt_is_opex, atr=bt_atr)
             wf   = {"bull":0.5,"bear":-0.5,"chop":0.0,"neutral":0.0}[win_bias]
             # Use adaptive per-slot ATR (front-loaded morning vol)
             _si  = slots.index(s)
