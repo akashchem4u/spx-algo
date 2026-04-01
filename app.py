@@ -1151,18 +1151,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # VIX 16-20 fires one signal; VIX <15 fires both — stronger low-vol bull context.
     sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15)
 
-    # ── hi-VIX structural dampening ──────────────────────────────────────────
-    # When VIX > 25, "VIX Below 20" and "VIX Below 15" are guaranteed zeros —
-    # they don't detect new deterioration, they just confirm VIX is already elevated.
-    # Leaving them in the Volatility group score creates artificial bear drag that
-    # compounds with the hi-VIX window overrides in window_bias_at().
-    # Solution: remove them from sigs so the group score reflects only the dynamic
-    # VIX signals (Falling, 3d Relief, No Spike, 1d Down) which still carry real
-    # directional information even in high-VIX environments.
-    _vix_now = float(vix_c.iloc[-1]) if len(vix_c) > 0 else 0.0
-    if _vix_now > VIX_FEAR_THRESHOLD:
-        sigs.pop("VIX Below 20", None)
-        sigs.pop("VIX Below 15", None)
+    # Note: VIX Below 20 / VIX Below 15 are NOT blanket-removed in hi-VIX.
+    # They are correctly bearish during genuine sustained bear trends.
+    # When they persistently misfire (e.g. catalyst-driven reversals while VIX stays
+    # elevated), the drift monitor flags them and the re-score block below neutralizes
+    # them to 0.5 (abstain) — surgical per-signal dampening, not a static rule.
 
     # VIX rate-of-change signals: capture fear acceleration/deceleration
     # that the point-in-time VIX level misses. 3-day window balances noise vs signal.
@@ -1410,7 +1403,8 @@ def is_opex_friday(ref_date=None):
 
 
 def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False,
-                   event_types=None, weekday=None, orb_range_atr=0.0, atr=0.0):
+                   event_types=None, weekday=None, orb_range_atr=0.0, atr=0.0,
+                   gap_confirmed=False):
     """
     Return (bias, label) for a given HH:MM.
     gap           = today's open − prior close (positive = gap-up, negative = gap-down).
@@ -1476,6 +1470,11 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                 if label == "EOD Trend":
                     return "chop", label + " (hi-VIX→reversal risk)"
                 if bias == "chop":
+                    # Gap confirmed after 9:45 AM: the gap is NOT fading — keep
+                    # chop windows as chop rather than converting to bear in the
+                    # first 2 hours.  The market is holding its ground despite VIX.
+                    if gap_confirmed and gap > GAP_THRESHOLD and hhmm < "11:30":
+                        return "chop", label + " (gap-confirmed→chop)"
                     return "bear", label + " (hi-VIX→bear)"
                 if bias == "bull" and not _gap_catalyst_aligned:
                     return "chop", label + " (hi-VIX→chop)"
@@ -1593,7 +1592,7 @@ def next_es_open(now):
     return now  # fallback
 
 
-def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
+def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0, gap_confirmed=False):
     """30-minute ES projections for 23 hours starting from the next opening bell."""
     if not daily_atr or daily_atr < 1.0:
         daily_atr = round(base_price * 0.010, 1)
@@ -1640,7 +1639,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
             _is_open_bell = (t == open_t)  # first slot of the session
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour, is_open_bell=_is_open_bell)
 
@@ -1654,8 +1653,11 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             # Low-VIX range days: window timing is more reliable.
             # Large gap days: gap direction pressure lifts SSR weight.
             # OpEx: balanced (gamma pins both SSR and window edge).
+            # Borderline score (35–65) in hi-VIX: reduce direction dominance so a
+            # near-neutral score doesn't project as if it were high-conviction.
+            _es_score_borderline = 35 < score < 65
             if vix > VIX_FEAR_THRESHOLD:
-                _dir_w, _win_w = 0.70, 0.30
+                _dir_w, _win_w = (0.55, 0.45) if _es_score_borderline else (0.70, 0.30)
             elif 0 < vix < VIX_CALM_THRESHOLD:
                 _dir_w, _win_w = 0.40, 0.60
             elif gap < -GAP_THRESHOLD:
@@ -1720,7 +1722,7 @@ def next_trading_day(from_date):
     return d  # fallback
 
 
-def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0):
+def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False, orb_range_atr=0.0, orb_distance_atr=0.0, gap_confirmed=False):
     """Hourly SPX projections for the next/current RTH session (9:30 AM – 4:00 PM)."""
     if not daily_atr or daily_atr < 1.0:
         daily_atr = round(base_price * 0.010, 1)
@@ -1753,7 +1755,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -2639,8 +2641,26 @@ if _pre_market and live["es_price"]:
         buys  = sum(1 for v in signals.values() if v == 1)
         sells = sum(1 for v in signals.values() if v == 0)
 
+# ── Drift dampening: neutralize persistently-wrong signals before re-score ────
+# _signal_drift_check() is defined below; its @st.cache_data wrapper means
+# this call is near-free after the first invocation in this session (1h TTL).
+# Drifting signals are set to 0.5 (abstain) so they stop pulling the group
+# score in the wrong direction.  The original binary value is preserved in
+# the UI display — only the scoring copy (signals dict) is modified here.
+try:
+    _live_drift_flags = _signal_drift_check(n_days=10, flag_threshold=0.70)
+    _drift_dampened_names = set()
+    for _ldf in _live_drift_flags:
+        _ldsig = _ldf["name"] if isinstance(_ldf, dict) else _ldf
+        if _ldsig in signals:
+            signals[_ldsig] = 0.5       # abstain — not 0 (bear) or 1 (bull)
+            _drift_dampened_names.add(_ldsig)
+except Exception:
+    _live_drift_flags    = []
+    _drift_dampened_names = set()
+
 # ── Re-score SSR using data-driven group weights ─────────────────────────────
-# (Gap/ATR Normal is now correctly set before this block runs)
+# (Gap/ATR Normal and drift dampening are both applied before this block runs)
 _wg_s, _wg_w = [], []
 for _gn, _gs in SIGNAL_GROUPS.items():
     _pr = [signals.get(k, 0) for k in _gs if k in signals]
@@ -2687,6 +2707,51 @@ _top_drivers  = [f"{g} ({p}%)" for g, p in _grp_sorted[:2] if p >= 50]
 _top_drags    = [f"{g} ({p}%)" for g, p in reversed(_grp_sorted) if p < 40][:1]
 _driver_line  = ("Top drivers: " + " · ".join(_top_drivers)) if _top_drivers else ""
 _drag_line    = ("Drag: " + ", ".join(_top_drags)) if _top_drags else ""
+
+# ── Shadow ledger auto-append (runs once per day, post-close) ─────────────────
+# Appends one row to Codex/shadow-ledger.csv capturing today's setup context and
+# actual outcome.  The row is written only after 4:15 PM EST on weekdays so the
+# close price is stable.  A duplicate-date guard prevents double-writes on refresh.
+_is_post_close_today = (
+    now_est.weekday() < 5 and
+    (now_est.hour > 16 or (now_est.hour == 16 and now_est.minute >= 15))
+)
+if _is_post_close_today and levels["current"] > 0 and spx_price > 0:
+    try:
+        import csv as _csv, os as _os
+        _sl_path = "Codex/shadow-ledger.csv"
+        _today_str = now_est.strftime("%Y-%m-%d")
+        # Read existing dates to avoid duplicate rows
+        _existing_dates = set()
+        if _os.path.exists(_sl_path):
+            with open(_sl_path, newline="") as _f:
+                for _row in _csv.DictReader(_f):
+                    if _row.get("date"):
+                        _existing_dates.add(_row["date"])
+        if _today_str not in _existing_dates:
+            _evt_today = get_event_types_today()
+            _actual_dir = "U" if spx_price > levels["current"] else "D"
+            _actual_pts = round(spx_price - levels["current"], 1)
+            _sl_row = {
+                "date":         _today_str,
+                "core_ssr":     _core_ssr,
+                "live_adj_ssr": score,
+                "vix":          round(vix_now, 2),
+                "gap_pts":      round(live_gap, 1),
+                "event_flags":  "|".join(sorted(_evt_today)) if _evt_today else "",
+                "opex":         int(_opex_week),
+                "orb_status":   _orb_status,
+                "actual_dir":   _actual_dir,
+                "actual_pts":   _actual_pts,
+            }
+            _write_header = not _os.path.exists(_sl_path) or _os.path.getsize(_sl_path) == 0
+            with open(_sl_path, "a", newline="") as _f:
+                _w = _csv.DictWriter(_f, fieldnames=list(_sl_row.keys()))
+                if _write_header:
+                    _w.writeheader()
+                _w.writerow(_sl_row)
+    except Exception:
+        pass  # never block render on ledger write failure
 
 es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
@@ -3237,6 +3302,18 @@ if _pre_market and live["es_price"]:
     live_gap = _implied_gap          # already set above; re-assert to be explicit
 else:
     live_gap = _rth_gap
+# ── Gap confirmation: after 9:45 AM during RTH, check whether the gap is holding.
+# If the live SPX price is still ≥ prior close + 80% of the implied gap, the gap
+# has NOT been faded and morning bear calls should be suppressed (chop not bear).
+# This prevents the hi-VIX regime from projecting a selloff on a day when the
+# market is clearly holding its overnight gains.
+_gap_confirmed = (
+    _is_rth_now and
+    live_gap > GAP_THRESHOLD and
+    (now_est.hour > 9 or (now_est.hour == 9 and now_est.minute >= 45)) and
+    spx_price > levels["current"] + live_gap * 0.80
+)
+
 # Pre-compute ES projections at module level so the pre-market banner and the
 # SPX projection table share the same overnight-drift-adjusted anchor price.
 # Guard: skip if ATR is 0 (data failure) to avoid zero-width projection ranges.
@@ -3244,7 +3321,8 @@ if levels["atr"] > 0 and es_price > 0:
     _es_rows_precomp = generate_es_projections(
         es_price, levels["atr"], score, gap=live_gap, vix=vix_now,
         news_score=_news_comp, orb_status=_orb_status, opex=_opex_week,
-        orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+        orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr,
+        gap_confirmed=_gap_confirmed)
 else:
     _es_rows_precomp = []
 _es_rth_anchor = None
@@ -3470,25 +3548,27 @@ with _tab_research:
         @st.cache_data(ttl=3600)
         def run_weekly_ssr_validation():
             try:
-                _spx_w = yf.download("^GSPC", period="120d", interval="1d", progress=False, auto_adjust=True)
-                _vix_w = yf.download("^VIX",  period="120d", interval="1d", progress=False, auto_adjust=True)
+                _spx_w = yf.download("^GSPC", period="2y", interval="1d", progress=False, auto_adjust=True)
+                _vix_w = yf.download("^VIX",  period="2y", interval="1d", progress=False, auto_adjust=True)
                 _sec_w = {}
                 for _t in ["XLF","XLK","XLE","XLV","XLI"]:
                     try:
-                        _sec_w[_t] = yf.download(_t, period="120d", interval="1d", progress=False, auto_adjust=True)
+                        _sec_w[_t] = yf.download(_t, period="2y", interval="1d", progress=False, auto_adjust=True)
                     except Exception:
                         _sec_w[_t] = pd.DataFrame()
-                _closes  = _spx_w["Close"].squeeze()
+                _closes = _spx_w["Close"].squeeze()
+                _opens  = _spx_w["Open"].squeeze()
                 if isinstance(_closes, pd.DataFrame): _closes = _closes.iloc[:, 0]
+                if isinstance(_opens, pd.DataFrame):  _opens  = _opens.iloc[:, 0]
                 _dates   = list(_spx_w.index)
                 _results = []
                 for _wi in range(4, len(_dates) - 5, 5):
                     try:
-                        _fri_idx  = _wi
-                        _base     = _spx_w.iloc[:_fri_idx]
-                        _vbase    = _vix_w.iloc[:_fri_idx]
-                        _ebase    = {k: v.iloc[:_fri_idx] for k, v in _sec_w.items()}
-                        if len(_base) < 30: continue
+                        _fri_idx = _wi
+                        _base    = _spx_w.iloc[:_fri_idx + 1]
+                        _vbase   = _vix_w.iloc[:_fri_idx + 1]
+                        _ebase   = {k: v.iloc[:_fri_idx + 1] for k, v in _sec_w.items()}
+                        if len(_base) < 252: continue
                         _fri_as_of = EST.localize(datetime(_dates[_fri_idx].year,
                                                            _dates[_fri_idx].month,
                                                            _dates[_fri_idx].day, 15, 0))
@@ -3499,7 +3579,7 @@ with _tab_research:
                         _nxt_start = _fri_idx + 1
                         _nxt_end   = min(_fri_idx + 6, len(_closes))
                         if _nxt_end <= _nxt_start: continue
-                        _wk_open  = float(_closes.iloc[_nxt_start])
+                        _wk_open  = float(_opens.iloc[_nxt_start]) if len(_opens) > _nxt_start else float(_closes.iloc[_nxt_start])
                         _wk_close = float(_closes.iloc[_nxt_end - 1])
                         _wk_move  = round(_wk_close - _wk_open, 1)
                         _actual   = "bull" if _wk_move > 5 else ("bear" if _wk_move < -5 else "neutral")
@@ -3765,7 +3845,7 @@ with _tab_live:
     # both tables show the same price at the RTH open boundary.
     _spx_proj_base = (_es_rth_anchor if (_es_rth_anchor is not None and _pre_market and live["es_price"])
                       else spx_price)
-    spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr)
+    spx_rows = generate_spx_projections(_spx_proj_base, levels["atr"], score, gap=live_gap, vix=vix_now, news_score=_news_comp, orb_status=_orb_status, opex=_opex_week, orb_range_atr=_orb_range_atr, orb_distance_atr=_orb_distance_atr, gap_confirmed=_gap_confirmed)
 
     colA, colB = st.columns(2)
 
