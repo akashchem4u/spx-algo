@@ -1475,6 +1475,12 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                     # first 2 hours.  The market is holding its ground despite VIX.
                     if gap_confirmed and gap > GAP_THRESHOLD and hhmm < "11:30":
                         return "chop", label + " (gap-confirmed→chop)"
+                    # Gap-down bounce protection: gap-down + hi-VIX mornings bounce
+                    # >50% of the time historically.  Keep chop windows as chop until
+                    # 11:30 instead of forcing bear — trend confirmation is unreliable
+                    # before midday after a large gap-down open.
+                    if gap < -GAP_THRESHOLD and hhmm < "11:30" and not _gap_catalyst_aligned:
+                        return "chop", label + " (gap-dn bounce zone)"
                     return "bear", label + " (hi-VIX→bear)"
                 if bias == "bull" and not _gap_catalyst_aligned:
                     return "chop", label + " (hi-VIX→chop)"
@@ -1657,7 +1663,11 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
             # near-neutral score doesn't project as if it were high-conviction.
             _es_score_borderline = 35 < score < 65
             if vix > VIX_FEAR_THRESHOLD:
-                _dir_w, _win_w = (0.55, 0.45) if _es_score_borderline else (0.70, 0.30)
+                # Gap-down + hi-VIX: reduce SSR conviction weight — bounce risk is high.
+                if gap < -GAP_THRESHOLD:
+                    _dir_w, _win_w = (0.40, 0.60) if _es_score_borderline else (0.50, 0.50)
+                else:
+                    _dir_w, _win_w = (0.55, 0.45) if _es_score_borderline else (0.70, 0.30)
             elif 0 < vix < VIX_CALM_THRESHOLD:
                 _dir_w, _win_w = 0.40, 0.60
             elif gap < -GAP_THRESHOLD:
@@ -1768,7 +1778,11 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         # in hi-VIX to avoid projecting strong directional moves from a weak signal.
         _score_borderline = 35 < score < 65
         if vix > VIX_FEAR_THRESHOLD:
-            _dir_w, _win_w = (0.55, 0.45) if _score_borderline else (0.70, 0.30)
+            # Gap-down + hi-VIX: reduce SSR conviction weight — bounce risk is high.
+            if gap < -GAP_THRESHOLD:
+                _dir_w, _win_w = (0.40, 0.60) if _score_borderline else (0.50, 0.50)
+            else:
+                _dir_w, _win_w = (0.55, 0.45) if _score_borderline else (0.70, 0.30)
         elif 0 < vix < VIX_CALM_THRESHOLD:
             _dir_w, _win_w = 0.40, 0.60
         elif gap < -GAP_THRESHOLD:
@@ -4100,7 +4114,11 @@ with _tab_live:
             # Regime-aware blend — same logic as generate_spx_projections()
             _bt_score_borderline = 35 < bt_score < 65
             if vix_on_day > VIX_FEAR_THRESHOLD:
-                _dw, _ww = (0.55, 0.45) if _bt_score_borderline else (0.70, 0.30)
+                # Gap-down + hi-VIX: mirror live projection dampening in backtest.
+                if day_gap < -GAP_THRESHOLD:
+                    _dw, _ww = (0.40, 0.60) if _bt_score_borderline else (0.50, 0.50)
+                else:
+                    _dw, _ww = (0.55, 0.45) if _bt_score_borderline else (0.70, 0.30)
             elif 0 < vix_on_day < VIX_CALM_THRESHOLD:
                 _dw, _ww = 0.40, 0.60
             elif day_gap < -GAP_THRESHOLD:
