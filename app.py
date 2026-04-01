@@ -3953,6 +3953,82 @@ with _tab_live:
         """, unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════════════════════════════════════
+    # ROW 4B — PROJECTED CLOSE CARD (re-anchored to current live price)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Instead of reading the stale open-anchored projection table, we re-anchor
+    # to the current SPX price and sum only the remaining (future) slot moves.
+    # This gives a live "where will we close?" number that updates every refresh.
+    _is_rth_live = _is_rth_now  # already computed above
+    _future_rows = [r for r in spx_rows if not r["past"]]
+    _past_rows   = [r for r in spx_rows if r["past"]]
+
+    if _is_rth_live and _future_rows:
+        # Sum remaining window moves from current price
+        _remaining_move = sum(r["move"] for r in _future_rows)
+        _proj_close     = round(spx_price + _remaining_move, 0)
+        # Derive per-slot ATR from the rng_hi/rng_lo stored in each row:
+        # rng = price ± slot_atr*0.4  →  slot_atr = (rng_hi - rng_lo) / 0.8
+        _remaining_atr  = sum((r["rng_hi"] - r["rng_lo"]) / 0.8 for r in _future_rows)
+        _proj_close_lo  = round(_proj_close - _remaining_atr * 0.55, 0)
+        _proj_close_hi  = round(_proj_close + _remaining_atr * 0.55, 0)
+        _slots_left     = len(_future_rows)
+        _move_from_now  = round(_remaining_move, 1)
+        _move_today     = round(spx_price - levels["current"], 1)  # from prev close
+        _mv_sign        = "+" if _move_from_now >= 0 else ""
+        _td_sign        = "+" if _move_today >= 0 else ""
+        _close_color    = "#4ade80" if _proj_close > spx_price else ("#f87171" if _proj_close < spx_price else "#94a3b8")
+        _today_color    = "#4ade80" if _move_today >= 0 else "#f87171"
+        _atr_pct        = round(abs(_move_today) / levels["atr"] * 100, 0) if levels["atr"] > 0 else 0
+
+        # Determine regime label for close
+        _close_regime   = "Holding gains" if _move_from_now >= 0 else "Afternoon fade"
+        if abs(_move_from_now) < levels["atr"] * 0.05:
+            _close_regime = "Consolidation into close"
+
+        # Next key window (first future slot label)
+        _next_window = _future_rows[0]["win_label"] if _future_rows else "—"
+        _next_time   = _future_rows[0]["time"]      if _future_rows else "—"
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0f1a2e,#1a1a2e);border:1px solid #2d3a5a;
+                    border-radius:14px;padding:22px 28px;margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">
+
+            <!-- Left: big close number -->
+            <div>
+              <div style="font-size:11px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:6px">
+                📍 Projected SPX Close — Re-anchored to Live Price
+              </div>
+              <div style="font-size:42px;font-weight:800;color:{_close_color};line-height:1">
+                {int(_proj_close):,}
+              </div>
+              <div style="font-size:13px;color:#64748b;margin-top:4px">
+                Range &nbsp;<span style="color:#94a3b8;font-weight:600">{int(_proj_close_lo):,} – {int(_proj_close_hi):,}</span>
+              </div>
+            </div>
+
+            <!-- Middle: live context -->
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Now</div>
+              <div style="font-size:26px;font-weight:700;color:#f1f5f9">{spx_price:,.1f}</div>
+              <div style="font-size:12px;color:{_today_color};margin-top:2px">{_td_sign}{_move_today:+.1f} today &nbsp;({_atr_pct:.0f}% ATR)</div>
+            </div>
+
+            <!-- Right: remaining move + regime -->
+            <div style="text-align:right">
+              <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Remaining move</div>
+              <div style="font-size:22px;font-weight:700;color:{_close_color}">{_mv_sign}{_move_from_now:+.1f} pts</div>
+              <div style="font-size:12px;color:#64748b;margin-top:2px">{_slots_left} slots left · {_close_regime}</div>
+              <div style="font-size:11px;color:#475569;margin-top:6px">
+                Next: <span style="color:#94a3b8">{_next_time} {_next_window}</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════════════════════════════════════
     # ROW 5 — WEEKLY PROJECTION
     # ═══════════════════════════════════════════════════════════════════════════════
     st.markdown("<h4 style='margin:6px 0 10px;color:#94a3b8'>📅 Weekly Projection — Next 5 Trading Days</h4>",
