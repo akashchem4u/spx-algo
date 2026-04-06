@@ -1,6 +1,6 @@
 # Ablation Report — SPX Algo Core SSR
 
-Generated: `2026-04-06T07:18:27Z`  
+Generated: `2026-04-06T07:27:15Z`  
 Walk-forward period: `2025-01-21` → `2026-04-01`  
 Total directional calls evaluated: `213`  
 **Baseline accuracy: 54.0%  (115/213)**
