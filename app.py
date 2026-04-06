@@ -5528,10 +5528,11 @@ with _tab_research:
                 _cs_c = "#4ade80" if _cs >= 55 else "#ef4444" if _cs <= 44 else "#94a3b8"
                 _ls_c = "#4ade80" if _ls >= 55 else "#ef4444" if _ls <= 44 else "#94a3b8"
                 _ad_c = "#4ade80" if _ad == "bull" else "#ef4444" if _ad == "bear" else "#64748b"
-                # Model call from live-adj SSR
-                _model_call = "bull" if _ls >= 55 else ("bear" if _ls <= 44 else "neutral")
+                # Model call from live-adj SSR; abstained rows are treated as neutral
+                _abstained = _lr.get("gap_down_abstain", "no") == "yes"
+                _model_call = "neutral" if _abstained else ("bull" if _ls >= 55 else ("bear" if _ls <= 44 else "neutral"))
                 _mc_c = "#4ade80" if _model_call == "bull" else "#ef4444" if _model_call == "bear" else "#64748b"
-                # Result: ✅ correct / ❌ wrong / ⚪ flat or neutral call / — unknown
+                # Result: ✅ correct / ❌ wrong / ⚪ flat, neutral, or abstained / — unknown
                 if not _ad:
                     _result = "—"
                 elif _ad == "flat" or _model_call == "neutral":
