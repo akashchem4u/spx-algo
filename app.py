@@ -2647,6 +2647,7 @@ def compute_historical_analysis():
                 _spx_sl = _spx.iloc[:_i + 1]
                 _vix_sl = _vix.iloc[:_i + 1]
                 _dt  = _spx.index[_i].date()
+                _dt_s = _dt.strftime("%Y-%m-%d")   # define early — used in _daily_results append below
                 # Align sector slices by date (not row index) to avoid misalignment
                 # when sector history is shorter or has different trading day count.
                 _cutoff_ts = pd.Timestamp(_dt)
@@ -2678,8 +2679,15 @@ def compute_historical_analysis():
 
                 _base_t += 1
                 if _correct: _base_h += 1
-                # Collect per-day results for rolling window display
-                _daily_results.append({"date": _dt_s, "correct": _correct})
+                # Collect per-day results for rolling window + score-band displays
+                _vv_now = float(_vix.iloc[:_i + 1]["Close"].squeeze().iloc[-1]) if not _vix.empty else 20
+                _daily_results.append({
+                    "date": _dt_s,
+                    "correct": _correct,
+                    "score": _core_sc,
+                    "bull": _bull_call,
+                    "vix_regime": "high" if _vv_now > 25 else ("low" if _vv_now < 18 else "mid"),
+                })
 
                 # VIX regime
                 _vv = float(_vix_sl["Close"].squeeze().iloc[-1]) if not _vix_sl.empty else 20
@@ -4029,6 +4037,45 @@ with _tab_research:
                         f'<div style="margin-bottom:14px">'
                         f'<div style="font-size:10px;color:#64748b;letter-spacing:1px;margin-bottom:4px">ROLLING WINDOW ACCURACY</div>'
                         f'<table style="border-collapse:collapse"><tr>{_win_rows}</tr></table></div>',
+                        unsafe_allow_html=True)
+
+                # Score-band accuracy table: break directional calls by confidence zone
+                _band_buckets = {}
+                for _r in _dr:
+                    _sc_r = _r.get("score", -1)
+                    _bull_r = _r.get("bull", False)
+                    if _bull_r:
+                        _bk = "bull_weak" if _sc_r < 60 else ("bull_mod" if _sc_r < 65 else "bull_strong")
+                    else:
+                        _bk = "bear_weak" if _sc_r > 39 else "bear_strong"
+                    _band_buckets.setdefault(_bk, [0, 0])
+                    _band_buckets[_bk][1] += 1
+                    if _r["correct"]: _band_buckets[_bk][0] += 1
+                _band_defs = [
+                    ("bull_strong", "🟢 Bull strong (≥65)", "#4ade80"),
+                    ("bull_mod",    "🟡 Bull moderate (60–64)", "#a3e635"),
+                    ("bull_weak",   "🟠 Bull marginal (55–59)", "#f59e0b"),
+                    ("bear_weak",   "🔴 Bear marginal (40–44)", "#fb923c"),
+                    ("bear_strong", "🔴 Bear strong (≤39)", "#f87171"),
+                ]
+                _band_rows = ""
+                for _bk, _blbl, _bcolor in _band_defs:
+                    _bv = _band_buckets.get(_bk, [0, 0])
+                    if _bv[1] < 5: continue
+                    _bpct = int(_bv[0] / _bv[1] * 100)
+                    _bcc = "#4ade80" if _bpct >= 60 else ("#f59e0b" if _bpct >= 48 else "#f87171")
+                    _bar = (f'<div style="flex:1;background:#1e2130;border-radius:3px;height:5px;overflow:hidden">'
+                            f'<div style="width:{_bpct}%;height:100%;background:{_bcc};border-radius:3px"></div></div>')
+                    _band_rows += (f'<tr style="border-bottom:1px solid #1a1f33">'
+                                   f'<td style="padding:3px 10px;font-size:11px;color:#94a3b8">{_blbl}</td>'
+                                   f'<td style="padding:3px 6px;font-size:13px;font-weight:700;color:{_bcc}">{_bpct}%</td>'
+                                   f'<td style="padding:3px 6px;font-size:10px;color:#475569">n={_bv[1]}</td>'
+                                   f'<td style="padding:3px 12px;min-width:70px">{_bar}</td></tr>')
+                if _band_rows:
+                    st.markdown(
+                        f'<div style="margin-bottom:14px">'
+                        f'<div style="font-size:10px;color:#64748b;letter-spacing:1px;margin-bottom:4px">ACCURACY BY CONFIDENCE ZONE (2yr)</div>'
+                        f'<table style="width:100%;border-collapse:collapse">{_band_rows}</table></div>',
                         unsafe_allow_html=True)
 
             def _regime_table(title, buckets, labels):
