@@ -392,8 +392,8 @@ def run_backtest(days: int = 60) -> dict:
     results = []
     vix_buckets = {"low": _build_accuracy_bucket(), "mid": _build_accuracy_bucket(), "high": _build_accuracy_bucket()}
     gap_buckets = {"up": _build_accuracy_bucket(), "flat": _build_accuracy_bucket(), "down": _build_accuracy_bucket()}
-    # Day-of-week buckets — ablation shows Tuesday (35%) and Thursday (38%) are
-    # structural accuracy drags; Mon/Wed/Fri are all ≥49%.
+    # Day-of-week buckets — 2yr ablation (22+1opt model): Wed 66.7%, Mon 56.4%
+    # best; Thu 45.5% structural drag (structural or regime noise); Fri 48.9%.
     _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
     dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
     signal_counts: list[int] = []

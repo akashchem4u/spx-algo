@@ -2659,11 +2659,12 @@ def compute_historical_analysis():
 
         # Regime accumulators
         _regime = {
-            "vix":   {"low":{"h":0,"t":0}, "mid":{"h":0,"t":0}, "high":{"h":0,"t":0}},
-            "gap":   {"up": {"h":0,"t":0}, "flat":{"h":0,"t":0}, "down": {"h":0,"t":0}},
-            "dow":   {d: {"h":0,"t":0} for d in range(5)},
-            "event": {"event":{"h":0,"t":0}, "normal":{"h":0,"t":0}},
-            "opex":  {"opex":{"h":0,"t":0},  "normal":{"h":0,"t":0}},
+            "vix":     {"low":{"h":0,"t":0}, "mid":{"h":0,"t":0}, "high":{"h":0,"t":0}},
+            "gap":     {"up": {"h":0,"t":0}, "flat":{"h":0,"t":0}, "down": {"h":0,"t":0}},
+            "dow":     {d: {"h":0,"t":0} for d in range(5)},
+            "event":   {"event":{"h":0,"t":0}, "normal":{"h":0,"t":0}},
+            "opex":    {"opex":{"h":0,"t":0},  "normal":{"h":0,"t":0}},
+            "opex_fri":{"opex_fri":{"h":0,"t":0}, "other":{"h":0,"t":0}},
         }
         _base_h = 0; _base_t = 0
         _daily_results: list[dict] = []   # per-day records for rolling window accuracy
@@ -2752,6 +2753,11 @@ def compute_historical_analysis():
                 _ok = "opex" if is_opex_week(_dt) else "normal"
                 _regime["opex"][_ok]["t"] += 1
                 if _correct: _regime["opex"][_ok]["h"] += 1
+
+                # OpEx Friday (3rd Friday of month) — gamma unwind day
+                _of_k = "opex_fri" if is_opex_friday(_dt) else "other"
+                _regime["opex_fri"][_of_k]["t"] += 1
+                if _correct: _regime["opex_fri"][_of_k]["h"] += 1
 
                 # Signal ablation — recompute core score without each signal.
                 # Only count rows where the FULL model made a directional call.
@@ -4167,6 +4173,9 @@ with _tab_research:
                     unsafe_allow_html=True)
                 st.markdown(_regime_table("OPEX WEEK", _reg["opex"],
                     [("opex","OpEx week"),("normal","Normal week")]),
+                    unsafe_allow_html=True)
+                st.markdown(_regime_table("OPEX FRIDAY", _reg.get("opex_fri",{}),
+                    [("opex_fri","3rd Fri (gamma unwind)"),("other","Other days")]),
                     unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────────────────────────────────
