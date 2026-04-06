@@ -79,6 +79,39 @@ SIGNAL_GROUPS = {
 
 MIN_ACCURACY_THRESHOLD = 0.48
 
+# HIGH-impact economic event dates used for event-day regime classification.
+# Matches the set in run_ablation._ECON_DATES (FOMC, CPI, NFP, PCE; excludes MED-impact PPI/GDP).
+_ECON_DATES: frozenset[str] = frozenset({
+    # 2025 FOMC
+    "2025-01-29","2025-03-19","2025-05-07","2025-06-18",
+    "2025-07-30","2025-09-17","2025-11-07","2025-12-17",
+    # 2025 CPI
+    "2025-01-15","2025-02-12","2025-03-12","2025-04-10","2025-05-13",
+    "2025-06-11","2025-07-15","2025-08-12","2025-09-10","2025-10-15",
+    "2025-11-13","2025-12-10",
+    # 2025 NFP
+    "2025-01-10","2025-02-07","2025-03-07","2025-04-04","2025-05-02",
+    "2025-06-06","2025-07-03","2025-08-01","2025-09-05","2025-10-03",
+    "2025-11-07","2025-12-05",
+    # 2025 PCE
+    "2025-01-31","2025-02-28","2025-03-28","2025-04-25","2025-05-30",
+    "2025-06-27","2025-07-25","2025-08-29","2025-09-26","2025-10-31",
+    "2025-11-26","2025-12-19",
+    # 2026 FOMC
+    "2026-01-28","2026-03-18","2026-04-29","2026-06-10","2026-07-29",
+    "2026-09-16","2026-11-04","2026-12-16",
+    # 2026 CPI
+    "2026-01-14","2026-02-11","2026-03-11","2026-04-10","2026-05-13",
+    "2026-06-10","2026-07-15","2026-08-12","2026-09-10","2026-10-14",
+    "2026-11-12","2026-12-10",
+    # 2026 NFP
+    "2026-01-09","2026-02-06","2026-03-06","2026-04-03","2026-05-01",
+    "2026-06-05","2026-07-10","2026-08-07","2026-09-04","2026-10-02",
+    "2026-11-06","2026-12-04",
+    # 2026 PCE
+    "2026-01-30","2026-02-27","2026-03-27","2026-04-24","2026-05-29","2026-06-26",
+})
+
 
 def _squeeze(df: pd.DataFrame, col: str) -> pd.Series:
     s = df[col].squeeze()
@@ -419,6 +452,8 @@ def run_backtest(days: int = 60) -> dict:
     # best; Thu 45.5% structural drag (structural or regime noise); Fri 48.9%.
     _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
     dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
+    # Event-day buckets — HIGH-impact FOMC/CPI/NFP/PCE vs normal days.
+    event_buckets = {"event": _build_accuracy_bucket(), "normal": _build_accuracy_bucket()}
     signal_counts: list[int] = []
     gap_down_abstained: int = 0  # days where bear call was suppressed by gap-down gate
 
@@ -466,12 +501,15 @@ def run_backtest(days: int = 60) -> dict:
         vix_key = "high" if vix_on_day > VIX_FEAR_THRESHOLD else ("low" if vix_on_day < VIX_CALM_THRESHOLD else "mid")
         gap_key = "up" if day_gap > GAP_THRESHOLD else ("down" if day_gap < -GAP_THRESHOLD else "flat")
         dow_name = _DOW_NAMES.get(dow_idx, "?")
+        event_key = "event" if spx.index[i].strftime("%Y-%m-%d") in _ECON_DATES else "normal"
         vix_buckets[vix_key]["total"] += 1
         vix_buckets[vix_key]["hits"] += int(correct)
         gap_buckets[gap_key]["total"] += 1
         gap_buckets[gap_key]["hits"] += int(correct)
         dow_buckets[dow_name]["total"] += 1
         dow_buckets[dow_name]["hits"] += int(correct)
+        event_buckets[event_key]["total"] += 1
+        event_buckets[event_key]["hits"] += int(correct)
 
         results.append(
             {
@@ -518,6 +556,7 @@ def run_backtest(days: int = 60) -> dict:
             "vix": _attach_accuracy(vix_buckets),
             "gap": _attach_accuracy(gap_buckets),
             "dow": _attach_accuracy(dow_buckets),
+            "event": _attach_accuracy(event_buckets),
         },
         "recent_results": results[-5:],
     }
@@ -534,7 +573,7 @@ def run_backtest(days: int = 60) -> dict:
         "history_period": period,
         "model_alignment": "equal_weight_static_core",
         "limitations": [
-            "Daily and weekly outputs validate the 25 closed-bar Core SSR signals only.",
+            "Daily and weekly outputs validate the 23+1opt closed-bar Core SSR signals only.",
             "Session-open and live-overlay signals are intentionally excluded from this exporter.",
             "IMPORTANT: the live app applies (a) drift dampening (signals persistent-wrong for 10d "
             "are set to abstain) and (b) dynamic per-group weights derived from a rolling backtest. "
