@@ -1,16 +1,17 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT (rev 2)
+Updated: 2026-04-06 CT (rev 3)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
 - follow-up review after the enhancement lane marked prior findings as resolved
 - document residual issues that still remain in current code
 - **2026-04-05 late update**: stale findings moved to history after second-pass review confirmed fixes landed
+- **2026-04-06 rev 3**: ablation-driven pruning round 2 — 29→26 core signals, 2yr baseline +1.6pp
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `24/50 = 48.0%` ✓ (gate passes as of 2026-04-06)
+- `python3 scripts/backtest_export.py --days 60` → `24/50 = 48.0%` ✓ (gate passes as of 2026-04-06 rev 3)
 
 ---
 
@@ -37,11 +38,43 @@ The 48.0% (24/50) accuracy is therefore validating the actual live formula.
 
 ## Fragility Note
 
-The 60d gate passes at the exact floor (24/50 = 48.0%). Two weak sub-regimes remain:
-- **low-VIX**: 5/14 = 35.7% — level-based VIX signals vote bullish in slow declines
-- **gap-up**: 2/8 = 25.0% — Gap Up Day signal nudged some calls to neutral but core bearish cluster still dominates on gap-up days in high-VIX
+The 60d gate passes at 24/50 = 48.0%. Fragility analysis updated after rev 3 pruning:
+- **low-VIX**: 43.8% (63/144) on 2yr — level-based VIX signals vote bullish in slow declines
+- **gap:down**: 28.2% (11/39) on 2yr — model makes confident bear calls on gap-down days; markets often fade
+- **gap:up**: 51.0% (26/51) on 2yr — healthy, Gap Up Day signal is effective here
 
-Neither is blocking. Both are tracked for next calibration pass.
+Neither low-VIX nor gap:down is blocking. Both are tracked for next calibration pass.
+
+---
+
+## Ablation-Driven Pruning Round 2 (2026-04-06 rev 3)
+
+Three signals removed from scoring in two passes:
+
+**Pass 1 (ABLATION-PRUNE-01)**
+| Signal | Ablation Δ | Rationale |
+|--------|-----------|-----------|
+| `Sector Breadth ≥ 70%` | +0.7% | fires near bull market peaks before corrections |
+| `VIX 3d Relief` | +0.5% | fires on relief rallies within bear markets |
+
+**Pass 2 (ABLATION-PRUNE-02)**
+| Signal | Ablation Δ | Rationale |
+|--------|-----------|-----------|
+| `20 SMA > 50 SMA` | +0.5% | lags the death cross, propping up Trend group during early bear |
+
+All three retained as `"display"` tier — still computed and shown in the signal detail panel.
+
+**Result**: 2yr baseline improved 43.4% → 44.3% → **45.0%** (+1.6pp cumulative). 60d gate holds at 48.0%.
+
+| Model | Signals | 2yr Baseline | 60d Gate |
+|-------|---------|-------------|----------|
+| pre-prune | 29 | 43.4% (115/265) | 24/50 = 48.0% ✓ |
+| pass 1 | 27 | 44.3% (117/264) | 24/50 = 48.0% ✓ |
+| pass 2 | 26 | **45.0% (118/262)** | 24/50 = 48.0% ✓ |
+
+Next ablation candidates (positive delta in current 26-sig model):
+- `20 SMA > 50 SMA`: already removed
+- `RSI Trend Zone`: +0.3% delta but removing it causes 24% coverage loss in bear regime (Extremes group becomes Stoch-only, inflating group score on bounce days) — deferred
 
 ---
 

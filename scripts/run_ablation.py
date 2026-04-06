@@ -40,17 +40,18 @@ VIX_CALM_THRESHOLD = 18.0
 SECTOR_TICKERS = ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]
 
 SIGNAL_GROUPS: dict[str, list[str]] = {
-    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
+    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
+    # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross
     "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50",
                    "MACD Bullish", "RSI Strong Trend"],
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
-                   "VIX Below 15", "VIX 3d Relief", "VIX 1d Down"],
-    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%",
-                   "Sector Breadth ≥ 70%", "Sector Breadth ≥ 85%"],
+                   "VIX Below 15", "VIX 1d Down"],
+    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
-    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Seasonal Bull Week"],
+    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day"],
+    # Seasonal Bull Week removed: not computed in _compute_signals(), caused 0% coverage in ablation
     "Position":   ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid",
                    "Above Prior Day High", "Above Pivot", "Above 5d High"],
 }

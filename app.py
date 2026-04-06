@@ -76,16 +76,18 @@ VIX_CALM_THRESHOLD = 18.0   # low vol  → bear windows soften, chop is more lik
 #   "RSI Trend Zone"       → RSI in 45–65 range = healthy trend, not extreme. More predictive
 #                            than "RSI Not Overbought" which fires even at RSI=51.
 SIGNAL_GROUPS = {
-    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
+    "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
+                   # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross, propping up
+                   # a bullish Trend-group vote during the early phase of bear markets
     "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish",
                    "RSI Strong Trend"],          # RSI 60-75: strong momentum, not extreme
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15",              # ultra-calm tier for gradient
-                   "VIX 3d Relief",              # 3-day VIX decline = fear unwinding = bull
                    "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
+                   # VIX 3d Relief removed: ablation shows +0.5% drag (fires on bear-market relief rallies)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
-                   "Sector Breadth ≥ 70%",        # strong breadth: second tier for gradient
                    "Sector Breadth ≥ 85%"],         # near-full breadth: third tier
+                   # Sector Breadth ≥ 70% removed: ablation shows +0.7% drag (fires near bull market peaks)
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
@@ -118,11 +120,11 @@ SIGNAL_GROUPS = {
 # Core SSR = score from core signals only → directly comparable to backtest accuracy numbers
 # Live-Adj SSR = Core + session/live overlay → richer but only partially validated
 SIGNAL_TIERS = {
-    # ── core (28 signals) — backtestable from closed daily bars ──────────────
+    # ── core (26 active scoring signals) — backtestable from closed daily bars ─
     "Above 20 SMA":           "core",
     "Above 50 SMA":           "core",
     "Above 200 SMA":          "core",
-    "20 SMA > 50 SMA":        "core",
+    "20 SMA > 50 SMA":        "display",   # computed for display; removed from scoring (ablation +0.5% drag)
     "Higher Close (1d)":      "core",
     "Higher Close (5d)":      "core",
     "RSI Above 50":           "core",
@@ -132,12 +134,12 @@ SIGNAL_TIERS = {
     "VIX Falling":            "core",
     "ATR Contracting":        "core",
     "VIX Below 15":           "core",
-    "VIX 3d Relief":          "core",
+    "VIX 3d Relief":          "display",   # computed for display; removed from scoring (ablation +0.5% drag)
     "VIX 1d Down":            "core",
     "VIX No Spike":           "core",
     "Volume Above Average":   "core",
     "Sector Breadth ≥ 50%":   "core",
-    "Sector Breadth ≥ 70%":   "core",
+    "Sector Breadth ≥ 70%":   "display",   # computed for display; removed from scoring (ablation +0.7% drag)
     "Sector Breadth ≥ 85%":   "core",
     "Stoch Bullish":          "core",
     "RSI Trend Zone":         "core",
@@ -3023,7 +3025,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 29 core signals · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 26 core signals · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):

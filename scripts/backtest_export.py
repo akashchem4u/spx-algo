@@ -40,13 +40,15 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 29
+EXPECTED_CORE_SIGNAL_COUNT = 26
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
-    "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
+    "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
+    # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross by several sessions,
+    # propping up a bullish Trend-group vote during the early phase of bear markets.
     "Momentum": ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish", "RSI Strong Trend"],
-    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 3d Relief", "VIX 1d Down"],
-    "Breadth": ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 70%", "Sector Breadth ≥ 85%"],
+    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 1d Down"],
+    "Breadth": ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
     "Extremes": ["Stoch Bullish", "RSI Trend Zone"],
     "Options": ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro": ["Yield Curve Positive", "Credit Spread Calm"],
@@ -124,7 +126,7 @@ def _compute_signals_fast(
     sector_slices: dict[str, pd.DataFrame],
 ) -> dict[str, int]:
     """
-    Reconstruct the 28 closed-bar core signals that the app backtests.
+    Reconstruct the 26 closed-bar core signals that the app backtests.
     Session-open and live-overlay signals are intentionally excluded.
     """
     sigs: dict[str, int] = {}
@@ -155,7 +157,8 @@ def _compute_signals_fast(
     sigs["Above 20 SMA"] = int(c > _safe_float(sma20))
     sigs["Above 50 SMA"] = int(c > _safe_float(sma50)) if len(close) >= 50 else 0
     sigs["Above 200 SMA"] = int(c > _safe_float(sma200)) if len(close) >= 200 else 0
-    sigs["20 SMA > 50 SMA"] = int(_safe_float(sma20) > _safe_float(sma50)) if len(close) >= 50 else 0
+    # 20 SMA > 50 SMA: removed from scoring (ablation delta +0.5% — lags the death cross,
+    # propping up a bullish Trend-group vote during the early phase of bear markets).
 
     # Momentum
     sigs["Higher Close (1d)"] = int(len(close) >= 2 and c > _safe_float(close, -2))
@@ -184,10 +187,11 @@ def _compute_signals_fast(
         if len(vix_c) >= 4:
             v3d = _safe_float(vix_c, -4, default=vv)
             vix_3d_chg = (vv - v3d) / max(v3d, 1)
-            sigs["VIX 3d Relief"] = int(vix_3d_chg < -0.08)
+            # VIX No Spike: INVERTED — fires 1 when no fear spike (calm = bull), 0 when spike (fear = bear).
             sigs["VIX No Spike"] = int(vix_3d_chg <= 0.08)
+            # VIX 3d Relief: removed from scoring (ablation delta +0.5% — pro-cyclical, fires on
+            # relief rallies within bear markets, adding false bullish votes near short-term peaks).
         else:
-            sigs["VIX 3d Relief"] = 0
             sigs["VIX No Spike"] = 1
         sigs["ATR Contracting"] = int(len(atr_v.dropna()) >= 20 and _safe_float(atr_v) < _safe_float(atr_v, -5))
         # VIX Below 20 / VIX Below 15 intentionally kept: in sustained bear trends
@@ -217,7 +221,8 @@ def _compute_signals_fast(
             except Exception:
                 continue
         sigs["Sector Breadth ≥ 50%"] = int((above / total_sectors) >= 0.5)
-        sigs["Sector Breadth ≥ 70%"] = int((above / total_sectors) >= 0.7)
+        # Sector Breadth ≥ 70%: removed from scoring (ablation delta +0.7% — fires near bull market peaks
+        # when the rally is extended, adding false bullish votes before corrections).
         sigs["Sector Breadth ≥ 85%"] = int((above / total_sectors) >= 0.85)
 
     # Gap direction — large positive opening gap from daily OHLC.
@@ -471,7 +476,7 @@ def run_backtest(days: int = 60) -> dict:
         "history_period": period,
         "model_alignment": "equal_weight_static_core",
         "limitations": [
-            "Daily and weekly outputs validate the 29 closed-bar Core SSR signals only.",
+            "Daily and weekly outputs validate the 26 closed-bar Core SSR signals only.",
             "Session-open and live-overlay signals are intentionally excluded from this exporter.",
             "IMPORTANT: the live app applies (a) drift dampening (signals persistent-wrong for 10d "
             "are set to abstain) and (b) dynamic per-group weights derived from a rolling backtest. "
