@@ -5637,15 +5637,73 @@ with _tab_research:
                                  if _norm_dir(r.get("actual_dir","")) in ("bull","bear")
                                  and not _is_directional_call(r))
             if _tot_known:
+                # Score-band breakdown across all ledger rows (not just last 30)
+                _all_rows = _ledger_rows
+                _ssr_bands = [
+                    ("76–100","strong bull", 76,100,"bull","#4ade80"),
+                    ("63–75", "mod bull",    63, 75,"bull","#86efac"),
+                    ("55–62", "soft bull",   55, 62,"bull","#bbf7d0"),
+                    ("38–44", "soft bear",   38, 44,"bear","#fca5a5"),
+                    ("25–37", "mod bear",    25, 37,"bear","#f87171"),
+                    ("0–24",  "strong bear",  0, 24,"bear","#ef4444"),
+                ]
+                _band_html = ""
+                for _brange, _blabel, _blo, _bhi, _bcall, _bc in _ssr_bands:
+                    _bb = [r for r in _all_rows
+                           if _blo <= _effective_ssr(r) <= _bhi
+                           and _norm_dir(r.get("actual_dir","")) in ("bull","bear")]
+                    _bh = sum(1 for r in _bb if _norm_dir(r["actual_dir"]) == _bcall)
+                    _bt = len(_bb)
+                    if _bt == 0: continue
+                    _ba_pct = round(_bh/_bt*100)
+                    _ba_c = "#4ade80" if _ba_pct >= 60 else ("#f59e0b" if _ba_pct >= 45 else "#f87171")
+                    _band_html += (f'<tr>'
+                        f'<td style="padding:3px 8px;font-size:11px;color:{_bc}">{_brange}</td>'
+                        f'<td style="padding:3px 8px;font-size:11px;color:#94a3b8">{_blabel}</td>'
+                        f'<td style="padding:3px 8px;font-size:11px;color:{_ba_c};font-weight:700">{_ba_pct}%</td>'
+                        f'<td style="padding:3px 8px;font-size:11px;color:#64748b">{_bh}/{_bt}</td>'
+                        f'</tr>')
                 st.markdown(
                     f'<div style="font-size:13px;color:#94a3b8;margin-bottom:6px">'
                     f'Forward accuracy (directional calls only): '
                     f'<b style="color:{_ldg_c};font-size:16px">{_ldg_acc}%</b> '
-                    f'<span style="font-size:11px">({_hits_c}/{_tot_known} sessions)</span>'
+                    f'<span style="font-size:11px">({_hits_c}/{_tot_known} sessions, last 30)</span>'
                     f'</div>'
-                    f'<div style="font-size:11px;color:#475569;margin-bottom:10px">'
-                    f'Flat days excluded: {_flat_count} · Neutral SSR excluded: {_neutral_count}</div>',
+                    f'<div style="font-size:11px;color:#475569;margin-bottom:6px">'
+                    f'Flat days excluded: {_flat_count} · Neutral SSR excluded: {_neutral_count}</div>'
+                    + (f'<div style="font-size:11px;color:#64748b;margin-bottom:4px">Score-band accuracy (all {len(_all_rows)} sessions):</div>'
+                       f'<table style="border-collapse:collapse;margin-bottom:10px">'
+                       f'<thead><tr>'
+                       f'<th style="padding:3px 8px;font-size:10px;color:#475569;text-align:left">SSR</th>'
+                       f'<th style="padding:3px 8px;font-size:10px;color:#475569;text-align:left">LABEL</th>'
+                       f'<th style="padding:3px 8px;font-size:10px;color:#475569">ACC</th>'
+                       f'<th style="padding:3px 8px;font-size:10px;color:#475569">N</th>'
+                       f'</tr></thead><tbody>{_band_html}</tbody></table>' if _band_html else ""),
                     unsafe_allow_html=True)
+                # Day-of-week breakdown
+                _dow_order = ["Mon","Tue","Wed","Thu","Fri"]
+                _dow_html = ""
+                for _dname in _dow_order:
+                    _db = [r for r in _all_rows
+                           if r.get("dow","") == _dname
+                           and _norm_dir(r.get("actual_dir","")) in ("bull","bear")
+                           and _is_directional_call(r)]
+                    _dh = sum(1 for r in _db
+                              if (_norm_dir(r["actual_dir"]) == "bull" and _effective_ssr(r) >= 55)
+                              or (_norm_dir(r["actual_dir"]) == "bear" and _effective_ssr(r) <= 44))
+                    _dt = len(_db)
+                    if _dt == 0: continue
+                    _da_pct = round(_dh/_dt*100)
+                    _da_c = "#4ade80" if _da_pct >= 60 else ("#f59e0b" if _da_pct >= 45 else "#f87171")
+                    _dow_html += (f'<td style="padding:3px 10px;font-size:11px;color:#94a3b8">{_dname}</td>'
+                                  f'<td style="padding:3px 10px;font-size:11px;color:{_da_c};font-weight:700">{_da_pct}%</td>'
+                                  f'<td style="padding:3px 10px;font-size:10px;color:#475569">{_dh}/{_dt}</td>')
+                if _dow_html:
+                    st.markdown(
+                        f'<div style="font-size:11px;color:#64748b;margin-bottom:4px">Day-of-week accuracy (all sessions):</div>'
+                        f'<table style="border-collapse:collapse;margin-bottom:12px"><tbody>'
+                        f'<tr>{_dow_html}</tr></tbody></table>',
+                        unsafe_allow_html=True)
             _ldg_rows_html = ""
             for _lr in _recent:
                 _cs  = _effective_ssr(_lr)  # core_ssr numeric

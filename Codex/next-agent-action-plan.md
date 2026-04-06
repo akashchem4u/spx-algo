@@ -1,185 +1,117 @@
 # Next Agent Action Plan
 
-Updated: 2026-03-29 03:00 CT
+Updated: 2026-04-06 CT
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
-- raise confidence in the app as an investor-facing decision tool
-- stop optimizing appearance before measurement quality is strong
-- make live recommendations easier to trust because their scope is explicit
+- document current model state and completed work
+- define next productive areas of exploration
+- avoid re-treading ground already exhausted
 
 ---
 
-## Executive View
+## Current Model State (as of 2026-04-06)
 
-The app is in a better state, but it is still not a high-confidence standalone recommendation engine.
-The next work should focus on:
+- **23+1opt scoring signals**: 23 core + 1 optional Gap Down Contrarian; 7 display-only
+- **60d gate**: 18/33 = 54.55% ✓ (threshold 48%)
+- **2yr fixed-window baseline**: ~52.8% (fixed walk-forward 2025-01-21 → 2026-04-01)
+- **Shadow ledger**: 60 sessions tracked, 48.0% overall / 51.7% last 30d
+- **Calendar coverage**: FOMC, CPI, NFP, PCE (HIGH), PPI, GDP (MED) through end of 2026
+- **Signal exploration**: 15+ candidates exhausted in this session — all rejected
 
-1. separating what is truly backtested from what is live-only
-2. proving new signals out of sample instead of just adding more
-3. creating a real shadow-performance ledger for 30-60 sessions
-
-Do not spend the next cycle adding random variables unless they are paired with validation.
-
----
-
-## Priority 1: Split Core Score From Live Overlay
-
-Problem:
-- the app mixes historically testable signals with live-only or same-session signals
-- that makes the live score richer, but it weakens trust in the backtest comparison
-
-What to implement:
-- create three signal buckets inside `compute_ssr()` / scoring flow:
-  - `core_backtested`
-  - `session_context`
-  - `live_overlay`
-- examples:
-  - `core_backtested`: trend, momentum, volatility, breadth, position signals that are valid from completed bars
-  - `session_context`: gap/open-context signals that depend on the current session open
-  - `live_overlay`: ORB width/distance, intraday RSI override, news sentiment, A/D, PCR, macro, overnight ES position
-- produce two explicit scores in the app:
-  - `Core SSR`
-  - `Live Overlay Adjusted SSR`
-
-Target files:
-- `/Users/amummaneni/Desktop/Codex/Projects/spx-algo/app.py`
-
-Acceptance criteria:
-- the UI clearly shows which score is backtested vs live-adjusted
-- the day backtest uses only the appropriate score for its time horizon
-- signal breakdown labels each signal with one of: `core`, `session`, `live-only`
+All five original priorities from the 2026-03-29 plan are complete:
+1. Core SSR vs Live-Adj SSR split — ✓ implemented
+2. Walk-forward regime breakdown — ✓ implemented (VIX/gap/DOW/event/OpEx)
+3. Signal ablation testing — ✓ implemented (run_ablation.py)
+4. Shadow performance ledger — ✓ operational (60 sessions)
+5. Low-risk accuracy gaps — ✓ all three items implemented
 
 ---
 
-## Priority 2: Add Real Walk-Forward Validation By Regime
+## Completed Work This Session (2026-04-06)
 
-Problem:
-- aggregate hit rates are not enough
-- we need to know when the model works and when it fails
-
-What to implement:
-- add a research report that breaks results down by:
-  - VIX regime: low / mid / high
-  - gap regime: up / flat / down
-  - weekday
-  - event day vs non-event day
-  - OpEx week vs normal week
-- include:
-  - sample size
-  - directional accuracy
-  - average error
-  - coverage
-
-Target files:
-- `/Users/amummaneni/Desktop/Codex/Projects/spx-algo/app.py`
-- optionally create a small helper report writer if the app file gets too crowded
-
-Acceptance criteria:
-- research tab shows regime tables, not just a single blended percentage
-- weak regimes are obvious
-- the team can say “use cautiously in X regime” with evidence
+- **PCE-CAL-01**: 18 PCE dates (HIGH) added to app.py, run_ablation.py, backtest_export.py
+- **CAL-02**: 12 PPI dates + 8 GDP dates (MED) added to app.py
+- **CAL-03**: 2026 H2 PCE (6 dates) + 2026 H2 PPI (6 dates) added — calendar complete through Dec 2026
+- **EXP-01**: Event-day regime breakdown added to backtest_export.py output
+- **LEDGER-FIX**: Shadow ledger display fixed — "up/down" → "bull/bear" normalization + live_adj fallback
+- **Signal Exploration (all rejected)**: ^SKEW, sector breadth variants, HYG/TNX/IRX Macro, VIX term contango, VRP, QQQ>SPY, CMF, Weekly Pivot, pre-event gate, VIX relative signals
 
 ---
 
-## Priority 3: Add Signal Ablation Testing
+## Signal Landscape — Currently Saturated
 
-Problem:
-- many new signals were added quickly
-- we do not yet know which signals add real edge vs noise
+The following signal classes have been systematically tested and rejected (all < 0 ablation delta):
 
-What to implement:
-- build a lightweight ablation loop:
-  - baseline model
-  - baseline + one new signal
-  - baseline + one group
-  - full model
-- run this on the existing historical validation paths
-- write results to a markdown or JSON artifact in `Codex/` or a `reports/` folder
-
-Signals to test first:
-- `Gap/ATR Normal`
-- `VIX No Spike`
-- `VIX 3d Relief`
-- `Above Prior Day High`
-- `Above Pivot`
-- `Above 5d High`
-- overnight ES position signals
-- ORB width guard / ORB distance boost
-
-Acceptance criteria:
-- each newly added signal has evidence of:
-  - improved accuracy
-  - improved error
-  - or improved regime-specific behavior
-- any non-contributing signal is either downgraded or removed
+| Class | Result | Reason |
+|-------|--------|--------|
+| Macro group (HYG, TLT, TNX/IRX) | All rejected | Group activation redistributes weights unfavorably |
+| VIX relative (Z-score, 20d avg, 5d avg) | All rejected | Fire 52-76% of bars — no selectivity |
+| High fire-rate signals (>80% bars) | All rejected | Near-constant bias, no selectivity |
+| ^SKEW | Rejected | Fires 3.2% of bars — insufficient sample |
+| Pre-event abstain gate | Rejected | Event days are the model's BEST days (75% accuracy) |
+| Monday/Thursday abstain gate | Rejected | Small-sample regime-specific behavior |
 
 ---
 
-## Priority 4: Build A Shadow Performance Ledger
+## Open Areas Worth Exploring Next
 
-Problem:
-- investor confidence requires forward-tracked evidence, not only retrospective backtests
+### 1. ORB Historical Reconstruction (Priority 5 item 3, deferred)
 
-What to implement:
-- create a daily snapshot log that records:
-  - date
-  - core SSR
-  - live-adjusted SSR
-  - current window bias
-  - projected bias
-  - key context: gap, VIX, event flags, ORB status
-  - actual session result after close
-- store as JSON or CSV locally
-- add a small review surface to summarize the last 30-60 sessions
+**Problem**: ORB width/distance signals are live-only — no historical validation.
 
-Target:
-- a local artifact in the repo, for example:
-  - `/Users/amummaneni/Desktop/Codex/Projects/spx-algo/Codex/shadow-ledger.csv`
-  - or a simple append-only JSONL file
+**Approach**: Use 5-minute SPX data (if available via yfinance `interval="5m"`) to reconstruct
+the 9:30–10:00 open-range high/low for historical dates. Then validate ORB signals against
+completed-bar outcomes.
 
-Acceptance criteria:
-- the app can show “last 30 sessions, live-adjusted score hit X%, core score hit Y%”
-- recommendations are measured on frozen daily outputs, not reconstructed later
+**Risk**: 5m data via yfinance may be limited to ~60d. Would need alternative data source.
 
----
+**Effort**: Medium. Only attempt if >60d of 5m data is reliably available.
 
-## Priority 5: Clean Up The Remaining Low-Risk Accuracy Gaps
+### 2. Score-Band Accuracy Analysis in Shadow Ledger
 
-Implement after priorities 1-4:
+**Problem**: The shadow ledger shows overall accuracy but not accuracy by score band.
 
-1. Use adaptive `_slot_atr` in the live “Today So Far” chop threshold instead of flat `levels["atr"] / 6.5`.
-2. Refactor `Gap/ATR Normal` so it uses an explicit `session_gap` parameter rather than implicitly reusing the latest completed bar context.
-3. If feasible, reconstruct historical ORB width/distance for richer validation. If not feasible, keep it explicitly marked as live-only.
+**Approach**: Add a breakdown row showing accuracy within score bands: [45-54 neutral], [55-62 soft bull],
+[63-75 moderate bull], [76-100 strong bull], and symmetric for bear. This would reveal whether
+the model is more reliable at extreme scores.
 
----
+**Effort**: Low. Pure display change in shadow ledger section of app.py.
 
-## What Not To Do Next
+### 3. 2026 H2 Event Calendar Verification
 
-- do not add more signals before ablation testing
-- do not advertise the app as “high-confidence” yet
-- do not collapse live-only overlays into the same research claim as the core backtested score
-- do not optimize UI wording ahead of measurement quality
+**Status**: PCE H2 2026 dates (Jul-Dec) were added based on BEA's typical schedule.
+These are estimated. When BEA confirms actual release dates for H2 2026, verify and correct.
+
+### 4. Probe OpEx Timing Sub-Windows
+
+**Problem**: OpEx week is classified as a single binary flag, but the timing within OpEx week
+likely matters (Monday setup vs Friday pin). The ablation shows OpEx weeks at 50.4% (53/105)
+which is barely above baseline.
+
+**Approach**: Break down OpEx accuracy by day-of-week within OpEx week. Mon OpEx vs Fri OpEx
+may have meaningfully different characteristics.
+
+**Effort**: Low. Add to run_ablation.py's existing OpEx breakdown.
 
 ---
 
-## Suggested Order For The Next Agent
+## Key Architecture Rules (Do Not Violate)
 
-1. implement `Core SSR` vs `Live Overlay Adjusted SSR`
-2. wire labels for `core` / `session` / `live-only` signals
-3. add regime walk-forward tables
-4. add ablation report
-5. add shadow ledger
-6. only then tune or add more variables
+1. **60d gate is canonical** — 2yr ablation window is fixed (2025-01-21 → 2026-04-01)
+2. **Macro group stays dead** — any signal activating Macro group redistributes weights unfavorably
+3. **Fire-rate > 80% is disqualifying** — no selectivity, adds constant bias
+4. **Ablation delta > 1.0% = prune** — unless mechanistic justification (e.g., VIX Below 15, VVIX Below 100)
+5. **60d gate > 2yr ablation delta** when they conflict (regime-specific signals)
+6. **Pre-event days are model-strong** — do not abstract or suppress them
+7. **Gap-down bear abstain must stay** — bear calls on large gap-downs are wrong 68% of time
 
 ---
 
-## Definition Of Done For Confidence Upgrade
+## What Not To Do
 
-The app can be described as materially more trustworthy only when all of the below are true:
-
-- live score and backtested score are clearly separated
-- the last 30-60 sessions are tracked in a forward shadow ledger
-- regime breakdowns are visible
-- major new signals have ablation evidence
-- the team can explain when the model should be trusted and when it should be faded
+- Do not add signals without ablation validation first
+- Do not activate the Macro group (dead by design until a non-HYG/TNX signal is found)
+- Do not add a day-of-week gate without 2yr ablation evidence (60d day-of-week is 6-sample noise)
+- Do not re-probe signal classes already systematically rejected (see table above)
+- Do not optimize UI wording ahead of measurement quality
