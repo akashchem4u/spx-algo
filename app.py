@@ -3261,11 +3261,28 @@ try:
                     f'{lbl}: <b>{pct}%</b> <span style="color:#475569">n={d["t"]}</span></span>')
         _vk_badge = _acc_badge(_vk_lbl, _vk_data)
         _gk_badge = _acc_badge(_gk_lbl, _gk_data)
-        if _vk_badge or _gk_badge:
+
+        # Day-of-week badge — highlight when today's DOW has historically weak accuracy
+        _dow_names_short = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri"}
+        _dow_today = now_est.weekday()
+        _dow_data  = _ha_live["regime"]["dow"].get(_dow_today, {"h": 0, "t": 0})
+        _dow_lbl   = _dow_names_short.get(_dow_today, "?")
+        _dow_badge = _acc_badge(_dow_lbl, _dow_data)
+
+        # Event-day badge — show event-day historical accuracy when today is an event day
+        _today_str_live = now_est.strftime("%Y-%m-%d")
+        _is_event_today = any(ev[0] == _today_str_live for ev in _ECON_CAL)
+        _evt_badge = ""
+        if _is_event_today:
+            _evt_data = _ha_live["regime"]["event"].get("event", {"h": 0, "t": 0})
+            _evt_badge = _acc_badge("EventDay", _evt_data)
+
+        _all_badges = " ".join(b for b in [_vk_badge, _gk_badge, _dow_badge, _evt_badge] if b)
+        if _all_badges:
             _regime_acc_html = (
                 f'<div style="margin:4px 0 6px">'
                 f'<div style="font-size:9px;color:#475569;letter-spacing:.8px;margin-bottom:4px">REGIME ACCURACY (2yr backtest)</div>'
-                f'<div style="display:flex;gap:5px;flex-wrap:wrap">{_vk_badge}{_gk_badge}</div>'
+                f'<div style="display:flex;gap:5px;flex-wrap:wrap">{_all_badges}</div>'
                 f'</div>'
             )
 except Exception:
