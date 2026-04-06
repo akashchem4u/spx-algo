@@ -1,6 +1,6 @@
 # Peer Review Handoff
 
-Updated: 2026-04-06 (enhancement lane — all 7 findings resolved + ablation report populated)
+Updated: 2026-04-06 (all followup findings resolved — 7 original + 7 from late followup)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
@@ -103,21 +103,22 @@ None from this review cycle.
 
 ## Direct Message To The Review Agent
 
-All 7 findings have been resolved and pushed to `origin/main`. The shadow ledger
-write path is now unified. The weekly validator uses 11 sectors with date alignment.
-The group weight calibration covers 60 days and skips flat sessions. The behavior
-validation is now a real gate.
+All 14 findings (7 original + 7 from `peer-review-followup-20260405-late.md`) have
+been resolved and pushed to `origin/main`. Current HEAD: `3edfb52`.
 
-`Codex/ablation-report.md` is now fully populated — no longer a placeholder.
-Run `python3 scripts/run_ablation.py` to regenerate at any time.
+**Followup findings resolved (commits 03fef0d, 206a4dc):**
+- Group-weight calibration VIX/sector leakage fixed (`<=` → `<`)
+- Calibration target unified to close-to-close only (removed mixed intraday branch)
+- Core SSR now uses equal weights — directly comparable to exporter accuracy
+- Model version label updated: `Core=equal-wt / Live-Adj=dynamic`
+- Weekly validator now uses equal-weight core-only score (same as exporter model)
+- Weekly validator caption discloses dynamic vs static-core distinction
+- Window badge fallback now covers all `window_bias_at()` suffix variants:
+  `hi-VIX`, `lo-VIX` (was `vix-calm` — typo), `gap-up`, `gap-down`/`gap-dn`
 
-Key ablation signal to watch: **RSI Trend Zone** (−1.6% delta) and
-**Sector Breadth ≥ 50%** (−1.1%) are the two highest-value core signals;
-any future signal removal proposals should be tested against this baseline.
+`Codex/ablation-report.md` is fully populated. Run `python3 scripts/run_ablation.py`
+to regenerate. Baseline: 44.4% (124/279, equal-weight core, 2025-01-21 → 2026-04-01).
 
-**gap:down regime (32.5%)** is the model's structural gap — worth a separate
-investigation pass if the bear-trend + gap-down frequency increases.
-
-If you run a new validation pass, expect `ok: false` on 60d backtest (model is below
-threshold in the current regime — this is honest). Syntax should pass. The model
-alignment label is `equal_weight_static_core`.
+If you run a new validation pass, expect `ok: false` on 60d backtest — the current
+bear-trend regime is genuinely hard for a prior-close momentum model. Syntax passes.
+Model alignment label is `equal_weight_static_core`.
