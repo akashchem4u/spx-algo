@@ -3139,6 +3139,18 @@ if _gap_down_abstain:
     bias   = "neutral"
     color  = "#6b7280"
 
+# Strong-bear abstain: when SSR ≤ 24, all signals are voting bearish simultaneously.
+# Extreme pessimism is already priced in; mean-reversion bounce risk is elevated.
+# Historical accuracy on SSR 0-24 bear calls: 30.8% (2yr) — worse than random.
+# The gap-down gate does not catch all of these; this gate handles non-gap-down
+# extreme-bear days. +2.6pp in 2yr rolling window (+1.1pp in 60d gate).
+_strong_bear_abstain = (not _gap_down_abstain) and score <= 24
+if _strong_bear_abstain:
+    rating = "⚪ NEUTRAL"
+    action = "STRONG-BEAR ABSTAIN — extreme pessimism already priced in; mean-reversion risk (30.8% hit rate)"
+    bias   = "neutral"
+    color  = "#6b7280"
+
 trade   = suggest_trade(score, levels)
 cur_win, cur_bias, cur_start, cur_end = get_current_window()
 
@@ -3204,7 +3216,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 23+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 23+1opt core signals · gap-down + strong-bear abstain · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):
@@ -5572,7 +5584,7 @@ if _is_post_close:
             "event_flags":       _today_events_str if _today_events_str else "none",
             "opex":              "yes" if _opex_week else "no",
             "orb_status":        _orb_status,
-            "gap_down_abstain":  "yes" if _gap_down_abstain else "no",
+            "gap_down_abstain":  "yes" if (_gap_down_abstain or _strong_bear_abstain) else "no",
             "actual_dir":        "",
             "actual_pts":        "",
         })

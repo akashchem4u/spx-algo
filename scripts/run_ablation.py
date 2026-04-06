@@ -394,6 +394,11 @@ def run_ablation(verbose: bool = False) -> dict:
             if gp < -GAP_THRESHOLD and bear_c:
                 continue
 
+            # Strong-bear abstain: SSR ≤ 24 = extreme pessimism already priced in.
+            # Historical accuracy: 30.8% in 2yr rolling window (+2.6pp if abstained).
+            if bear_c and score <= 24:
+                continue
+
             correct  = (bull_c and up) or (bear_c and dn)
 
             base_t += 1
