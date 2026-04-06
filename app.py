@@ -2243,10 +2243,27 @@ def windows_html(now_hhmm, win_acc=None, cur_vix=0.0, cur_gap=0.0):
         if _lookup_key is None and win_acc:
             _candidates = [(k, v) for k, v in win_acc.items() if v.get("base_label") == lbl]
             if _candidates:
-                _vix_sfx = ("hi-VIX" if cur_vix > VIX_FEAR_THRESHOLD
-                            else "vix-calm" if (0 < cur_vix < VIX_CALM_THRESHOLD)
-                            else "")
-                _regime_match = next((k for k, _ in _candidates if _vix_sfx and _vix_sfx in k), None)
+                # Build ordered list of regime suffixes to try — most specific first.
+                # Covers all labels emitted by window_bias_at():
+                #   hi-VIX→bear/chop/reversal risk/gap-fade bounce/catalyst-confirmed
+                #   lo-VIX→chop  (VIX < 18 calm regime)
+                #   gap-up→chop, gap-down→chop, gap-dn bounce zone
+                # Previously only checked "hi-VIX" and "vix-calm" (which never matched
+                # since the actual suffix is "lo-VIX") — peer review residual finding #2.
+                _sfxs = []
+                if cur_vix > VIX_FEAR_THRESHOLD:
+                    _sfxs.append("hi-VIX")
+                elif 0 < cur_vix < VIX_CALM_THRESHOLD:
+                    _sfxs.append("lo-VIX")
+                if cur_gap > GAP_THRESHOLD:
+                    _sfxs.append("gap-up")
+                elif cur_gap < -GAP_THRESHOLD:
+                    _sfxs.extend(["gap-down", "gap-dn"])
+                _regime_match = None
+                for _sfx in _sfxs:
+                    _regime_match = next((k for k, _ in _candidates if _sfx in k), None)
+                    if _regime_match:
+                        break
                 _lookup_key = _regime_match if _regime_match else _candidates[0][0]
         if win_acc and _lookup_key and _lookup_key in win_acc:
             _ws  = win_acc[_lookup_key]
@@ -3773,8 +3790,22 @@ with _tab_research:
                         _fri_as_of = EST.localize(datetime(_dates[_fri_idx].year,
                                                            _dates[_fri_idx].month,
                                                            _dates[_fri_idx].day, 15, 0))
-                        _sc, _, _, _ = compute_ssr(_base, _vbase, pd.DataFrame(), _ebase,
-                                                   as_of_dt=_fri_as_of)
+                        _, _, _, _wk_sigs = compute_ssr(_base, _vbase, pd.DataFrame(), _ebase,
+                                                       as_of_dt=_fri_as_of)
+                        # Use equal-weight core-only score (same model as exporter's
+                        # equal_weight_static_core) so this table is directly comparable
+                        # to exported accuracy numbers. Previously used the full dynamic
+                        # compute_ssr() score which includes Gap/ATR Normal (session-only)
+                        # and drift-dampened group weights — a different model entirely.
+                        _wk_core = {k: v for k, v in _wk_sigs.items()
+                                    if SIGNAL_TIERS.get(k) == "core"}
+                        _wk_gws, _wk_gww = [], []
+                        for _gn, _gs in SIGNAL_GROUPS.items():
+                            _pr = [_wk_core[k] for k in _gs if k in _wk_core]
+                            if _pr:
+                                _wk_gws.append(sum(_pr) / len(_pr))
+                                _wk_gww.append(1.0)
+                        _sc = round(sum(_wk_gws) / len(_wk_gws) * 100) if _wk_gws else 50
                         _dir = ssr_direction(_sc)
                         _proj_call = "bull" if _dir > 0.2 else ("bear" if _dir < -0.2 else "neutral")
                         _nxt_start = _fri_idx + 1
