@@ -455,6 +455,15 @@ def run_backtest(days: int = 60) -> dict:
     dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
     # Event-day buckets — HIGH-impact FOMC/CPI/NFP/PCE vs normal days.
     event_buckets = {"event": _build_accuracy_bucket(), "normal": _build_accuracy_bucket()}
+    # Score-band buckets — accuracy by SSR range
+    score_band_buckets: dict[str, dict[str, int]] = {
+        "76-100": _build_accuracy_bucket(),  # strong bull
+        "63-75":  _build_accuracy_bucket(),  # moderate bull
+        "55-62":  _build_accuracy_bucket(),  # soft bull
+        "38-44":  _build_accuracy_bucket(),  # soft bear
+        "25-37":  _build_accuracy_bucket(),  # moderate bear
+        "0-24":   _build_accuracy_bucket(),  # strong bear
+    }
     signal_counts: list[int] = []
     gap_down_abstained: int = 0  # days where bear call was suppressed by gap-down gate
 
@@ -511,6 +520,15 @@ def run_backtest(days: int = 60) -> dict:
         dow_buckets[dow_name]["hits"] += int(correct)
         event_buckets[event_key]["total"] += 1
         event_buckets[event_key]["hits"] += int(correct)
+        # Score-band
+        if score >= 76:   sb_key = "76-100"
+        elif score >= 63: sb_key = "63-75"
+        elif score >= 55: sb_key = "55-62"
+        elif score <= 24: sb_key = "0-24"
+        elif score <= 37: sb_key = "25-37"
+        else:             sb_key = "38-44"
+        score_band_buckets[sb_key]["total"] += 1
+        score_band_buckets[sb_key]["hits"] += int(correct)
 
         results.append(
             {
@@ -558,6 +576,7 @@ def run_backtest(days: int = 60) -> dict:
             "gap": _attach_accuracy(gap_buckets),
             "dow": _attach_accuracy(dow_buckets),
             "event": _attach_accuracy(event_buckets),
+            "score_band": _attach_accuracy(score_band_buckets),
         },
         "recent_results": results[-5:],
     }
