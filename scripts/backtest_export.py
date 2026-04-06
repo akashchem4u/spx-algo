@@ -393,6 +393,7 @@ def run_backtest(days: int = 60) -> dict:
     _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
     dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
     signal_counts: list[int] = []
+    gap_down_abstained: int = 0  # days where bear call was suppressed by gap-down gate
 
     for i in range(eval_start, n - 1):
         cutoff_ts = spx.index[i]
@@ -422,6 +423,7 @@ def run_backtest(days: int = 60) -> dict:
         # false-bear calls without losing meaningful edge; rare bull calls on gap-down
         # days (score ≥55) still go through since those reflect strong multi-group conviction.
         if day_gap < -GAP_THRESHOLD and bear_call:
+            gap_down_abstained += 1
             continue
 
         nxt = float(close.iloc[i + 1])
@@ -483,6 +485,7 @@ def run_backtest(days: int = 60) -> dict:
         "eval_days": days,
         "avg_signals_present": avg_signals,
         "expected_core_signals": EXPECTED_CORE_SIGNAL_COUNT,
+        "gap_down_abstained": gap_down_abstained,
         "regime_breakdown": {
             "vix": _attach_accuracy(vix_buckets),
             "gap": _attach_accuracy(gap_buckets),
