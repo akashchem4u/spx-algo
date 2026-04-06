@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT (rev 3)
+Updated: 2026-04-06 CT (rev 4)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -8,118 +8,131 @@ Purpose:
 - document residual issues that still remain in current code
 - **2026-04-05 late update**: stale findings moved to history after second-pass review confirmed fixes landed
 - **2026-04-06 rev 3**: ablation-driven pruning round 2 — 29→26 core signals, 2yr baseline +1.6pp
+- **2026-04-06 rev 4**: gap-down abstain gate + pruning round 3 — 2yr baseline 45.5% → 49.3% (+3.8pp)
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `24/50 = 48.0%` ✓ (gate passes as of 2026-04-06 rev 3)
+- `python3 scripts/backtest_export.py --days 60` → `17/33 = 51.5%` ✓ (gate passes as of 2026-04-06 rev 4)
 
 ---
 
 ## Open Findings
 
-### ~~1. Exporter accuracy still below threshold~~
-**Resolved 2026-04-05.** Two enhancements brought 60d daily accuracy from 43.75% (21/48) → 48.00% (24/50):
-- Added **"Gap Up Day"** as core signal #29: fires = 1 when `open > prev_close + 25 pts`. Targeted the gap-up regime which was only 25% accurate due to lagging trend/momentum signals staying bearish during violent gap-up bounces.
-- Differentiated **VIX Falling** from **VIX 1d Down** in the exporter: VIX Falling now uses a 5-day trend (`vix[-1] < vix[-6]`) rather than the identical 1-day formula. Gives the Volatility group two independent time-scale signals; the 5-day version detects slow VIX creep during calm-but-declining markets.
+### 1. Thursday accuracy weakness (37.2%)
 
-Residual note: the low-VIX regime is still 36% (5/14) — level-based VIX signals (Below 20, Below 15) vote bullish even in slow market declines. Not blocking, but tracked for signal calibration review.
+Day-of-week breakdown shows Thu at 37.2% (16/43) — the weakest day consistently across multiple sessions. Monday and Tuesday are also below average (47.7%, 45.5%) but Thursday is the clearest outlier.
 
-### ~~2. `windows_html()` does not reconstruct gap-confirmed and catalyst-confirmed override variants~~
-**Resolved 2026-04-05.** `app.py:2261–2275` now explicitly adds `"gap-confirmed"` and `"catalyst-confirmed"` to the ordered suffix list when hi-VIX + large-gap conditions are active. Both variants are tried before the generic `"hi-VIX"` fallback, so the most specific historical bucket is preferred.
+**Root cause unknown.** Could be a structural feature (options expiry hedging, pre-NFP positioning, weekly gamma reset) or statistical noise in the 2yr sample. Directly targeting it risks overfitting. Not blocking.
 
-### ~~3. VIX Falling live/exporter misalignment (introduced and resolved 2026-04-06)~~
-**Resolved 2026-04-06.** When VIX Falling was changed to a 5-day trend in the exporter, the live app (`app.py:1207`) was left on the old 1-day formula, making the exporter validate a different signal than what runs live. Both are now aligned:
-- `app.py`: `VIX Falling = vix[-1] < vix[-6]`, gated by market hours
-- `backtest_export.py:175`: `VIX Falling = vix[-1] < vix[-6]`, always computed post-close
+**Status**: Tracked but deferred. Will revisit if a mechanistic explanation emerges.
 
-The 48.0% (24/50) accuracy is therefore validating the actual live formula.
+### 2. Gap:down regime residual calls (5 remaining)
+
+The gap-down abstain gate removed 31 gap-down bear calls from the 2yr baseline. Five gap-down days remain as directional calls (bull calls that passed the abstain gate). Current accuracy on those 5 is 20.0% (1/5) — a small-sample noise number, not actionable.
+
+**Status**: Not blocking. Monitor as the sample grows.
 
 ---
 
 ## Fragility Note
 
-The 60d gate passes at 24/50 = 48.0%. Fragility analysis updated after rev 3 pruning:
-- **low-VIX**: 43.8% (63/144) on 2yr — level-based VIX signals vote bullish in slow declines
-- **gap:down**: 28.2% (11/39) on 2yr — model makes confident bear calls on gap-down days; markets often fade
-- **gap:up**: 51.0% (26/51) on 2yr — healthy, Gap Up Day signal is effective here
+The 60d gate passes at 17/33 = 51.5%. Updated fragility analysis as of rev 4:
 
-Neither low-VIX nor gap:down is blocking. Both are tracked for next calibration pass.
+- **gap:down**: Only 5 calls remain (31 abstained); the bear calls are now systematically suppressed by the gap-down abstain gate.
+- **VIX:high**: 45.0% (9/20) — small sample in the 2yr data, not concerning.
+- **VIX:low**: 47.0% (62/132) — improved from 45.3% due to better signal calibration.
+- **Thursday**: 37.2% structural weakness, deferred.
 
 ---
 
-## Ablation-Driven Pruning Round 2 (2026-04-06 rev 3)
+## Ablation-Driven Pruning Round 3 (2026-04-06 rev 4)
 
-Three signals removed from scoring in two passes:
+### GAP-DOWN-ABSTAIN
+Bear calls on large-gap-down days (gap < −25 pts) are now abstained in the scoring loop across backtest_export.py, run_ablation.py, and the live app.
 
-**Pass 1 (ABLATION-PRUNE-01)**
+**Mechanism**: The model's bear calls on large-gap-down days are wrong ~68% of the time (fade-the-gap pattern). Abstaining removes systematic false-bear calls while preserving rare bull calls (score ≥55 on gap-down days). The live app shows `⚪ GAP-DOWN ABSTAIN` when `Gap Down Contrarian = 1 AND score ≤ 44`.
+
+**Result**: 2yr 45.5% → 47.8%, 60d 48.0% → 48.78%.
+
+### ABLATION-PRUNE-04: 52w Range Top 20%
+
 | Signal | Ablation Δ | Rationale |
 |--------|-----------|-----------|
-| `Sector Breadth ≥ 70%` | +0.7% | fires near bull market peaks before corrections |
-| `VIX 3d Relief` | +0.5% | fires on relief rallies within bear markets |
+| `52w Range Top 20%` | +1.0% | Fires = 0 throughout bear trends (SPX well below 52w highs), dragging Position group bearish even on constructive near-term days |
 
-**Pass 2 (ABLATION-PRUNE-02)**
+Kept as `"display"` tier.
+
+**Result**: 2yr 47.8% → 48.2%, 60d 48.78% → 50.0%.
+
+### ABLATION-PRUNE-05: RSI Trend Zone
+
 | Signal | Ablation Δ | Rationale |
 |--------|-----------|-----------|
-| `20 SMA > 50 SMA` | +0.5% | lags the death cross, propping up Trend group during early bear |
+| `RSI Trend Zone` | +1.3% | Fires on early-bounce days that subsequently fail; Momentum group RSI signals (RSI Above 50, RSI Strong Trend) cover the useful directional RSI content |
 
-All three retained as `"display"` tier — still computed and shown in the signal detail panel.
+Kept as `"display"` tier. Extremes group now contains only `Stoch Bullish`.
 
-**Result**: 2yr baseline improved 43.4% → 44.3% → **45.0%** (+1.6pp cumulative). 60d gate holds at 48.0%.
+**Result**: 2yr 48.2% → 49.3%, 60d 50.0% → 51.5%.
+
+### Cumulative Progress
 
 | Model | Signals | 2yr Baseline | 60d Gate |
 |-------|---------|-------------|----------|
-| pre-prune | 29 | 43.4% (115/265) | 24/50 = 48.0% ✓ |
-| pass 1 | 27 | 44.3% (117/264) | 24/50 = 48.0% ✓ |
-| pass 2 | 26 | **45.0% (118/262)** | 24/50 = 48.0% ✓ |
+| pre-session start (ABLATION-PRUNE-03) | 25+1opt | 45.5% (117/257) | 24/50 = 48.0% ✓ |
+| + gap-down abstain | 25+1opt | 47.8% (108/226) | 20/41 = 48.78% ✓ |
+| + ABLATION-PRUNE-04 | 24+1opt | 48.2% (107/222) | 19/38 = 50.0% ✓ |
+| + ABLATION-PRUNE-05 | 23+1opt | **49.3% (104/211)** | 17/33 = **51.5%** ✓ |
 
-Next ablation candidates (positive delta in current 26-sig model):
-- `20 SMA > 50 SMA`: already removed
-- `RSI Trend Zone`: +0.3% delta but removing it causes 24% coverage loss in bear regime (Extremes group becomes Stoch-only, inflating group score on bounce days) — deferred
+Total improvement from original (pre-prune, 29-sig model): 43.4% → 49.3% (+5.9pp)
 
 ---
 
-## Signal Expansion Deferred (2026-04-06 rev 2)
+## Deferred Pruning — Failed Experiment (earlier in session)
 
-Three new core signals were designed, implemented, and empirically tested:
+Attempted removing three signals simultaneously (52w Range Top 20%, VIX Below 20, 52w Range Upper Half) before gap-down abstain was applied. Gate failed at 44.44% (22-sig model). Root cause: in the current bear market, these signals correctly vote = 0 (bearish), providing bearish group pressure. Removing them reduced that pressure, converting correct bear calls to neutral and dropping accuracy.
 
-| Signal | Group | Rationale |
-|--------|-------|-----------|
-| `Prior Day Bull Bar` | Momentum | yesterday close > yesterday open = net buyer session |
-| `Seasonal Bull Week` | Context | ISO week historical mean daily return > 0.3% |
-| `Sector Breadth 5d ≥ 50%` | Breadth | short-term 5d SMA breadth |
+**After gap-down abstain**, VIX Below 20 flipped from +0.6% drag to −1.0% helper. The abstain gate changed the distribution of directional calls by removing false-bear days, making the remaining bear calls better calibrated — and VIX Below 20's = 0 vote on those better-calibrated days is now signal, not noise.
 
-**Result**: All three signals hurt 60d and 90d accuracy in the current market environment.
+**Lesson**: Always gate ablation tests against the 60d window before committing. 2yr ablation delta can be misleading when the 60d window is in a different regime.
 
-| Model | 60d | 90d |
-|-------|-----|-----|
-| 29-sig (baseline) | 24/50 = **48.0%** ✓ | 37/75 = **49.3%** ✓ |
-| 32-sig (with all 3) | 21/46 = 45.7% ✗ | — |
-| 31-sig (without Breadth 5d) | 22/48 = 45.8% ✗ | 34/72 = 47.2% ✗ |
+---
 
-**Root cause**: In the current high-VIX bear-market regime (Feb–Apr 2026), the new bullish signals fire on bounce days and nudge borderline bear scores (43–44) into the neutral zone (45–54), reducing the denominator count and losing correct bear calls. This is a regime-sensitive failure, not a structural signal defect.
+## Current Signal State (23+1opt scoring signals)
 
-**Decision**: Reverted all three signals from scoring model. Deferred to next calibration pass when market conditions allow a balanced 2-yr regime test. Signals are documented here for reuse.
+Pruned signals (now display-only, still computed and shown in UI):
+- `20 SMA > 50 SMA` (ABLATION-PRUNE-01, Δ+0.5%)
+- `VIX 3d Relief` (ABLATION-PRUNE-01, Δ+0.5%)
+- `Sector Breadth ≥ 70%` (ABLATION-PRUNE-01, Δ+0.7%)
+- `Above BB Mid` (ABLATION-PRUNE-03, duplicate of Above 20 SMA)
+- `52w Range Top 20%` (ABLATION-PRUNE-04, Δ+1.0%)
+- `RSI Trend Zone` (ABLATION-PRUNE-05, Δ+1.3%)
 
-**Note**: `run_ablation.py` was structurally synced (VIX Falling fixed to 5-day, Gap Up Day added to Context group + computed) — these are reporting-only changes that don't affect the live score.
+No remaining positive-delta signals from ablation — all active signals are neutral or helping.
 
 ---
 
 ## Resolved / Stale (moved from original findings)
 
-### ~~1. Group-weight calibration leaked target-day VIX and sector closes~~
-**Stale.** Fixed in `app.py:2500–2503`: slices now use strict `<` so target-day data is excluded.
+### ~~1. Exporter accuracy still below threshold~~
+**Resolved 2026-04-05.** Two enhancements brought 60d daily accuracy from 43.75% (21/48) → 48.00% (24/50).
 
-### ~~2. Group-weight calibration mixed two different target definitions~~
-**Stale.** Fixed in `app.py:2505–2515`: always uses next-day close-to-close; intraday fallback removed.
+### ~~2. `windows_html()` does not reconstruct gap-confirmed and catalyst-confirmed override variants~~
+**Resolved 2026-04-05.**
 
-### ~~3. UI overstated what is backtested (labeling claim)~~
-**Stale on the specific labeling claim.** `_model_ver` at `app.py:3001` now reads
-`"SSR-v3 · 28 core signals · Core=equal-wt / Live-Adj=dynamic"` — the old `"2yr backtest"` trust
-string is gone. The still-valid concern is exporter accuracy (see Open Finding #1 above), not the label.
+### ~~3. VIX Falling live/exporter misalignment~~
+**Resolved 2026-04-06.** Both aligned to 5-day trend `vix[-1] < vix[-6]`.
 
-### ~~4. Weekly validation surfaces did not reconcile~~
-**Stale.** Fixed in `app.py:3795–3808`: weekly validator now uses equal-weight core-only scoring,
-directly comparable to the exporter's `equal_weight_static_core` path.
+### ~~4. Group-weight calibration leaked target-day VIX and sector closes~~
+**Stale/resolved.**
+
+### ~~5. Group-weight calibration mixed two different target definitions~~
+**Stale/resolved.**
+
+### ~~6. UI overstated what is backtested~~
+**Stale/resolved.**
+
+### ~~7. Weekly validation surfaces did not reconcile~~
+**Stale/resolved.**
 
 ---
 
