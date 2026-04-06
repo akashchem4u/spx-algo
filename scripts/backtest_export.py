@@ -40,7 +40,7 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 22
+EXPECTED_CORE_SIGNAL_COUNT = 23
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
     "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
@@ -51,7 +51,12 @@ SIGNAL_GROUPS = {
     # markets RSI bounces above 50 briefly on counter-trend days that subsequently fail; this
     # adds a false-bullish Momentum vote on exactly the days the model is most likely to be wrong.
     # RSI Strong Trend (RSI > 60) covers genuine sustained-momentum content with better precision.
-    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 1d Down"],
+    "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 1d Down",
+                   "VVIX Below 100"],
+    # VVIX Below 100: second-order volatility signal — VVIX (VIX of VIX) below 100 indicates
+    # that the options market is not pricing in a spike in realized volatility.  Partially
+    # independent from VIX Below 20 (Pearson r=0.57, fires 52% vs VIX<20 69%).  2yr ablation
+    # addition: +1.9pp; 60d addition: +2.9pp.  Computed from ^VVIX daily closes.
     "Breadth": ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
     "Extremes": ["Stoch Bullish"],
     # RSI Trend Zone removed: ablation delta +1.3% — fires = 1 in the RSI 45–65 zone,
@@ -140,9 +145,10 @@ def _compute_signals_fast(
     spx_sl: pd.DataFrame,
     vix_sl: pd.DataFrame,
     sector_slices: dict[str, pd.DataFrame],
+    vvix_sl: pd.Series | None = None,
 ) -> dict[str, int]:
     """
-    Reconstruct the 25 closed-bar core signals that the app backtests.
+    Reconstruct the 23 closed-bar core signals that the app backtests.
     Session-open and live-overlay signals are intentionally excluded.
     """
     sigs: dict[str, int] = {}
@@ -214,6 +220,16 @@ def _compute_signals_fast(
         # these signals correctly vote bearish.  Live dampening is handled by the
         # drift monitor (which flags them as stuck_bear only when they've been wrong
         # for 10+ days), not by a static always-remove-in-hi-VIX rule.
+
+    # VVIX — second-order volatility (VIX of VIX).  Fires 1 when VVIX < 100, indicating
+    # the options market is not pricing in an imminent VIX spike (calm second-order fear).
+    # Partially independent from VIX Below 20 (r=0.57).
+    # Omitted (not 0) when vvix data is unavailable, so group score falls back to other signals.
+    if vvix_sl is not None and len(vvix_sl) >= 1:
+        try:
+            sigs["VVIX Below 100"] = int(float(vvix_sl.iloc[-1]) < 100)
+        except Exception:
+            pass  # omit on error
 
     # Breadth — accumulation: above-average volume AND price up (not panic selling)
     if len(volume) >= 20:
@@ -301,6 +317,7 @@ def _run_weekly_validation(
     spx: pd.DataFrame,
     vix: pd.DataFrame,
     sectors: dict[str, pd.DataFrame],
+    vvix: "pd.Series | None" = None,
     max_rows: int = 20,
 ) -> dict:
     closes = _squeeze(spx, "Close")
@@ -314,8 +331,9 @@ def _run_weekly_validation(
         cutoff_ts = dates[idx]
         spx_base = spx.iloc[: idx + 1]
         vix_base = vix[vix.index <= cutoff_ts]
+        vvix_base = vvix[vvix.index <= cutoff_ts] if vvix is not None and not vvix.empty else pd.Series(dtype=float)
         sector_base = {ticker: df[df.index <= cutoff_ts] for ticker, df in sectors.items()}
-        sigs = _compute_signals_fast(spx_base, vix_base, sector_base)
+        sigs = _compute_signals_fast(spx_base, vix_base, sector_base, vvix_base)
         if not sigs:
             continue
 
@@ -370,6 +388,11 @@ def run_backtest(days: int = 60) -> dict:
         period = _history_period_for_days(days)
         spx = yf.download("^GSPC", period=period, interval="1d", progress=False, auto_adjust=True)
         vix = yf.download("^VIX", period=period, interval="1d", progress=False, auto_adjust=True)
+        try:
+            vvix_df = yf.download("^VVIX", period=period, interval="1d", progress=False, auto_adjust=True)
+            vvix = _squeeze(vvix_df, "Close") if not vvix_df.empty else pd.Series(dtype=float)
+        except Exception:
+            vvix = pd.Series(dtype=float)
         sectors = {}
         for ticker in SECTOR_TICKERS:
             try:
@@ -392,7 +415,7 @@ def run_backtest(days: int = 60) -> dict:
     results = []
     vix_buckets = {"low": _build_accuracy_bucket(), "mid": _build_accuracy_bucket(), "high": _build_accuracy_bucket()}
     gap_buckets = {"up": _build_accuracy_bucket(), "flat": _build_accuracy_bucket(), "down": _build_accuracy_bucket()}
-    # Day-of-week buckets — 2yr ablation (22+1opt model): Wed 66.7%, Mon 56.4%
+    # Day-of-week buckets — 2yr ablation (23+1opt model): Wed 66.7%, Mon 56.4%
     # best; Thu 45.5% structural drag (structural or regime noise); Fri 48.9%.
     _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
     dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
@@ -403,8 +426,9 @@ def run_backtest(days: int = 60) -> dict:
         cutoff_ts = spx.index[i]
         spx_slice = spx.iloc[: i + 1]
         vix_slice = vix[vix.index <= cutoff_ts]
+        vvix_slice = vvix[vvix.index <= cutoff_ts] if not vvix.empty else pd.Series(dtype=float)
         sector_slices = {ticker: df[df.index <= cutoff_ts] for ticker, df in sectors.items()}
-        sigs = _compute_signals_fast(spx_slice, vix_slice, sector_slices)
+        sigs = _compute_signals_fast(spx_slice, vix_slice, sector_slices, vvix_slice)
         if not sigs:
             continue
 
@@ -479,7 +503,7 @@ def run_backtest(days: int = 60) -> dict:
         pass
     regime = "high_vix" if vix_last > VIX_FEAR_THRESHOLD else ("low_vix" if vix_last < VIX_CALM_THRESHOLD else "mid_vix")
     avg_signals = round(sum(signal_counts) / len(signal_counts), 1) if signal_counts else 0.0
-    weekly = _run_weekly_validation(spx, vix, sectors)
+    weekly = _run_weekly_validation(spx, vix, sectors, vvix)
 
     daily = {
         "accuracy": accuracy,

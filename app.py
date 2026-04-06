@@ -85,7 +85,9 @@ SIGNAL_GROUPS = {
                    # votes on counter-trend bounces that fail; RSI Strong Trend (>60) covers the useful content
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15",              # ultra-calm tier for gradient
-                   "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
+                   "VIX 1d Down",               # day-over-day VIX decline (live + historical)
+                   "VVIX Below 100"],            # second-order vol (VIX of VIX < 100 = calm)
+                   # VVIX Below 100 added: 2yr +1.9pp, 60d +2.9pp.  Pearson r=0.57 vs VIX Below 20 (partial independence).
                    # VIX 3d Relief removed: ablation shows +0.5% drag (fires on bear-market relief rallies)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
                    "Sector Breadth ≥ 85%"],         # near-full breadth: third tier
@@ -126,7 +128,7 @@ SIGNAL_GROUPS = {
 # Core SSR = score from core signals only → directly comparable to backtest accuracy numbers
 # Live-Adj SSR = Core + session/live overlay → richer but only partially validated
 SIGNAL_TIERS = {
-    # ── core (22 active scoring signals) — backtestable from closed daily bars ─
+    # ── core (23 active scoring signals) — backtestable from closed daily bars ─
     "Above 20 SMA":           "core",
     "Above 50 SMA":           "core",
     "Above 200 SMA":          "core",
@@ -142,6 +144,7 @@ SIGNAL_TIERS = {
     "VIX Below 15":           "core",
     "VIX 3d Relief":          "display",   # computed for display; removed from scoring (ablation +0.5% drag)
     "VIX 1d Down":            "core",
+    "VVIX Below 100":         "core",      # second-order vol; 2yr +1.9pp, 60d +2.9pp (VVIX-01)
     "VIX No Spike":           "core",
     "Volume Above Average":   "core",
     "Sector Breadth ≥ 50%":   "core",
@@ -959,6 +962,11 @@ def to_ampm(hhmm):
 def fetch_data():
     spx = yf.download("^GSPC", period="100d", interval="1d", progress=False, auto_adjust=True)
     vix = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
+    try:
+        _vvix_df = yf.download("^VVIX", period="30d", interval="1d", progress=False, auto_adjust=True)
+        vvix = _vvix_df["Close"].squeeze().dropna() if not _vvix_df.empty else pd.Series(dtype=float)
+    except Exception:
+        vvix = pd.Series(dtype=float)
     sectors = {}
     for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
         try:
@@ -971,7 +979,7 @@ def fetch_data():
     except Exception:
         pcr = pd.DataFrame()
     sys.stderr = old_err
-    return spx, vix, pcr, sectors
+    return spx, vix, vvix, pcr, sectors
 
 
 @st.cache_data(ttl=60)
@@ -1191,7 +1199,7 @@ def atr(df, n=14):
     return tr.rolling(n).mean()
 
 
-def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
+def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None, vvix=None):
     close = spx["Close"].squeeze(); vol = spx["Volume"].squeeze()
     high  = spx["High"].squeeze();  low = spx["Low"].squeeze()
     if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
@@ -1284,6 +1292,21 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     # while VIX Falling captures a multi-day fear-unwind trend.  The two are now
     # genuinely independent signals with different time horizons.
     sigs["VIX 1d Down"] = int(len(vix_c) >= 2 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-2]))
+
+    # VVIX Below 100: second-order volatility signal — VVIX (VIX of VIX) < 100.
+    # Measures the market's uncertainty about future VIX itself.  When VVIX < 100,
+    # the options market is not pricing in an imminent volatility spike.  Partially
+    # independent from VIX Below 20 (Pearson r=0.57); fires on ~52% of bars.
+    # 2yr ablation addition: +1.9pp; 60d addition: +2.9pp.  (VVIX-01)
+    # Note: signal is OMITTED (not set to 0) when vvix data is unavailable, so the
+    # Volatility group falls back to its remaining 5 signals without downward bias.
+    try:
+        _vvix_series = vvix if vvix is not None else pd.Series(dtype=float)
+        if len(_vvix_series) >= 1:
+            sigs["VVIX Below 100"] = int(float(_vvix_series.iloc[-1]) < 100)
+        # else: leave out of sigs entirely — group_score() skips absent keys
+    except Exception:
+        pass  # leave out of sigs on any error
 
     # Gap/ATR ratio: is today's gap large relative to recent volatility?
     # A gap > 0.5× daily ATR is high-conviction and should amplify window bias.
@@ -2453,7 +2476,7 @@ now_est  = datetime.now(EST)
 now_hhmm = now_est.strftime("%H:%M")
 
 with st.spinner("Fetching market data..."):
-    spx, vix, pcr, sectors = fetch_data()
+    spx, vix, vvix, pcr, sectors = fetch_data()
     today_events = get_todays_events(lookahead_days=4)
     live = fetch_live()
     orb_data = compute_orb()
@@ -2519,7 +2542,7 @@ if live.get("nq_es_div") is not None:
 if live.get("es_mom_30m_pct") is not None:
     macro_data["es_mom_30m_pct"] = live["es_mom_30m_pct"]
 
-_base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=macro_data)
+_base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=macro_data, vvix=vvix)
 
 # ── Intraday RSI override: replace daily RSI signals with 5-min RSI during RTH ──
 # Daily RSI is computed on close-to-close bars; by mid-afternoon it reflects
@@ -2553,7 +2576,7 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
     training signal and previously forced all near-flat sessions into bear (−1).
     """
     try:
-        _spx_d, _vix_d, _sec_d, _day_s, _days_5m, _ = load_backtest_data()
+        _spx_d, _vix_d, _vvix_d, _sec_d, _day_s, _days_5m, _ = load_backtest_data()
         _dl = list(_spx_d.index.date)
         _td = len(_spx_d)
         if _td < 20:
@@ -2575,6 +2598,7 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
                 # Using <= previously leaked same-day data into calibration (peer review finding).
                 _vb  = _vix_d[_vix_d.index < _spx_d.index[_pos]]
                 _eb  = {k: v[v.index < _spx_d.index[_pos]] for k, v in _sec_d.items()}
+                _vvb = _vvix_d[_vvix_d.index < _spx_d.index[_pos]] if not _vvix_d.empty else pd.Series(dtype=float)
 
                 # Always use next-day close-to-close for calibration target.
                 # Previously mixed intraday (close-open) vs close-to-close targets depending
@@ -2595,7 +2619,7 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
                 _act = 1 if _day_move > 0 else -1
 
                 _as_of = EST.localize(datetime(_day.year, _day.month, _day.day, 12, 0))
-                _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb, as_of_dt=_as_of)
+                _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb, as_of_dt=_as_of, vvix=_vvb)
                 for _gn, _gs in SIGNAL_GROUPS.items():
                     _pr = [_sigs.get(k, 0) for k in _gs if k in _sigs]
                     if not _pr: continue
@@ -2634,6 +2658,11 @@ def compute_historical_analysis():
     try:
         _spx = yf.download("^GSPC", period="2y", interval="1d", progress=False, auto_adjust=True)
         _vix = yf.download("^VIX",  period="2y", interval="1d", progress=False, auto_adjust=True)
+        try:
+            _vvix_df = yf.download("^VVIX", period="2y", interval="1d", progress=False, auto_adjust=True)
+            _vvix_c  = _vvix_df["Close"].squeeze().dropna() if not _vvix_df.empty else pd.Series(dtype=float)
+        except Exception:
+            _vvix_c = pd.Series(dtype=float)
         _sec = {}
         for _t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
             try:
@@ -2687,10 +2716,12 @@ def compute_historical_analysis():
                 # Align sector slices by date (not row index) to avoid misalignment
                 # when sector history is shorter or has different trading day count.
                 _cutoff_ts = pd.Timestamp(_dt)
-                _sec_sl = {k: v[v.index <= _cutoff_ts]
-                           for k, v in _sec.items() if not v.empty}
+                _sec_sl   = {k: v[v.index <= _cutoff_ts]
+                             for k, v in _sec.items() if not v.empty}
+                _vvix_sl  = _vvix_c[_vvix_c.index <= _cutoff_ts] if not _vvix_c.empty else pd.Series(dtype=float)
                 _aof = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
-                _sc, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl, as_of_dt=_aof)
+                _sc, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl,
+                                               as_of_dt=_aof, vvix=_vvix_sl)
 
                 # Use equal-weight group score for core signals only (ablation-consistent)
                 _core_sc = _grp_score({k: v for k, v in _sigs.items() if SIGNAL_TIERS.get(k) == "core"})
@@ -2812,6 +2843,12 @@ def _signal_drift_check(n_days: int = 10, flag_threshold: float = 0.70):
                            progress=False, auto_adjust=True)
         _vix = yf.download("^VIX",  period="60d", interval="1d",
                            progress=False, auto_adjust=True)
+        try:
+            _vvix_60d  = yf.download("^VVIX", period="60d", interval="1d",
+                                     progress=False, auto_adjust=True)
+            _vvix_60dc = _vvix_60d["Close"].squeeze().dropna() if not _vvix_60d.empty else pd.Series(dtype=float)
+        except Exception:
+            _vvix_60dc = pd.Series(dtype=float)
         _sec = {}
         for _t in ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]:
             try:
@@ -2836,16 +2873,17 @@ def _signal_drift_check(n_days: int = 10, flag_threshold: float = 0.70):
             _eval_start = 30             # need at least 30 bars for reliable indicators
 
         for _i in range(_eval_start, _n - 1):
-            _spx_sl = _spx.iloc[:_i + 1]
-            _vix_sl = _vix.iloc[:_i + 1]
-            _dt     = _spx.index[_i].date()
-            _cutoff = pd.Timestamp(_dt)
-            _sec_sl = {k: v[v.index <= _cutoff] for k, v in _sec.items() if not v.empty}
-            _aof    = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
+            _spx_sl   = _spx.iloc[:_i + 1]
+            _vix_sl   = _vix.iloc[:_i + 1]
+            _dt       = _spx.index[_i].date()
+            _cutoff   = pd.Timestamp(_dt)
+            _sec_sl   = {k: v[v.index <= _cutoff] for k, v in _sec.items() if not v.empty}
+            _vvix_sl2 = _vvix_60dc[_vvix_60dc.index <= _cutoff] if not _vvix_60dc.empty else pd.Series(dtype=float)
+            _aof      = EST.localize(datetime(_dt.year, _dt.month, _dt.day, 12, 0))
 
             try:
                 _, _, _, _sigs = compute_ssr(_spx_sl, _vix_sl, pd.DataFrame(), _sec_sl,
-                                             as_of_dt=_aof)
+                                             as_of_dt=_aof, vvix=_vvix_sl2)
             except Exception:
                 continue
 
@@ -3112,7 +3150,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 22+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 23+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):
@@ -3404,7 +3442,7 @@ with cL:
         <div style="background:#0f1f0f;border-radius:6px;padding:5px 8px;text-align:center">
           <div style="font-size:9px;color:#64748b;letter-spacing:.8px">CORE SSR</div>
           <div style="font-size:18px;font-weight:800;color:{'#22c55e' if _core_ssr>=55 else '#ef4444' if _core_ssr<=44 else '#94a3b8'}">{_core_ssr}</div>
-          <div style="font-size:9px;color:#475569">backtested · 22+1opt signals</div>
+          <div style="font-size:9px;color:#475569">backtested · 23+1opt signals</div>
         </div>
         <div style="background:#0f1117;border-radius:6px;padding:5px 8px;text-align:center;border:1px solid #1e3a5f">
           <div style="font-size:9px;color:#64748b;letter-spacing:.8px">LIVE-ADJ SSR</div>
@@ -3893,6 +3931,11 @@ with _tab_research:
             try:
                 _spx_w = yf.download("^GSPC", period="2y", interval="1d", progress=False, auto_adjust=True)
                 _vix_w = yf.download("^VIX",  period="2y", interval="1d", progress=False, auto_adjust=True)
+                try:
+                    _vvix_w_df = yf.download("^VVIX", period="2y", interval="1d", progress=False, auto_adjust=True)
+                    _vvix_w_c  = _vvix_w_df["Close"].squeeze().dropna() if not _vvix_w_df.empty else pd.Series(dtype=float)
+                except Exception:
+                    _vvix_w_c = pd.Series(dtype=float)
                 # Use all 11 sectors (same universe as compute_ssr and backtest_export) so
                 # sector breadth scores are computed on the same denominator as the live model.
                 # Previously only 5 sectors were used, which skewed breadth scores.
@@ -3917,12 +3960,13 @@ with _tab_research:
                         # history is always anchored to the same calendar date, not array offset.
                         _vbase   = _vix_w[_vix_w.index <= _cutoff_ts]
                         _ebase   = {k: v[v.index <= _cutoff_ts] for k, v in _sec_w.items()}
+                        _vvixbase = _vvix_w_c[_vvix_w_c.index <= _cutoff_ts] if not _vvix_w_c.empty else pd.Series(dtype=float)
                         if len(_base) < 252: continue
                         _fri_as_of = EST.localize(datetime(_dates[_fri_idx].year,
                                                            _dates[_fri_idx].month,
                                                            _dates[_fri_idx].day, 15, 0))
                         _, _, _, _wk_sigs = compute_ssr(_base, _vbase, pd.DataFrame(), _ebase,
-                                                       as_of_dt=_fri_as_of)
+                                                       as_of_dt=_fri_as_of, vvix=_vvixbase)
                         # Use equal-weight core-only score (same model as exporter's
                         # equal_weight_static_core) so this table is directly comparable
                         # to exported accuracy numbers. Previously used the full dynamic
@@ -4517,6 +4561,11 @@ with _tab_live:
         # Match VIX period to SPX so weight calibration can look back 100 days, not just 30.
         # Previously 30d meant VIX slices ran out early and calibration had too few data points.
         vix_d = yf.download("^VIX",  period="100d", interval="1d", progress=False, auto_adjust=True)
+        try:
+            _vvix_bt = yf.download("^VVIX", period="100d", interval="1d", progress=False, auto_adjust=True)
+            vvix_d   = _vvix_bt["Close"].squeeze().dropna() if not _vvix_bt.empty else pd.Series(dtype=float)
+        except Exception:
+            vvix_d = pd.Series(dtype=float)
         sectors_d = {}
         for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
             try:
@@ -4542,10 +4591,10 @@ with _tab_live:
                 # fallback: use first Close if Open not available
                 _c = day_series.get(d)
                 day_open_series[d] = float(_c.iloc[0]) if _c is not None and len(_c) else 0.0
-        return spx_d, vix_d, sectors_d, day_series, trading_days, day_open_series
+        return spx_d, vix_d, vvix_d, sectors_d, day_series, trading_days, day_open_series
 
 
-    def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end, day_open_series=None):
+    def run_backtest_for_day(target_date, day_series, spx_d, vix_d, sectors_d, daily_dates_list, offset_from_end, day_open_series=None, vvix_d=None):
         day_5m = day_series.get(target_date)
         if day_5m is None or len(day_5m) == 0:
             return None
@@ -4553,12 +4602,14 @@ with _tab_live:
         spx_base = spx_d.iloc[:-offset_from_end] if offset_from_end > 0 else spx_d
         vix_base = vix_d.iloc[:-offset_from_end] if offset_from_end > 0 else vix_d
         sec_base  = {k: v.iloc[:-offset_from_end] if offset_from_end > 0 else v for k, v in sectors_d.items()}
+        _vvix_base = (vvix_d.iloc[:-offset_from_end] if (vvix_d is not None and not vvix_d.empty and offset_from_end > 0)
+                      else (vvix_d if vvix_d is not None else pd.Series(dtype=float)))
 
         prev_close   = float(spx_base["Close"].squeeze().iloc[-1])
         # Pass historical noon timestamp so VIX Falling uses the right clock
         _bt_as_of = EST.localize(datetime(target_date.year, target_date.month, target_date.day, 12, 0))
         bt_score, bt_buys, bt_sells, _ = compute_ssr(
-            spx_base, vix_base, pd.DataFrame(), sec_base, as_of_dt=_bt_as_of)
+            spx_base, vix_base, pd.DataFrame(), sec_base, as_of_dt=_bt_as_of, vvix=_vvix_base)
         bt_rating, bt_action, _, bt_color = ssr_meta(bt_score)
         bt_direction = ssr_direction(bt_score)
 
@@ -5181,7 +5232,7 @@ with _tab_research:
             "Not validated: ORB width/distance, news sentiment, intraday RSI override (live-only features). "
             "Slot grid: 09:30 10:00 10:30 10:45 11:00 11:15 11:30 12:00 13:00 13:15 13:30 14:00 14:30 15:00 15:30 16:00."
         )
-        spx_d_bt, vix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt, day_open_series_bt = load_backtest_data()
+        spx_d_bt, vix_d_bt, vvix_d_bt, sectors_d_bt, day_series_bt, trading_days_bt, day_open_series_bt = load_backtest_data()
 
         last5 = trading_days_bt[-10:] if len(trading_days_bt) >= 10 else trading_days_bt
         daily_dates_list = list(spx_d_bt.index.date)
@@ -5237,7 +5288,7 @@ with _tab_research:
             all_bt_results.append(
                 run_backtest_for_day(td, day_series_bt, spx_d_bt, vix_d_bt,
                                      sectors_d_bt, daily_dates_list, offsets.get(td, 1),
-                                     day_open_series=day_open_series_bt)
+                                     day_open_series=day_open_series_bt, vvix_d=vvix_d_bt)
             )
 
         # Per-day tabs

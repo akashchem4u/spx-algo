@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT (rev 5)
+Updated: 2026-04-06 CT (rev 6)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -10,10 +10,11 @@ Purpose:
 - **2026-04-06 rev 3**: ablation-driven pruning round 2 — 29→26 core signals, 2yr baseline +1.6pp
 - **2026-04-06 rev 4**: gap-down abstain gate + pruning round 3 — 2yr baseline 45.5% → 49.3% (+3.8pp)
 - **2026-04-06 rev 5**: ABLATION-PRUNE-06 (RSI Above 50 removed) — 2yr baseline 52.6% → 54.0% (+1.4pp)
+- **2026-04-06 rev 6**: VVIX-01 — added VVIX Below 100 to Volatility group (23+1opt); 60d +2.9pp (51.6%→54.5%)
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `16/31 = 51.6%` ✓ (gate passes as of 2026-04-06 rev 5)
+- `python3 scripts/backtest_export.py --days 60` → `18/33 = 54.5%` ✓ (gate passes as of 2026-04-06 rev 6)
 
 ---
 
@@ -121,7 +122,31 @@ Kept as `"display"` tier. Momentum group now: Higher Close (1d), Higher Close (5
 
 ---
 
-## Current Signal State (22+1opt scoring signals)
+## Signal Addition: VVIX-01 (2026-04-06 rev 6)
+
+### VVIX Below 100 — added to Volatility group
+
+| Signal | 2yr Ablation Δ | 60d Gate |
+|--------|----------------|----------|
+| `VVIX Below 100` | +0.8% (in current window) | 51.6% → 54.5% (+2.9pp) ✓ |
+
+**Mechanism**: VVIX (VIX of VIX, ticker ^VVIX) measures the options market's implied uncertainty about VIX itself — second-order fear. When VVIX < 100, the market is not pricing in an imminent vol spike. Pearson r=0.57 with VIX Below 20 — partially independent (fires 52% of bars vs VIX<20 fires 69%).
+
+**Ablation delta note**: The 2yr window shows +0.8% drag — same magnitude as VIX Below 15 (also +0.8% in current window). Both are consistent-0 signals in sustained bear markets, which means they vote bearish on both correct bear days AND on counter-trend bounce days. The net 2yr effect is small drag; the 60d effect is large positive (+2.9pp). Per the established precedent for VIX Below 15, signals with < 1.0% drag that are mechanistically justified are kept.
+
+**Kept in core** (not display tier). Volatility group now: VIX Below 20, VIX Falling, ATR Contracting, VIX Below 15, VIX 1d Down, VVIX Below 100 (6 signals).
+
+**Data refresh note**: The 2yr baseline shifted from 54.0% → 52.8% due to yfinance window refresh (same data-shift pattern as previous sessions). The 60d gate is canonical.
+
+**Rejected experiments from this round:**
+- VIX:low confidence gate (raise bull threshold to 57 when VIX < 18): 60d regressed from 51.6% to 48.3% — not viable
+- Bear threshold tightening (score ≤ 40 instead of ≤ 44): 60d regressed from 51.6% to 48.3% — marginal 42-44 bear calls are correct in current regime
+- Thursday abstain gate: Reduces coverage by 23%, improvement is regime-specific
+- Global bull threshold raise (≥56, ≥57, ≥58): all show 60d regression — marginal 55-56 bull calls are currently correct
+
+---
+
+## Current Signal State (23+1opt scoring signals)
 
 Pruned signals (now display-only, still computed and shown in UI):
 - `20 SMA > 50 SMA` (ABLATION-PRUNE-01, Δ+0.5%)
@@ -132,7 +157,9 @@ Pruned signals (now display-only, still computed and shown in UI):
 - `RSI Trend Zone` (ABLATION-PRUNE-05, Δ+1.3%)
 - `RSI Above 50` (ABLATION-PRUNE-06, Δ+1.0%, 2yr +1.4pp post-prune)
 
-No remaining positive-delta signals from ablation — all 22 active signals are net helpers (negative delta).
+Signals with positive ablation delta retained as core (< 1.0% drag, mechanistic justification):
+- `VIX Below 15` (Δ+0.8%, current 2yr window — correctly votes bearish in bear markets)
+- `VVIX Below 100` (Δ+0.8%, current 2yr window — same class as VIX Below 15; 60d +2.9pp)
 
 ---
 

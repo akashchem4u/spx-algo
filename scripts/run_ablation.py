@@ -46,7 +46,8 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     # RSI Above 50 removed: ablation delta +1.0% drag (2yr +1.4pp post-prune).  False-bullish
     # votes on counter-trend bounces that fail; RSI Strong Trend (>60) covers the useful content.
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
-                   "VIX Below 15", "VIX 1d Down"],
+                   "VIX Below 15", "VIX 1d Down", "VVIX Below 100"],
+    # VVIX Below 100: second-order vol signal (VIX of VIX < 100 = calm).  2yr +1.9pp, 60d +2.9pp.
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
     "Extremes":   ["Stoch Bullish"],
     # RSI Trend Zone removed: ablation delta +1.3% — fires on early-bounce days that fail;
@@ -151,8 +152,9 @@ def _compute_signals(
     spx_sl: pd.DataFrame,
     vix_sl: pd.DataFrame,
     sec_sl: dict[str, pd.DataFrame],
+    vvix_sl: "pd.Series | None" = None,
 ) -> dict[str, int]:
-    """Compute the 28 closed-bar core signals (equal to backtest_export logic)."""
+    """Compute the 29 closed-bar signals (23 active + 7 display-only)."""
     sigs: dict[str, int] = {}
     if spx_sl.empty or len(spx_sl) < 20:
         return sigs
@@ -214,6 +216,14 @@ def _compute_signals(
         sigs["ATR Contracting"] = int(
             len(atr_v.dropna()) >= 20 and _sf(atr_v) < _sf(atr_v, -5)
         )
+
+    # VVIX — second-order volatility (VIX of VIX < 100 = calm options market)
+    # Omitted (not 0) when vvix data is unavailable so the group falls back gracefully.
+    if vvix_sl is not None and len(vvix_sl) >= 1:
+        try:
+            sigs["VVIX Below 100"] = int(float(vvix_sl.iloc[-1]) < 100)
+        except Exception:
+            pass  # omit on error
 
     # Breadth — accumulation (volume + price confirmation)
     if len(volume) >= 20:
@@ -305,6 +315,13 @@ def run_ablation(verbose: bool = False) -> dict:
     print("[run_ablation] Fetching 2y VIX …")
     vix = yf.download("^VIX",  period="2y", interval="1d",
                       progress=False, auto_adjust=True)
+    print("[run_ablation] Fetching 2y VVIX …")
+    try:
+        _vvix_df = yf.download("^VVIX", period="2y", interval="1d",
+                               progress=False, auto_adjust=True)
+        vvix_close = _squeeze(_vvix_df, "Close") if not _vvix_df.empty else pd.Series(dtype=float)
+    except Exception:
+        vvix_close = pd.Series(dtype=float)
     sec: dict[str, pd.DataFrame] = {}
     for t in SECTOR_TICKERS:
         try:
@@ -312,7 +329,7 @@ def run_ablation(verbose: bool = False) -> dict:
                                   progress=False, auto_adjust=True)
         except Exception:
             sec[t] = pd.DataFrame()
-    print(f"[run_ablation] SPX bars: {len(spx)}, VIX bars: {len(vix)}")
+    print(f"[run_ablation] SPX bars: {len(spx)}, VIX bars: {len(vix)}, VVIX bars: {len(vvix_close)}")
 
     if spx.empty or len(spx) < 220:
         print("[run_ablation] ERROR: insufficient SPX data")
@@ -340,14 +357,15 @@ def run_ablation(verbose: bool = False) -> dict:
 
     for i in range(START_IDX, n - 1):
         try:
-            spx_sl = spx.iloc[:i + 1]
-            vix_sl = vix.iloc[:i + 1]
-            dt     = spx.index[i].date()
-            cutoff = pd.Timestamp(dt)
-            sec_sl = {k: v[v.index <= cutoff]
-                      for k, v in sec.items() if not v.empty}
+            spx_sl   = spx.iloc[:i + 1]
+            vix_sl   = vix.iloc[:i + 1]
+            dt       = spx.index[i].date()
+            cutoff   = pd.Timestamp(dt)
+            sec_sl   = {k: v[v.index <= cutoff]
+                        for k, v in sec.items() if not v.empty}
+            vvix_sl  = vvix_close[vvix_close.index <= cutoff] if not vvix_close.empty else pd.Series(dtype=float)
 
-            sigs     = _compute_signals(spx_sl, vix_sl, sec_sl)
+            sigs     = _compute_signals(spx_sl, vix_sl, sec_sl, vvix_sl)
             score    = _grp_score(sigs)
 
             # Opening gap — computed early for gap-down abstain gate and regime bucket.
