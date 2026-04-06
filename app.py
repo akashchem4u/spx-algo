@@ -2890,50 +2890,14 @@ _top_drags    = [f"{g} ({p}%)" for g, p in reversed(_grp_sorted) if p < 40][:1]
 _driver_line  = ("Top drivers: " + " · ".join(_top_drivers)) if _top_drivers else ""
 _drag_line    = ("Drag: " + ", ".join(_top_drags)) if _top_drags else ""
 
-# ── Shadow ledger auto-append (runs once per day, post-close) ─────────────────
-# Appends one row to Codex/shadow-ledger.csv capturing today's setup context and
-# actual outcome.  The row is written only after 4:15 PM EST on weekdays so the
-# close price is stable.  A duplicate-date guard prevents double-writes on refresh.
-_is_post_close_today = (
-    now_est.weekday() < 5 and
-    (now_est.hour > 16 or (now_est.hour == 16 and now_est.minute >= 15))
-)
-if _is_post_close_today and levels["current"] > 0 and spx_price > 0:
-    try:
-        import csv as _csv, os as _os
-        _sl_path = "Codex/shadow-ledger.csv"
-        _today_str = now_est.strftime("%Y-%m-%d")
-        # Read existing dates to avoid duplicate rows
-        _existing_dates = set()
-        if _os.path.exists(_sl_path):
-            with open(_sl_path, newline="") as _f:
-                for _row in _csv.DictReader(_f):
-                    if _row.get("date"):
-                        _existing_dates.add(_row["date"])
-        if _today_str not in _existing_dates:
-            _evt_today = get_event_types_today()
-            _actual_dir = "U" if spx_price > levels["current"] else "D"
-            _actual_pts = round(spx_price - levels["current"], 1)
-            _sl_row = {
-                "date":         _today_str,
-                "core_ssr":     _core_ssr,
-                "live_adj_ssr": score,
-                "vix":          round(vix_now, 2),
-                "gap_pts":      round(live_gap, 1),
-                "event_flags":  "|".join(sorted(_evt_today)) if _evt_today else "",
-                "opex":         int(_opex_week),
-                "orb_status":   _orb_status,
-                "actual_dir":   _actual_dir,
-                "actual_pts":   _actual_pts,
-            }
-            _write_header = not _os.path.exists(_sl_path) or _os.path.getsize(_sl_path) == 0
-            with open(_sl_path, "a", newline="") as _f:
-                _w = _csv.DictWriter(_f, fieldnames=list(_sl_row.keys()))
-                if _write_header:
-                    _w.writeheader()
-                _w.writerow(_sl_row)
-    except Exception:
-        pass  # never block render on ledger write failure
+# ── Shadow ledger write path REMOVED (was Path 1) ────────────────────────────
+# This early write path has been removed (peer review finding #6).
+# It wrote actual_dir as "U"/"D" which is not recognized by the display logic
+# (which expects "bull"/"bear"/"flat"). Because both paths shared a duplicate-date
+# guard, the early writer would block the canonical Path 2 (line ~5245) from
+# ever writing that date, and _ledger_fill_actuals() would skip "U"/"D" rows
+# since they are non-empty. The unified write is now Path 2 only, which writes
+# actual_dir="" and lets _ledger_fill_actuals() normalize retroactively.
 
 es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
