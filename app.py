@@ -2234,8 +2234,13 @@ def windows_html(now_hhmm, win_acc=None, cur_vix=0.0, cur_gap=0.0):
         now_badge = '<span class="win-now">NOW</span>' if is_now else ""
         row_style = 'background:#1a2744;border-radius:6px;' if is_now else ""
         acc_badge = ""
-        if win_acc and lbl in win_acc:
-            _ws  = win_acc[lbl]
+        # Look up by full label first (exact override match); fall back to base label
+        # so windows without overrides still show aggregate stats.
+        _lookup_key = lbl if (win_acc and lbl in win_acc) else None
+        if _lookup_key is None and win_acc:
+            _lookup_key = next((k for k, v in win_acc.items() if v.get("base_label") == lbl), None)
+        if win_acc and _lookup_key and _lookup_key in win_acc:
+            _ws  = win_acc[_lookup_key]
             _tot = _ws.get("total", 0)
             if _tot >= 20:
                 _avg_pct = round(_ws["correct"] / _tot * 100)
@@ -2436,33 +2441,60 @@ _opex_friday = is_opex_friday()
 
 # ── Data-driven SSR group weights from recent backtest performance ───────────
 # Each signal group is weighted by how well it correlated with actual SPX
-# direction over the last 10 trading days.  Groups with >70% hit rate get
+# direction over the last 60 trading days.  Groups with >70% hit rate get
 # boosted (up to 1.8×); groups with <50% hit rate get penalised (down to 0.4×).
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_group_weights(today_date=None):  # today_date param IS the cache key — different date = new cache entry = midnight bust
-    """Derive per-group weights by correlating each group's vote with actual day direction."""
+    """Derive per-group weights by correlating each group's vote with actual day direction.
+
+    Calibration sample: last 60 trading days from daily data (not constrained to ~20 5m days).
+    Actual direction: 5m intraday (close vs open) when available, daily close-to-close fallback.
+    Neutral threshold: days where SPX moved < 5 pts are skipped — flat days are not reliable
+    training signal and previously forced all near-flat sessions into bear (−1).
+    """
     try:
-        _spx_d, _vix_d, _sec_d, _day_s, _days, _ = load_backtest_data()
-        if not _days: return {g: 1.0 for g in SIGNAL_GROUPS}
-        _dl = list(_spx_d.index.date); _td = len(_spx_d)
-        # Weighted counts: recent 30 days count 2× older days (regime decay)
+        _spx_d, _vix_d, _sec_d, _day_s, _days_5m, _ = load_backtest_data()
+        _dl = list(_spx_d.index.date)
+        _td = len(_spx_d)
+        if _td < 20:
+            return {g: 1.0 for g in SIGNAL_GROUPS}
+
         _gc = {g: 0.0 for g in SIGNAL_GROUPS}
         _gt = {g: 0.0 for g in SIGNAL_GROUPS}
-        _recent_cutoff = len(_days) - 30  # last 30 days = "recent"
-        for _i, _day in enumerate(_days[-252:]):
-            _day_weight = 2.0 if _i >= (len(_days[-252:]) - 30) else 1.0
+
+        # Iterate the last 60 daily bars (not just 5m days which is ~20).
+        # Recent 20 days count 2×; older days count 1× (regime decay weighting).
+        _eval_days = _dl[max(0, _td - 61): _td - 1]  # exclude today (no next-bar outcome yet)
+        for _i, _day in enumerate(_eval_days):
+            _day_weight = 2.0 if _i >= len(_eval_days) - 20 else 1.0
             try:
                 _pos = _dl.index(_day)
                 _off = _td - _pos
                 _sb  = _spx_d.iloc[:-_off] if _off > 0 else _spx_d
-                _vb  = _vix_d.iloc[:-_off] if _off > 0 else _vix_d
-                _eb  = {k: v.iloc[:-_off] if _off > 0 else v for k, v in _sec_d.items()}
-                _ds  = _day_s.get(_day)
-                if _ds is None or len(_ds) < 2: continue
-                # Pass historical noon datetime so VIX Falling doesn't use today's clock
+                _vb  = _vix_d[_vix_d.index <= _spx_d.index[_pos]]
+                _eb  = {k: v[v.index <= _spx_d.index[_pos]] for k, v in _sec_d.items()}
+
+                # Actual direction: prefer 5m intraday (close vs open = intraday move),
+                # fall back to daily close-to-close when 5m is unavailable.
+                _ds = _day_s.get(_day)
+                if _ds is not None and len(_ds) >= 2:
+                    _day_move = float(_ds.iloc[-1]) - float(_ds.iloc[0])
+                elif _pos + 1 < _td:
+                    # daily fallback: next close vs this close
+                    _this_c = float(_spx_d["Close"].squeeze().iloc[_pos])
+                    _next_c = float(_spx_d["Close"].squeeze().iloc[_pos + 1])
+                    _day_move = _next_c - _this_c
+                else:
+                    continue
+
+                # Skip flat days — moves < 5 pts are noise, not reliable training signal.
+                # Previously these were forced into bear (−1), biasing weights in bear markets.
+                if abs(_day_move) < 5.0:
+                    continue
+                _act = 1 if _day_move > 0 else -1
+
                 _as_of = EST.localize(datetime(_day.year, _day.month, _day.day, 12, 0))
                 _, _, _, _sigs = compute_ssr(_sb, _vb, pd.DataFrame(), _eb, as_of_dt=_as_of)
-                _act = 1 if float(_ds.iloc[-1]) > float(_ds.iloc[0]) else -1
                 for _gn, _gs in SIGNAL_GROUPS.items():
                     _pr = [_sigs.get(k, 0) for k in _gs if k in _sigs]
                     if not _pr: continue
@@ -2471,12 +2503,13 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
                     if _vote == _act: _gc[_gn] += _day_weight
             except Exception:
                 continue
-        # acc → weight: 50%=0.5, 60%=1.0, 70%=1.4, 80%=1.8 (linear)
-        # Require effective n >= 5 (sum of weights) before trusting accuracy
+
+        # acc → weight: 50%=0.7, 60%=1.3, 70%=1.9 (capped at 2.0); <50%→0.3 floor
+        # Require effective n >= 10 (sum of weights) before trusting accuracy.
         _out = {}
         for _gn in SIGNAL_GROUPS:
             _t = _gt[_gn]
-            if _t < 5.0:
+            if _t < 10.0:
                 _out[_gn] = 1.0
             else:
                 _acc = _gc[_gn] / _t
@@ -3725,7 +3758,8 @@ with _tab_research:
     with st.expander("📅 Weekly SSR Directional Accuracy — Last 20 Weeks (click to expand)", expanded=False):
         st.caption(
             "Validates SSR directional call (bull/bear/neutral, score vs 50) against actual weekly SPX move — "
-            "last 20 weeks. Scope: price+VIX+sector SSR only (no PCR/macro). "
+            "last 20 weeks. Scope: price+VIX+all 11 sector ETFs (same universe as live model). "
+            "VIX and sector slices are date-aligned (not row-position). "
             "Note: this table measures SSR direction accuracy, not the weekly projection path or ranges "
             "(VIX scaling, exhaustion gate, and day-by-day levels are not backtested here)."
         )
@@ -3734,8 +3768,11 @@ with _tab_research:
             try:
                 _spx_w = yf.download("^GSPC", period="2y", interval="1d", progress=False, auto_adjust=True)
                 _vix_w = yf.download("^VIX",  period="2y", interval="1d", progress=False, auto_adjust=True)
+                # Use all 11 sectors (same universe as compute_ssr and backtest_export) so
+                # sector breadth scores are computed on the same denominator as the live model.
+                # Previously only 5 sectors were used, which skewed breadth scores.
                 _sec_w = {}
-                for _t in ["XLF","XLK","XLE","XLV","XLI"]:
+                for _t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
                     try:
                         _sec_w[_t] = yf.download(_t, period="2y", interval="1d", progress=False, auto_adjust=True)
                     except Exception:
@@ -3749,9 +3786,12 @@ with _tab_research:
                 for _wi in range(4, len(_dates) - 5, 5):
                     try:
                         _fri_idx = _wi
+                        _cutoff_ts = _dates[_fri_idx]
                         _base    = _spx_w.iloc[:_fri_idx + 1]
-                        _vbase   = _vix_w.iloc[:_fri_idx + 1]
-                        _ebase   = {k: v.iloc[:_fri_idx + 1] for k, v in _sec_w.items()}
+                        # Date-aligned VIX and sector slices (not row-position) so warmed-up
+                        # history is always anchored to the same calendar date, not array offset.
+                        _vbase   = _vix_w[_vix_w.index <= _cutoff_ts]
+                        _ebase   = {k: v[v.index <= _cutoff_ts] for k, v in _sec_w.items()}
                         if len(_base) < 252: continue
                         _fri_as_of = EST.localize(datetime(_dates[_fri_idx].year,
                                                            _dates[_fri_idx].month,
@@ -4266,11 +4306,13 @@ with _tab_live:
     def load_backtest_data():
         """Load 5-day intraday + daily data for full-week backtest."""
         spx_d = yf.download("^GSPC", period="100d", interval="1d", progress=False, auto_adjust=True)
-        vix_d = yf.download("^VIX",  period="30d",  interval="1d", progress=False, auto_adjust=True)
+        # Match VIX period to SPX so weight calibration can look back 100 days, not just 30.
+        # Previously 30d meant VIX slices ran out early and calibration had too few data points.
+        vix_d = yf.download("^VIX",  period="100d", interval="1d", progress=False, auto_adjust=True)
         sectors_d = {}
         for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
             try:
-                sectors_d[t] = yf.download(t, period="60d", interval="1d", progress=False, auto_adjust=True)
+                sectors_d[t] = yf.download(t, period="100d", interval="1d", progress=False, auto_adjust=True)
             except Exception:
                 sectors_d[t] = pd.DataFrame()
 
@@ -4741,10 +4783,16 @@ def aggregate_window_stats(all_bt_results):
         gap_key = "gap_up"   if gap_day > GAP_THRESHOLD else ("gap_down" if gap_day < -GAP_THRESHOLD else "gap_flat")
 
         for r in bt["results"]:
-            lbl = r["label"].split(" (")[0]   # strip regime suffix like "(hi-VIX→bear)"
-            if lbl not in stats:
-                stats[lbl] = {
-                    "bias": r["bias"], "correct": 0, "total": 0,
+            # Key by FULL label (including override suffix like "(hi-VIX→bear)") so that
+            # different effective biases on the same base window are tracked separately.
+            # Previously stripping the suffix merged bull/bear/chop variants under one row,
+            # making accuracy stats unreliable for overridden regimes (peer review finding #5).
+            full_lbl = r["label"]
+            base_lbl = r["label"].split(" (")[0]   # kept for lookup fallback in windows_html
+            if full_lbl not in stats:
+                stats[full_lbl] = {
+                    "bias": r["bias"], "base_label": base_lbl,
+                    "correct": 0, "total": 0,
                     "vix_low":  {"c": 0, "t": 0},
                     "vix_mid":  {"c": 0, "t": 0},
                     "vix_high": {"c": 0, "t": 0},
@@ -4752,7 +4800,7 @@ def aggregate_window_stats(all_bt_results):
                     "gap_flat": {"c": 0, "t": 0},
                     "gap_down": {"c": 0, "t": 0},
                 }
-            s = stats[lbl]
+            s = stats[full_lbl]
             s["total"] += 1
             if r["correct"]:
                 s["correct"] += 1
