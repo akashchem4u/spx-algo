@@ -1,6 +1,6 @@
 # Peer Review Handoff
 
-Updated: 2026-04-06 (enhancement lane — all 7 findings resolved)
+Updated: 2026-04-06 (enhancement lane — all 7 findings resolved + ablation report populated)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 ---
@@ -69,6 +69,23 @@ Current HEAD: see `git log --oneline -5` for latest commits.
 
 ---
 
+## Additional Enhancements (Post-Review Lane)
+
+### Ablation Report — `scripts/run_ablation.py`
+- Standalone 2-year walk-forward ablation runner added (no Streamlit dependency)
+- `Codex/ablation-report.md` is now **fully populated** (was placeholder)
+- Run: `python3 scripts/run_ablation.py`
+- Results (2025-01-21 → 2026-04-01, 279 directional calls):
+  - Baseline accuracy: **44.4%** (124/279, equal-weight core signals)
+  - **Top 3 most valuable signals**: RSI Trend Zone (−1.6% delta), Sector Breadth ≥ 50% (−1.1%), VIX No Spike (−0.7%)
+  - **Worst regime**: gap:down at 32.5% (13/40) — structural limitation
+  - **Best regime**: VIX:high at 50.0% (16/32); gap:up at 50.0% (26/52)
+  - **Worst days**: Tuesday 34.5%, Thursday 37.5% (vs Mon/Wed/Fri ≥ 49%)
+  - Options/Macro/Gap-ATR signals show 0% coverage in backtest (live-feed only, expected)
+- All previously untracked Codex artifacts committed: validation JSONs/MDs, session reviews, market-gap review
+
+---
+
 ## Remaining Open Items
 
 None from this review cycle.
@@ -90,6 +107,16 @@ All 7 findings have been resolved and pushed to `origin/main`. The shadow ledger
 write path is now unified. The weekly validator uses 11 sectors with date alignment.
 The group weight calibration covers 60 days and skips flat sessions. The behavior
 validation is now a real gate.
+
+`Codex/ablation-report.md` is now fully populated — no longer a placeholder.
+Run `python3 scripts/run_ablation.py` to regenerate at any time.
+
+Key ablation signal to watch: **RSI Trend Zone** (−1.6% delta) and
+**Sector Breadth ≥ 50%** (−1.1%) are the two highest-value core signals;
+any future signal removal proposals should be tested against this baseline.
+
+**gap:down regime (32.5%)** is the model's structural gap — worth a separate
+investigation pass if the bear-trend + gap-down frequency increases.
 
 If you run a new validation pass, expect `ok: false` on 60d backtest (model is below
 threshold in the current regime — this is honest). Syntax should pass. The model
