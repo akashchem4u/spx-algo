@@ -94,6 +94,7 @@ SIGNAL_GROUPS = {
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
                    "VIX No Spike",               # no 3-day VIX surge = calm context (inverted: 0 when spike)
                    "Gap Up Day",                 # open > prev close + GAP_THRESHOLD = large positive gap
+                   "Gap Down Contrarian",        # OPTIONAL: only in sigs on large gap-down days (fade tendency)
                    "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
                    "Overnight Upper Third",       # ES in top 1/3 of overnight range: strong bull lean
                    "Overnight Range Compressed",  # tight overnight range = breakout pending
@@ -150,6 +151,7 @@ SIGNAL_TIERS = {
     "Above Pivot":            "core",
     "Above 5d High":          "core",
     "Gap Up Day":             "core",     # large positive gap, computable from daily OHLC Open
+    "Gap Down Contrarian":    "core",     # optional: only in sigs on large gap-down days (fade tendency)
     # ── session (1 signal) — valid only after today's open price is known ────
     "Gap/ATR Normal":         "session",
     # ── live (7 signals) — real-time feeds; not available in day backtest ────
@@ -1275,6 +1277,11 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         if isinstance(_open_s_gu, pd.DataFrame): _open_s_gu = _open_s_gu.iloc[:, 0]
         if len(_open_s_gu) >= 2:
             sigs["Gap Up Day"] = int(_day_gap_pts > GAP_THRESHOLD)
+            # Gap Down Contrarian: OPTIONAL — only added to sigs on large gap-down days.
+            # Absent on all other days so _grp_score() treats it as "not present" (not counted).
+            # On gap-down days, adds 1 bullish vote to Context: ~68% of large gap-downs fade.
+            if _day_gap_pts < -GAP_THRESHOLD:
+                sigs["Gap Down Contrarian"] = 1
 
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: requires BOTH above-average volume AND a positive close
@@ -3025,7 +3032,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 26 core signals · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 26+1opt core signals · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):

@@ -50,7 +50,8 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
-    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day"],
+    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Gap Down Contrarian"],
+    # Gap Down Contrarian: optional — only in sigs on large gap-down days
     # Seasonal Bull Week removed: not computed in _compute_signals(), caused 0% coverage in ablation
     "Position":   ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid",
                    "Above Prior Day High", "Above Pivot", "Above 5d High"],
@@ -216,12 +217,16 @@ def _compute_signals(
         sigs["Sector Breadth ≥ 70%"] = int((above / total_sec) >= 0.70)
         sigs["Sector Breadth ≥ 85%"] = int((above / total_sec) >= 0.85)
 
-    # Gap Up Day — requires Open column
+    # Gap Up Day + Gap Down Contrarian — require Open column
     if "Open" in spx_sl.columns:
         open_s = _squeeze(spx_sl, "Open")
         if len(open_s) >= 2 and len(close) >= 2:
             _gap_pts = _sf(open_s) - _sf(close, -2)
             sigs["Gap Up Day"] = int(_gap_pts > GAP_THRESHOLD)
+            # Gap Down Contrarian: OPTIONAL — only added when there is a large gap down.
+            # Key absent on all other days so _grp_score() skips it; avoids bearish drag.
+            if _gap_pts < -GAP_THRESHOLD:
+                sigs["Gap Down Contrarian"] = 1
 
     # Extremes
     sigs["Stoch Bullish"] = int(_sf(stoch_k) > _sf(stoch_d))
