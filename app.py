@@ -1198,14 +1198,17 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
 
     # ── Volatility group ─────────────────────────────────────────────────────
     sigs["VIX Below 20"]      = int(vix_c.iloc[-1] < 20)
-    # VIX Falling: use as_of_dt when provided (backtest) so we don't leak
-    # today's clock into historical evaluation.
+    # VIX Falling: 5-day trend — VIX today below VIX 5 sessions ago.
+    # Uses the same formula as backtest_export.py so the live score and the
+    # exporter validation measure exactly the same signal.  Gated by market
+    # hours so it doesn't fire pre/post-session (consistent with prior behaviour).
+    # VIX 1d Down (below) covers the single-session version without a gate.
     _ref_dt   = as_of_dt if as_of_dt is not None else datetime.now(EST)
     _now_wd   = _ref_dt.weekday()
     _now_h    = _ref_dt.hour
     _mkt_open = (_now_wd < 5 and 9 <= _now_h < 16)
-    sigs["VIX Falling"] = (int(vix_c.iloc[-1] < vix_c.iloc[-2])
-                           if (len(vix_c) >= 2 and _mkt_open) else 0)
+    sigs["VIX Falling"] = (int(len(vix_c) >= 6 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-6]))
+                           if (len(vix_c) >= 6 and _mkt_open) else 0)
     # ATR Contracting: need >= 20 bars for ATR(14) to stabilize + 5 for comparison
     sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 20 and atr_v.iloc[-1] < atr_v.iloc[-5])
     # VIX Below 15: ultra-calm regime tier. Pairs with "VIX Below 20" for gradient:
@@ -1232,9 +1235,10 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         sigs["VIX 3d Relief"]  = 0
         sigs["VIX No Spike"]   = 1   # default: assume calm if insufficient history
 
-    # VIX 1d Down: pure day-over-day VIX decline with no market-open gate.
-    # Complements "VIX Falling" (which is disabled when market is closed).
-    # Fires in backtest paths and after-hours, giving a more stable vol-direction signal.
+    # VIX 1d Down: single-session VIX decline, no market-hours gate.
+    # Complements VIX Falling (5-day trend): VIX 1d Down captures same-day vol relief
+    # while VIX Falling captures a multi-day fear-unwind trend.  The two are now
+    # genuinely independent signals with different time horizons.
     sigs["VIX 1d Down"] = int(len(vix_c) >= 2 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-2]))
 
     # Gap/ATR ratio: is today's gap large relative to recent volatility?

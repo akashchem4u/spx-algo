@@ -366,6 +366,10 @@ def run_backtest(days: int = 60) -> dict:
     results = []
     vix_buckets = {"low": _build_accuracy_bucket(), "mid": _build_accuracy_bucket(), "high": _build_accuracy_bucket()}
     gap_buckets = {"up": _build_accuracy_bucket(), "flat": _build_accuracy_bucket(), "down": _build_accuracy_bucket()}
+    # Day-of-week buckets — ablation shows Tuesday (35%) and Thursday (38%) are
+    # structural accuracy drags; Mon/Wed/Fri are all ≥49%.
+    _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
+    dow_buckets = {d: _build_accuracy_bucket() for d in _DOW_NAMES.values()}
     signal_counts: list[int] = []
 
     for i in range(eval_start, n - 1):
@@ -379,8 +383,11 @@ def run_backtest(days: int = 60) -> dict:
 
         score = _grp_score(sigs)
         signal_counts.append(len(sigs))
+        dow_idx = spx.index[i].weekday()
+
         bull_call = score >= 55
         bear_call = score <= 44
+
         if not bull_call and not bear_call:
             continue
 
@@ -396,10 +403,13 @@ def run_backtest(days: int = 60) -> dict:
         vix_key = "high" if vix_on_day > VIX_FEAR_THRESHOLD else ("low" if vix_on_day < VIX_CALM_THRESHOLD else "mid")
         day_gap = _safe_float(opens, i) - _safe_float(close, i - 1) if i > 0 else 0.0
         gap_key = "up" if day_gap > GAP_THRESHOLD else ("down" if day_gap < -GAP_THRESHOLD else "flat")
+        dow_name = _DOW_NAMES.get(dow_idx, "?")
         vix_buckets[vix_key]["total"] += 1
         vix_buckets[vix_key]["hits"] += int(correct)
         gap_buckets[gap_key]["total"] += 1
         gap_buckets[gap_key]["hits"] += int(correct)
+        dow_buckets[dow_name]["total"] += 1
+        dow_buckets[dow_name]["hits"] += int(correct)
 
         results.append(
             {
@@ -411,6 +421,7 @@ def run_backtest(days: int = 60) -> dict:
                 "correct": correct,
                 "vix_regime": vix_key,
                 "gap_regime": gap_key,
+                "dow": dow_name,
                 "signals_present": len(sigs),
             }
         )
@@ -443,6 +454,7 @@ def run_backtest(days: int = 60) -> dict:
         "regime_breakdown": {
             "vix": _attach_accuracy(vix_buckets),
             "gap": _attach_accuracy(gap_buckets),
+            "dow": _attach_accuracy(dow_buckets),
         },
         "recent_results": results[-5:],
     }

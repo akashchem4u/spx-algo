@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-05 23:30 CT
+Updated: 2026-04-06 CT
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -10,7 +10,7 @@ Purpose:
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `21/48 = 43.75%`, below the `48%` threshold
+- `python3 scripts/backtest_export.py --days 60` → `24/50 = 48.0%` ✓ (gate passes as of 2026-04-06)
 
 ---
 
@@ -23,26 +23,25 @@ Current runtime check:
 
 Residual note: the low-VIX regime is still 36% (5/14) — level-based VIX signals (Below 20, Below 15) vote bullish even in slow market declines. Not blocking, but tracked for signal calibration review.
 
-### 2. `windows_html()` does not reconstruct gap-confirmed and catalyst-confirmed override variants
+### ~~2. `windows_html()` does not reconstruct gap-confirmed and catalyst-confirmed override variants~~
+**Resolved 2026-04-05.** `app.py:2261–2275` now explicitly adds `"gap-confirmed"` and `"catalyst-confirmed"` to the ordered suffix list when hi-VIX + large-gap conditions are active. Both variants are tried before the generic `"hi-VIX"` fallback, so the most specific historical bucket is preferred.
 
-Severity:
-- Medium
+### ~~3. VIX Falling live/exporter misalignment (introduced and resolved 2026-04-06)~~
+**Resolved 2026-04-06.** When VIX Falling was changed to a 5-day trend in the exporter, the live app (`app.py:1207`) was left on the old 1-day formula, making the exporter validate a different signal than what runs live. Both are now aligned:
+- `app.py`: `VIX Falling = vix[-1] < vix[-6]`, gated by market hours
+- `backtest_export.py:175`: `VIX Falling = vix[-1] < vix[-6]`, always computed post-close
 
-Problem:
-- `window_bias_at()` can emit two override variants that `windows_html()` regime-suffix matching does not cover:
-  - `label + " (gap-confirmed→chop)"` — fires when hi-VIX + gap_confirmed + gap > threshold before 11:30
-  - `label + " (catalyst-confirmed)"` — fires when hi-VIX + bull bias + gap_catalyst_aligned
-- the suffix list in `windows_html()` checks `"hi-VIX"`, `"lo-VIX"`, `"gap-up"`, `"gap-down"`, `"gap-dn"` but not `"gap-confirmed"` or `"catalyst-confirmed"`
-- when either of these variants is the active key in `win_acc`, the lookup falls through to the first `hi-VIX` candidate instead, which may be a different override label (e.g. `hi-VIX→bear` instead of `gap-confirmed→chop`)
+The 48.0% (24/50) accuracy is therefore validating the actual live formula.
 
-Evidence:
-- `app.py:1568` — `gap-confirmed→chop` emitted here
-- `app.py:1579` — `catalyst-confirmed` emitted here
-- `app.py:2242–2267` — suffix matching list does not include these variants
+---
 
-Impact:
-- window accuracy badge can show the wrong override variant's hit rate in hi-VIX gap sessions
-- effect is narrow (only when these two specific branch conditions are active) but the badge will silently show stale/wrong accuracy numbers
+## Fragility Note
+
+The 60d gate passes at the exact floor (24/50 = 48.0%). Two weak sub-regimes remain:
+- **low-VIX**: 5/14 = 35.7% — level-based VIX signals vote bullish in slow declines
+- **gap-up**: 2/8 = 25.0% — Gap Up Day signal nudged some calls to neutral but core bearish cluster still dominates on gap-up days in high-VIX
+
+Neither is blocking. Both are tracked for next calibration pass.
 
 ---
 
