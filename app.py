@@ -210,7 +210,42 @@ except Exception:
 # Source: Federal Reserve, BLS, BEA — all published months in advance
 # format: (YYYY-MM-DD, label, type, impact)
 _ECON_CAL = [
-    # FOMC Rate Decisions (announcement is second day of 2-day meeting)
+    # 2025 FOMC Rate Decisions — required for 2yr walk-forward (Jan 2025 → Apr 2026)
+    ("2025-01-29","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-03-19","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-05-07","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-06-18","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-07-30","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-09-17","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-11-07","FOMC Rate Decision","FOMC","HIGH"),
+    ("2025-12-17","FOMC Rate Decision","FOMC","HIGH"),
+    # 2025 CPI
+    ("2025-01-15","CPI Inflation Report","CPI","HIGH"),
+    ("2025-02-12","CPI Inflation Report","CPI","HIGH"),
+    ("2025-03-12","CPI Inflation Report","CPI","HIGH"),
+    ("2025-04-10","CPI Inflation Report","CPI","HIGH"),
+    ("2025-05-13","CPI Inflation Report","CPI","HIGH"),
+    ("2025-06-11","CPI Inflation Report","CPI","HIGH"),
+    ("2025-07-15","CPI Inflation Report","CPI","HIGH"),
+    ("2025-08-12","CPI Inflation Report","CPI","HIGH"),
+    ("2025-09-10","CPI Inflation Report","CPI","HIGH"),
+    ("2025-10-15","CPI Inflation Report","CPI","HIGH"),
+    ("2025-11-13","CPI Inflation Report","CPI","HIGH"),
+    ("2025-12-10","CPI Inflation Report","CPI","HIGH"),
+    # 2025 NFP
+    ("2025-01-10","NFP Jobs Report","NFP","HIGH"),
+    ("2025-02-07","NFP Jobs Report","NFP","HIGH"),
+    ("2025-03-07","NFP Jobs Report","NFP","HIGH"),
+    ("2025-04-04","NFP Jobs Report","NFP","HIGH"),
+    ("2025-05-02","NFP Jobs Report","NFP","HIGH"),
+    ("2025-06-06","NFP Jobs Report","NFP","HIGH"),
+    ("2025-07-03","NFP Jobs Report","NFP","HIGH"),
+    ("2025-08-01","NFP Jobs Report","NFP","HIGH"),
+    ("2025-09-05","NFP Jobs Report","NFP","HIGH"),
+    ("2025-10-03","NFP Jobs Report","NFP","HIGH"),
+    ("2025-11-07","NFP Jobs Report","NFP","HIGH"),
+    ("2025-12-05","NFP Jobs Report","NFP","HIGH"),
+    # 2026 FOMC Rate Decisions (announcement is second day of 2-day meeting)
     ("2026-01-28","FOMC Rate Decision","FOMC","HIGH"),
     ("2026-03-18","FOMC Rate Decision","FOMC","HIGH"),
     ("2026-04-29","FOMC Rate Decision","FOMC","HIGH"),
