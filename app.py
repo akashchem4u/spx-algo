@@ -5245,7 +5245,7 @@ with _tab_research:
 _LEDGER_DIR  = "Codex"
 _LEDGER_FILE = os.path.join(_LEDGER_DIR, "shadow-ledger.csv")
 _LEDGER_COLS = ["date","core_ssr","live_adj_ssr","vix","gap_pts","event_flags",
-                "opex","orb_status","actual_dir","actual_pts"]
+                "opex","orb_status","gap_down_abstain","actual_dir","actual_pts"]
 
 def _ledger_read():
     """Load the shadow ledger CSV; return list of dicts."""
@@ -5310,16 +5310,17 @@ if _is_post_close:
     if _today_str not in _existing_dates:
         _today_events_str = ",".join(sorted(get_event_types_today()))
         _ledger_append({
-            "date":         _today_str,
-            "core_ssr":     str(_core_ssr),
-            "live_adj_ssr": str(score),
-            "vix":          str(vix_now),
-            "gap_pts":      str(round(live_gap, 1)),
-            "event_flags":  _today_events_str if _today_events_str else "none",
-            "opex":         "yes" if _opex_week else "no",
-            "orb_status":   _orb_status,
-            "actual_dir":   "",
-            "actual_pts":   "",
+            "date":              _today_str,
+            "core_ssr":          str(_core_ssr),
+            "live_adj_ssr":      str(score),
+            "vix":               str(vix_now),
+            "gap_pts":           str(round(live_gap, 1)),
+            "event_flags":       _today_events_str if _today_events_str else "none",
+            "opex":              "yes" if _opex_week else "no",
+            "orb_status":        _orb_status,
+            "gap_down_abstain":  "yes" if _gap_down_abstain else "no",
+            "actual_dir":        "",
+            "actual_pts":        "",
         })
 
 # ── Shadow ledger display in research tab ───────────────────────────────────
