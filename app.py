@@ -2631,6 +2631,7 @@ def compute_historical_analysis():
             "opex":  {"opex":{"h":0,"t":0},  "normal":{"h":0,"t":0}},
         }
         _base_h = 0; _base_t = 0
+        _daily_results: list[dict] = []   # per-day records for rolling window accuracy
         # Ablation: per core signal — hits with all signals vs hits without this signal
         _core_sigs = [s for s, tr in SIGNAL_TIERS.items() if tr == "core"]
         # Ablation tracks:
@@ -2665,10 +2666,20 @@ def compute_historical_analysis():
                 _bear_call = _core_sc <= 44
                 if not _bull_call and not _bear_call:
                     continue   # neutral call — no directional claim, skip
+
+                # Gap-down bear abstain: same gate as backtest_export.py and run_ablation.py.
+                # Bear calls on large-gap-down days are wrong ~68% of the time (fade-the-gap).
+                if _i > 0:
+                    _gp_daily = float(_open.iloc[_i]) - float(_close.iloc[_i - 1])
+                    if _gp_daily < -GAP_THRESHOLD and _bear_call:
+                        continue  # abstain — false-bear call on large-gap-down day
+
                 _correct = (_bull_call and _up) or (_bear_call and _dn)
 
                 _base_t += 1
                 if _correct: _base_h += 1
+                # Collect per-day results for rolling window display
+                _daily_results.append({"date": _dt_s, "correct": _correct})
 
                 # VIX regime
                 _vv = float(_vix_sl["Close"].squeeze().iloc[-1]) if not _vix_sl.empty else 20
@@ -2727,6 +2738,7 @@ def compute_historical_analysis():
             "ablation": _abl,
             "baseline_hits": _base_h,
             "baseline_total": _base_t,
+            "daily_results": _daily_results,   # list of {date, correct} for rolling windows
         }
     except Exception:
         return {}
@@ -3988,11 +4000,36 @@ with _tab_research:
             _bt_base  = int(_bt_hits / _bt_total * 100) if _bt_total else 0
             _btc      = "#4ade80" if _bt_base >= 60 else ("#f59e0b" if _bt_base >= 50 else "#f87171")
             st.markdown(
-                f'<div style="font-size:13px;color:#94a3b8;margin-bottom:12px">'
+                f'<div style="font-size:13px;color:#94a3b8;margin-bottom:8px">'
                 f'Overall core-SSR directional accuracy (2yr): '
                 f'<b style="color:{_btc};font-size:16px">{_bt_base}%</b>'
                 f' &nbsp;·&nbsp; n={_bt_total} directional calls</div>',
                 unsafe_allow_html=True)
+
+            # Rolling window accuracy — sliced from per-day results
+            _dr = _ha.get("daily_results", [])
+            if _dr:
+                from datetime import date as _date_cls, timedelta as _td
+                _today_d = _date_cls.today()
+                _win_rows = ""
+                for _days, _label in [(30,"30d"), (60,"60d"), (90,"90d"), (180,"6mo")]:
+                    _cutoff = (_today_d - _td(days=_days)).isoformat()
+                    _w = [r for r in _dr if r["date"] >= _cutoff]
+                    if len(_w) >= 5:
+                        _wh = sum(1 for r in _w if r["correct"])
+                        _wt = len(_w)
+                        _wp = int(_wh / _wt * 100)
+                        _wc = "#4ade80" if _wp >= 60 else ("#f59e0b" if _wp >= 48 else "#f87171")
+                        _win_rows += (f'<td style="padding:3px 12px;text-align:center">'
+                                      f'<div style="font-size:10px;color:#64748b">{_label}</div>'
+                                      f'<div style="font-size:16px;font-weight:700;color:{_wc}">{_wp}%</div>'
+                                      f'<div style="font-size:10px;color:#475569">{_wh}/{_wt}</div></td>')
+                if _win_rows:
+                    st.markdown(
+                        f'<div style="margin-bottom:14px">'
+                        f'<div style="font-size:10px;color:#64748b;letter-spacing:1px;margin-bottom:4px">ROLLING WINDOW ACCURACY</div>'
+                        f'<table style="border-collapse:collapse"><tr>{_win_rows}</tr></table></div>',
+                        unsafe_allow_html=True)
 
             def _regime_table(title, buckets, labels):
                 rows = ""
