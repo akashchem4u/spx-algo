@@ -66,9 +66,10 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
 
 CORE_SIGNALS: list[str] = [s for grp in SIGNAL_GROUPS.values() for s in grp]
 
-# Economic calendar (HIGH-impact days only — FOMC, CPI, NFP for 2025 and 2026)
+# Economic calendar (HIGH-impact days — FOMC, CPI, NFP, PCE for 2025 and 2026)
 # 2yr walk-forward covers 2025-01-21 → 2026-04-01, so 2025 dates are required for
 # accurate event-day regime classification; previously only 2026 dates were included.
+# PCE added 2026-04-06: BEA Personal Income & Outlays (Fed's preferred inflation gauge).
 _ECON_DATES: set[str] = {
     # 2025 FOMC
     "2025-01-29","2025-03-19","2025-05-07","2025-06-18",
@@ -81,6 +82,10 @@ _ECON_DATES: set[str] = {
     "2025-01-10","2025-02-07","2025-03-07","2025-04-04","2025-05-02",
     "2025-06-06","2025-07-03","2025-08-01","2025-09-05","2025-10-03",
     "2025-11-07","2025-12-05",
+    # 2025 PCE
+    "2025-01-31","2025-02-28","2025-03-28","2025-04-25","2025-05-30",
+    "2025-06-27","2025-07-25","2025-08-29","2025-09-26","2025-10-31",
+    "2025-11-26","2025-12-19",
     # 2026 FOMC
     "2026-01-28","2026-03-18","2026-04-29","2026-06-10","2026-07-29",
     "2026-09-16","2026-11-04","2026-12-16",
@@ -92,6 +97,8 @@ _ECON_DATES: set[str] = {
     "2026-01-09","2026-02-06","2026-03-06","2026-04-03","2026-05-01",
     "2026-06-05","2026-07-10","2026-08-07","2026-09-04","2026-10-02",
     "2026-11-06","2026-12-04",
+    # 2026 PCE
+    "2026-01-30","2026-02-27","2026-03-27","2026-04-24","2026-05-29","2026-06-26",
 }
 
 
@@ -516,7 +523,7 @@ def build_report(res: dict) -> str:
     lines.append("")
 
     # Event
-    lines.append("### Event Days (FOMC/CPI/NFP)")
+    lines.append("### Event Days (FOMC/CPI/NFP/PCE)")
     lines.append("")
     lines.append("| Type | Accuracy | Calls |")
     lines.append("|------|----------|-------|")

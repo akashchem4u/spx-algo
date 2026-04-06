@@ -1,6 +1,6 @@
 # Ablation Report — SPX Algo Core SSR
 
-Generated: `2026-04-06T08:16:50Z`  
+Generated: `2026-04-06T08:39:44Z`  
 Walk-forward period: `2025-01-21` → `2026-04-01`  
 Total directional calls evaluated: `212`  
 **Baseline accuracy: 52.8%  (112/212)**
@@ -35,12 +35,12 @@ Total directional calls evaluated: `212`
 | Thu | 44.2% (19/43) | 43 |
 | Fri | 50.0% (22/44) | 44 |
 
-### Event Days (FOMC/CPI/NFP)
+### Event Days (FOMC/CPI/NFP/PCE)
 
 | Type | Accuracy | Calls |
 |------|----------|-------|
-| event | 57.1% (16/28) | 28 |
-| normal | 52.2% (96/184) | 184 |
+| event | 59.0% (23/39) | 39 |
+| normal | 51.4% (89/173) | 173 |
 
 ### OpEx Week
 

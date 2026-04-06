@@ -295,9 +295,29 @@ _ECON_CAL = [
     ("2026-04-29","GDP Advance Estimate","GDP","MED"),
     ("2026-07-29","GDP Advance Estimate","GDP","MED"),
     ("2026-10-28","GDP Advance Estimate","GDP","MED"),
+    # PCE Core Inflation — BEA Personal Income & Outlays, Fed's preferred inflation gauge
+    # Released on the last business Friday of the month (moved earlier in Nov/Dec for holidays)
+    ("2025-01-31","PCE Inflation Report","PCE","HIGH"),
+    ("2025-02-28","PCE Inflation Report","PCE","HIGH"),
+    ("2025-03-28","PCE Inflation Report","PCE","HIGH"),
+    ("2025-04-25","PCE Inflation Report","PCE","HIGH"),
+    ("2025-05-30","PCE Inflation Report","PCE","HIGH"),
+    ("2025-06-27","PCE Inflation Report","PCE","HIGH"),
+    ("2025-07-25","PCE Inflation Report","PCE","HIGH"),
+    ("2025-08-29","PCE Inflation Report","PCE","HIGH"),
+    ("2025-09-26","PCE Inflation Report","PCE","HIGH"),
+    ("2025-10-31","PCE Inflation Report","PCE","HIGH"),
+    ("2025-11-26","PCE Inflation Report","PCE","HIGH"),
+    ("2025-12-19","PCE Inflation Report","PCE","HIGH"),
+    ("2026-01-30","PCE Inflation Report","PCE","HIGH"),
+    ("2026-02-27","PCE Inflation Report","PCE","HIGH"),
+    ("2026-03-27","PCE Inflation Report","PCE","HIGH"),
+    ("2026-04-24","PCE Inflation Report","PCE","HIGH"),
+    ("2026-05-29","PCE Inflation Report","PCE","HIGH"),
+    ("2026-06-26","PCE Inflation Report","PCE","HIGH"),
 ]
 
-_EVENT_ICON  = {"FOMC":"🏦","CPI":"📊","NFP":"👷","PPI":"🏭","GDP":"📈"}
+_EVENT_ICON  = {"FOMC":"🏦","CPI":"📊","NFP":"👷","PPI":"🏭","GDP":"📈","PCE":"🧾"}
 _EVENT_COLOR = {"HIGH":"#f87171","MED":"#f59e0b"}
 
 # ── Causal-Chain News Impact Taxonomy ────────────────────────────────────────

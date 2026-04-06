@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT (rev 6)
+Updated: 2026-04-06 CT (rev 7)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -11,10 +11,11 @@ Purpose:
 - **2026-04-06 rev 4**: gap-down abstain gate + pruning round 3 — 2yr baseline 45.5% → 49.3% (+3.8pp)
 - **2026-04-06 rev 5**: ABLATION-PRUNE-06 (RSI Above 50 removed) — 2yr baseline 52.6% → 54.0% (+1.4pp)
 - **2026-04-06 rev 6**: VVIX-01 — added VVIX Below 100 to Volatility group (23+1opt); 60d +2.9pp (51.6%→54.5%)
+- **2026-04-06 rev 7**: PCE-CAL-01 — added 18 PCE release dates to _ECON_CAL + run_ablation._ECON_DATES; event day count 28→39, accuracy 57.1%→59.0% in ablation regime breakdown
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `18/33 = 54.5%` ✓ (gate passes as of 2026-04-06 rev 6)
+- `python3 scripts/backtest_export.py --days 60` → `18/33 = 54.5%` ✓ (gate passes as of 2026-04-06 rev 6; no scoring changes in rev 7)
 
 ---
 
@@ -143,6 +144,48 @@ Kept as `"display"` tier. Momentum group now: Higher Close (1d), Higher Close (5
 - Bear threshold tightening (score ≤ 40 instead of ≤ 44): 60d regressed from 51.6% to 48.3% — marginal 42-44 bear calls are correct in current regime
 - Thursday abstain gate: Reduces coverage by 23%, improvement is regime-specific
 - Global bull threshold raise (≥56, ≥57, ≥58): all show 60d regression — marginal 55-56 bull calls are currently correct
+
+---
+
+## Calendar Addition: PCE-CAL-01 (2026-04-06 rev 7)
+
+### PCE Release Dates added to _ECON_CAL and run_ablation._ECON_DATES
+
+Added 18 PCE (Personal Consumption Expenditures) release dates: Jan–Dec 2025 + Jan–Jun 2026.
+
+**Mechanism**: PCE Core Deflator is the Fed's preferred inflation gauge. PCE release days carry genuine directional uncertainty (upside = hawkish Fed repricing, downside = rate-cut catalyst). The BEA releases PCE as part of the "Personal Income and Outlays" report, typically the last business Friday of the month (moved to mid-month in Nov/Dec for holidays).
+
+**Impact**: Event-day classification in ablation improved from 28 to 39 calls; event-day accuracy from 57.1% to 59.0% in the regime breakdown. No scoring changes — editorial/display improvement only.
+
+---
+
+## Signal Exploration Log — 2026-04-06 session 2 (all rejected)
+
+Exhaustive probe of additional signal candidates after VVIX-01 commit. None passed the ≥0pp threshold on the 2yr walk-forward; all rejected.
+
+| Candidate | Group | 2yr Delta | Notes |
+|-----------|-------|-----------|-------|
+| `^CPC PCR` (daily close) | Options | n/a | ^CPC delisted/404 — not available historically |
+| `^SKEW Below 130` | Volatility | -2.3pp | Fires only 3.2% of bars — too rare to be selective |
+| `Sectors Advancing >50%` | Breadth | -0.2pp | Fires 55% of bars — dilutes Breadth group without precision |
+| `Sectors Majority Up ≥7/11` | Breadth | -0.4pp | Fires 45% — slight drag, no edge |
+| `HYG Above 50 SMA` (credit spread proxy) | Macro | -2.4pp | Activating Macro group redistributes weights unfavorably; fires 76% |
+| `HYG 5d Trending` | Macro | -1.1pp | Same redistribution issue; fires 64% |
+| `TNX > IRX` (yield curve) | Macro | -3.0pp | Strong drag; fires 65% |
+| `HYG + YC combo` | Macro | -2.1pp | Combined activation still hurts |
+| Gap Up Day removal (ABLATION-PRUNE-07 test) | Context | -2.8pp | **Gap Up Day confirmed helpful in current regime** — do not prune despite 2yr ablation showing +1.1% drag |
+| `VIX Term Contango` (VIX < VIX3M) | Volatility | -0.2pp | Fires 90% of bars — near-constant bullish bias, no selectivity |
+| `Vol Risk Premium` (VIX > 20d realized vol) | Volatility | +0.1pp | Fires 89% — near-constant, no edge |
+| `QQQ > SPY 5d` | Momentum | +0.1pp | Fires 82% — no selectivity |
+| `QQQ > SPY 20d` | Momentum | +0.1pp | Fires 82% — same |
+| `CMF Positive` (Chaikin Money Flow) | Breadth | +0.7pp | Fires 88% — ^GSPC volume unreliable (index, not ETF); spurious |
+| `Above Weekly Pivot` | Position | -0.1pp | Fires 99% — constant, no edge |
+
+**Key learnings from this exploration round:**
+1. **Macro group activation always hurts**: Any signal that activates the Macro group (currently dead at 0% coverage) hurts because it redistributes weight from effective groups. Confirmed for HYG, TLT, TNX/IRX. Macro group should remain dead in the backtest context.
+2. **High fire-rate signals are useless**: Signals firing >80% of bars add near-constant bias without selectivity. These include Vol Risk Premium (89%), VIX Term Contango (90%), Weekly Pivot (99%).
+3. **Gap Up Day ablation delta is regime-specific**: The 2yr ablation shows +1.1% drag but the 60d probe shows -2.8pp hurt if removed. Gap Up Day is helping in the current tariff-volatility regime. 60d gate is canonical.
+4. **Data window shift pattern continues**: The 2yr ablation is anchored to the same walk-forward window (2025-01-21 → 2026-04-01); direct probes that use a rolling 2y window show a shifted higher baseline (~58.8% vs 52.8%). Always use `run_ablation.py` for official deltas.
 
 ---
 
