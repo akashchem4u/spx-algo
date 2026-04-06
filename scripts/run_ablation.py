@@ -42,8 +42,9 @@ SECTOR_TICKERS = ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","
 SIGNAL_GROUPS: dict[str, list[str]] = {
     "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
     # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross
-    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50",
-                   "MACD Bullish", "RSI Strong Trend"],
+    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "MACD Bullish", "RSI Strong Trend"],
+    # RSI Above 50 removed: ablation delta +1.0% drag (2yr +1.4pp post-prune).  False-bullish
+    # votes on counter-trend bounces that fail; RSI Strong Trend (>60) covers the useful content.
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15", "VIX 1d Down"],
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],

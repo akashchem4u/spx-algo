@@ -40,13 +40,17 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 23
+EXPECTED_CORE_SIGNAL_COUNT = 22
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
     "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
     # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross by several sessions,
     # propping up a bullish Trend-group vote during the early phase of bear markets.
-    "Momentum": ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish", "RSI Strong Trend"],
+    "Momentum": ["Higher Close (1d)", "Higher Close (5d)", "MACD Bullish", "RSI Strong Trend"],
+    # RSI Above 50 removed: ablation delta +1.0% drag (2yr +1.4pp post-prune).  In bear/choppy
+    # markets RSI bounces above 50 briefly on counter-trend days that subsequently fail; this
+    # adds a false-bullish Momentum vote on exactly the days the model is most likely to be wrong.
+    # RSI Strong Trend (RSI > 60) covers genuine sustained-momentum content with better precision.
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 1d Down"],
     "Breadth": ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
     "Extremes": ["Stoch Bullish"],

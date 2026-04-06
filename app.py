@@ -79,8 +79,10 @@ SIGNAL_GROUPS = {
     "Trend":      ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
                    # 20 SMA > 50 SMA removed: ablation delta +0.5% — lags the death cross, propping up
                    # a bullish Trend-group vote during the early phase of bear markets
-    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish",
+    "Momentum":   ["Higher Close (1d)", "Higher Close (5d)", "MACD Bullish",
                    "RSI Strong Trend"],          # RSI 60-75: strong momentum, not extreme
+                   # RSI Above 50 removed: ablation delta +1.0% drag (2yr +1.4pp post-prune) — false-bullish
+                   # votes on counter-trend bounces that fail; RSI Strong Trend (>60) covers the useful content
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15",              # ultra-calm tier for gradient
                    "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
@@ -124,14 +126,14 @@ SIGNAL_GROUPS = {
 # Core SSR = score from core signals only → directly comparable to backtest accuracy numbers
 # Live-Adj SSR = Core + session/live overlay → richer but only partially validated
 SIGNAL_TIERS = {
-    # ── core (23 active scoring signals) — backtestable from closed daily bars ─
+    # ── core (22 active scoring signals) — backtestable from closed daily bars ─
     "Above 20 SMA":           "core",
     "Above 50 SMA":           "core",
     "Above 200 SMA":          "core",
     "20 SMA > 50 SMA":        "display",   # computed for display; removed from scoring (ablation +0.5% drag)
     "Higher Close (1d)":      "core",
     "Higher Close (5d)":      "core",
-    "RSI Above 50":           "core",
+    "RSI Above 50":           "display",  # removed from scoring (ABLATION-PRUNE-06, +1.0% drag, 2yr +1.4pp)
     "MACD Bullish":           "core",
     "RSI Strong Trend":       "core",
     "VIX Below 20":           "core",
@@ -3047,7 +3049,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 23+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 22+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):
