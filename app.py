@@ -2941,6 +2941,12 @@ if live.get("es_mom_30m_pct") is not None:
     signals["ES Pre-Market Momentum Bear"] = int(_ep < -0.05)
 
 # ── Drift dampening: neutralize persistently-wrong signals before re-score ────
+# ── Core SSR: snapshot BEFORE drift dampening (binary 0/1 values, equal weights) ──────────
+# Drift dampening sets some signals to 0.5 (abstain). Core SSR must use the original binary
+# values so it stays directly comparable to the equal-weight static backtest (backtest_export.py
+# always operates on binary signals). Live-Adj SSR uses the dampened values below.
+_core_signals_binary = {k: v for k, v in signals.items() if SIGNAL_TIERS.get(k) == "core"}
+
 # _signal_drift_check() is defined below; its @st.cache_data wrapper means
 # this call is near-free after the first invocation in this session (1h TTL).
 # Drifting signals are set to 0.5 (abstain) so they stop pulling the group
@@ -2979,24 +2985,20 @@ _news_nudge  = max(-_nudge_cap, min(_nudge_cap, int(round(_news_comp * _nudge_ca
 score        = max(0, min(100, _weighted_base + _news_nudge))
 # ── end nudge ───────────────────────────────────────────────────────────────
 
-# ── Core SSR: weighted score from backtestable closed-bar signals only ───────
-# Excludes session context (Gap/ATR Normal) and live-only signals (PCR, macro, overnight).
-# NOTE ON MODEL ALIGNMENT: the standalone backtest exporter (scripts/backtest_export.py)
-# validates an equal-weight static clone of these 22+1opt signals.  The live Core SSR below
-# uses dynamic per-group weights (compute_group_weights) and drift dampening applied
-# above — meaning the two paths can diverge in trending regimes.  Do not treat
-# exporter accuracy numbers as a full validation of this dynamically-weighted score.
-# Live-Adj SSR = score (above) includes all signals for the richest real-time estimate.
+# ── Core SSR: equal-weight score from pre-dampening binary core signals ──────
+# Uses _core_signals_binary (snapshotted before drift dampening) so this score
+# matches the equal-weight static backtest in backtest_export.py exactly.
+# Excludes session (Gap/ATR Normal) and live-only signals.
+# NOTE: Live-Adj SSR (score, above) uses the dampened signals + dynamic group weights +
+# news nudge for the richest real-time estimate — it may diverge from Core SSR.
 _core_wg_s, _core_wg_w = [], []
 for _gn, _gs in SIGNAL_GROUPS.items():
-    _cpr = [signals.get(k, 0) for k in _gs if SIGNAL_TIERS.get(k) == "core" and k in signals]
+    _cpr = [_core_signals_binary.get(k) for k in _gs
+            if SIGNAL_TIERS.get(k) == "core" and k in _core_signals_binary]
     if _cpr:
-        # Equal weights (1.0) for all groups so Core SSR is directly comparable to the
-        # equal_weight_static_core exporter accuracy numbers (peer review finding #3).
-        # Live-Adj SSR (score) still uses dynamic _grp_weights + news nudge for richer real-time use.
-        _cw = 1.0
-        _core_wg_s.append((sum(_cpr) / len(_cpr)) * _cw)
-        _core_wg_w.append(_cw)
+        # Equal weights (1.0) — matches backtest_export.py equal_weight_static_core path.
+        _core_wg_s.append(sum(_cpr) / len(_cpr))
+        _core_wg_w.append(1.0)
 _core_ssr      = round(sum(_core_wg_s) / sum(_core_wg_w) * 100) if _core_wg_s else _weighted_base
 _live_adj_delta = score - _core_ssr   # positive = live overlay is bullish; negative = bearish overlay
 
