@@ -91,6 +91,7 @@ SIGNAL_GROUPS = {
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
                    "VIX No Spike",               # no 3-day VIX surge = calm context (inverted: 0 when spike)
+                   "Gap Up Day",                 # open > prev close + GAP_THRESHOLD = large positive gap
                    "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
                    "Overnight Upper Third",       # ES in top 1/3 of overnight range: strong bull lean
                    "Overnight Range Compressed",  # tight overnight range = breakout pending
@@ -146,6 +147,7 @@ SIGNAL_TIERS = {
     "Above Prior Day High":   "core",
     "Above Pivot":            "core",
     "Above 5d High":          "core",
+    "Gap Up Day":             "core",     # large positive gap, computable from daily OHLC Open
     # ── session (1 signal) — valid only after today's open price is known ────
     "Gap/ATR Normal":         "session",
     # ── live (7 signals) — real-time feeds; not available in day backtest ────
@@ -1257,6 +1259,17 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     if _signed_gap_atr is not None:
         sigs["Gap/ATR Normal"] = int(0.0 <= _signed_gap_atr < 0.5)
 
+    # Gap Up Day: large positive opening gap from daily OHLC Open.
+    # Fires = 1 when open > prev_close + GAP_THRESHOLD (>= 25 pts).
+    # Unlike Gap/ATR Normal (which fires for SMALL gaps), this fires for LARGE gap-ups.
+    # Core signal: computable from daily OHLC when Open is available.
+    # Only set when Open data is present — avoids biasing Context group when gap is unknown.
+    if "Open" in spx.columns and len(atr_v.dropna()) >= 14:
+        _open_s_gu = spx["Open"].squeeze()
+        if isinstance(_open_s_gu, pd.DataFrame): _open_s_gu = _open_s_gu.iloc[:, 0]
+        if len(_open_s_gu) >= 2:
+            sigs["Gap Up Day"] = int(_day_gap_pts > GAP_THRESHOLD)
+
     # ── Breadth group ────────────────────────────────────────────────────────
     # Volume directional: requires BOTH above-average volume AND a positive close
     # (accumulation = institutions buying into strength).  Raw high-volume alone
@@ -2245,13 +2258,21 @@ def windows_html(now_hhmm, win_acc=None, cur_vix=0.0, cur_gap=0.0):
             if _candidates:
                 # Build ordered list of regime suffixes to try — most specific first.
                 # Covers all labels emitted by window_bias_at():
-                #   hi-VIX→bear/chop/reversal risk/gap-fade bounce/catalyst-confirmed
+                #   gap-confirmed→chop  (hi-VIX + gap_confirmed + large gap-up, before 11:30)
+                #   catalyst-confirmed  (hi-VIX + bull bias + gap_catalyst_aligned)
+                #   hi-VIX→bear/chop/reversal risk/gap-dn bounce zone
                 #   lo-VIX→chop  (VIX < 18 calm regime)
                 #   gap-up→chop, gap-down→chop, gap-dn bounce zone
-                # Previously only checked "hi-VIX" and "vix-calm" (which never matched
-                # since the actual suffix is "lo-VIX") — peer review residual finding #2.
+                # The two gap-specific hi-VIX variants are listed before the generic "hi-VIX"
+                # bucket so the most specific historical bucket is preferred when available.
                 _sfxs = []
                 if cur_vix > VIX_FEAR_THRESHOLD:
+                    # Prepend the two hi-VIX+gap variants that window_bias_at() can emit.
+                    # These are mutually exclusive (chop vs bull), so at most one will match
+                    # any given candidate set. Order: gap-confirmed first (chop), then
+                    # catalyst-confirmed (bull), then fall through to generic hi-VIX.
+                    if cur_gap > GAP_THRESHOLD:
+                        _sfxs.extend(["gap-confirmed", "catalyst-confirmed"])
                     _sfxs.append("hi-VIX")
                 elif 0 < cur_vix < VIX_CALM_THRESHOLD:
                     _sfxs.append("lo-VIX")
@@ -2998,7 +3019,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 28 core signals · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 29 core signals · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):

@@ -40,7 +40,7 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 28
+EXPECTED_CORE_SIGNAL_COUNT = 29
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
     "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA", "20 SMA > 50 SMA"],
@@ -50,7 +50,7 @@ SIGNAL_GROUPS = {
     "Extremes": ["Stoch Bullish", "RSI Trend Zone"],
     "Options": ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro": ["Yield Curve Positive", "Credit Spread Calm"],
-    "Context": ["Gap/ATR Normal", "VIX No Spike"],
+    "Context": ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day"],
     "Position": ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid", "Above Prior Day High", "Above Pivot", "Above 5d High"],
 }
 
@@ -172,7 +172,14 @@ def _compute_signals_fast(
         vv = _safe_float(vix_c, default=20.0)
         sigs["VIX Below 20"] = int(vv < 20)
         sigs["VIX Below 15"] = int(vv < 15)
-        sigs["VIX Falling"] = int(len(vix_c) >= 2 and vv < _safe_float(vix_c, -2))
+        # VIX Falling: 5-day trend — VIX today below VIX 5 sessions ago.
+        # Captures sustained fear-unwind over a multi-day window and is genuinely
+        # independent from the 1-day version below.  In the live app VIX Falling
+        # has a market-open gate (disabled pre/post session), which collapses to a
+        # 1-day comparison in the exporter's post-close context.  Using a 5-day
+        # horizon here gives the Volatility group two distinct time-scale signals.
+        sigs["VIX Falling"] = int(len(vix_c) >= 6 and vv < _safe_float(vix_c, -6))
+        # VIX 1d Down: single-session VIX decline; fires regardless of market hours.
         sigs["VIX 1d Down"] = int(len(vix_c) >= 2 and vv < _safe_float(vix_c, -2))
         if len(vix_c) >= 4:
             v3d = _safe_float(vix_c, -4, default=vv)
@@ -212,6 +219,17 @@ def _compute_signals_fast(
         sigs["Sector Breadth ≥ 50%"] = int((above / total_sectors) >= 0.5)
         sigs["Sector Breadth ≥ 70%"] = int((above / total_sectors) >= 0.7)
         sigs["Sector Breadth ≥ 85%"] = int((above / total_sectors) >= 0.85)
+
+    # Gap direction — large positive opening gap from daily OHLC.
+    # Fires = 1 when today's open is more than GAP_THRESHOLD pts above yesterday's close.
+    # Addresses the gap-up regime accuracy gap: static core signals (SMA, RSI, breadth)
+    # are all lagging and stay bearish during violent gap-up bounces in high-VIX markets.
+    # This gives the Context group a forward-looking nudge on strong gap-up sessions.
+    if "Open" in spx_sl.columns:
+        open_s = _squeeze(spx_sl, "Open")
+        if len(open_s) >= 2 and len(close) >= 2:
+            _gap_pts = _safe_float(open_s) - _safe_float(close, -2)
+            sigs["Gap Up Day"] = int(_gap_pts > GAP_THRESHOLD)
 
     # Extremes
     sigs["Stoch Bullish"] = int(_safe_float(stoch_k) > _safe_float(stoch_d))
