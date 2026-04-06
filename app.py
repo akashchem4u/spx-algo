@@ -5483,26 +5483,32 @@ with _tab_research:
             except Exception:
                 pass
             _recent = _ledger_rows[-30:][::-1]   # last 30, newest first
-            # Exclude flat days and neutral SSR from accuracy calculation.
-            # Only measure directional calls (SSR ≥55 or ≤44) on directional outcomes (bull/bear).
+            # Exclude flat days, neutral SSR, and gap-down abstain days from accuracy.
+            # Only measure directional calls (SSR ≥55 or ≤44) on directional outcomes.
+            # gap_down_abstain="yes" means we explicitly did NOT make the bear call
+            # even though score ≤44 — excluding these prevents false-bear miscount.
+            def _is_directional_call(r):
+                if r.get("gap_down_abstain", "no") == "yes":
+                    return False   # abstained — not a real call
+                sc = int(r.get("live_adj_ssr", 50))
+                return sc >= 55 or sc <= 44
             _hits_c = sum(1 for r in _recent
                           if r.get("actual_dir","").strip()
                           and r["actual_dir"] in ("bull","bear")
+                          and _is_directional_call(r)
                           and ((r["actual_dir"] == "bull" and int(r.get("live_adj_ssr",50)) >= 55)
                                or (r["actual_dir"] == "bear" and int(r.get("live_adj_ssr",50)) <= 44)))
             _tot_known = sum(1 for r in _recent
                              if r.get("actual_dir","").strip()
                              and r["actual_dir"] in ("bull","bear")
-                             and (int(r.get("live_adj_ssr",50)) >= 55
-                                  or int(r.get("live_adj_ssr",50)) <= 44))
+                             and _is_directional_call(r))
             _ldg_acc   = int(_hits_c / _tot_known * 100) if _tot_known else 0
             _ldg_c     = "#4ade80" if _ldg_acc >= 60 else ("#f59e0b" if _ldg_acc >= 45 else "#f87171")
             # Extra breakdown counts
             _flat_count    = sum(1 for r in _recent if r.get("actual_dir","") == "flat")
             _neutral_count = sum(1 for r in _recent
                                  if r.get("actual_dir","") in ("bull","bear")
-                                 and not (int(r.get("live_adj_ssr",50)) >= 55
-                                          or int(r.get("live_adj_ssr",50)) <= 44))
+                                 and not _is_directional_call(r))
             if _tot_known:
                 st.markdown(
                     f'<div style="font-size:13px;color:#94a3b8;margin-bottom:6px">'
