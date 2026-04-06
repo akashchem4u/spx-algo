@@ -354,6 +354,7 @@ def run_ablation(verbose: bool = False) -> dict:
         "dow":   {d: [0,0] for d in range(5)},
         "event": {"event":[0,0], "normal":[0,0]},
         "opex":  {"opex": [0,0], "normal":[0,0]},
+        "opex_dow": {f"opex_{d}": [0,0] for d in ["Mon","Tue","Wed","Thu","Fri"]},
     }
     base_h = 0
     base_t = 0
@@ -425,6 +426,14 @@ def run_ablation(verbose: bool = False) -> dict:
             ok = "opex" if _is_opex_week(dt) else "normal"
             _reg["opex"][ok][1] += 1
             if correct: _reg["opex"][ok][0] += 1
+
+            # OpEx day-of-week sub-breakdown (opex weeks only)
+            if ok == "opex":
+                _dow_names = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri"}
+                _opex_dow_key = f"opex_{_dow_names.get(wd, 'Mon')}"
+                if _opex_dow_key in _reg["opex_dow"]:
+                    _reg["opex_dow"][_opex_dow_key][1] += 1
+                    if correct: _reg["opex_dow"][_opex_dow_key][0] += 1
 
             # Signal ablation
             for sig in CORE_SIGNALS:
@@ -541,6 +550,16 @@ def build_report(res: dict) -> str:
     for k in ["opex","normal"]:
         h, t = reg["opex"][k]
         lines.append(f"| {k} | {_pct(h,t)} | {t} |")
+    lines.append("")
+
+    # OpEx DOW sub-breakdown
+    lines.append("### OpEx Day-of-Week (OpEx weeks only)")
+    lines.append("")
+    lines.append("| Day | Accuracy | Calls |")
+    lines.append("|-----|----------|-------|")
+    for dname in ["Mon","Tue","Wed","Thu","Fri"]:
+        h, t = reg["opex_dow"].get(f"opex_{dname}", [0,0])
+        lines.append(f"| {dname} | {_pct(h,t)} | {t} |")
     lines.append("")
 
     # ── Signal ablation ───────────────────────────────────────────────────────
