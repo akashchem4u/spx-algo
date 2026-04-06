@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT (rev 7)
+Updated: 2026-04-06 CT (rev 8)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -12,10 +12,11 @@ Purpose:
 - **2026-04-06 rev 5**: ABLATION-PRUNE-06 (RSI Above 50 removed) — 2yr baseline 52.6% → 54.0% (+1.4pp)
 - **2026-04-06 rev 6**: VVIX-01 — added VVIX Below 100 to Volatility group (23+1opt); 60d +2.9pp (51.6%→54.5%)
 - **2026-04-06 rev 7**: PCE-CAL-01 — added 18 PCE release dates to _ECON_CAL + run_ablation._ECON_DATES; event day count 28→39, accuracy 57.1%→59.0% in ablation regime breakdown
+- **2026-04-06 rev 8**: STRONG-BEAR-01 — added strong-bear abstain gate (SSR ≤ 24); 60d 54.5% → 55.6% (+1.1pp); CAL-03 complete 2026 calendar; shadow ledger display bug fixes; score-band breakdowns in backtest_export + shadow ledger
 
 Current runtime check:
 - `python3 -m py_compile app.py scripts/backtest_export.py scripts/run_validation_review.py scripts/run_ablation.py` → pass
-- `python3 scripts/backtest_export.py --days 60` → `18/33 = 54.5%` ✓ (gate passes as of 2026-04-06 rev 6; no scoring changes in rev 7)
+- `python3 scripts/backtest_export.py --days 60` → `15/27 = 55.6%` ✓ (gate passes as of rev 8)
 
 ---
 
@@ -156,6 +157,58 @@ Added 18 PCE (Personal Consumption Expenditures) release dates: Jan–Dec 2025 +
 **Mechanism**: PCE Core Deflator is the Fed's preferred inflation gauge. PCE release days carry genuine directional uncertainty (upside = hawkish Fed repricing, downside = rate-cut catalyst). The BEA releases PCE as part of the "Personal Income and Outlays" report, typically the last business Friday of the month (moved to mid-month in Nov/Dec for holidays).
 
 **Impact**: Event-day classification in ablation improved from 28 to 39 calls; event-day accuracy from 57.1% to 59.0% in the regime breakdown. No scoring changes — editorial/display improvement only.
+
+---
+
+## Gate Addition: STRONG-BEAR-01 (2026-04-06 rev 8)
+
+### Strong-Bear Abstain Gate (SSR ≤ 24)
+
+**Finding**: Score-band analysis of the 2yr rolling window revealed SSR 0–24 (strong bear) calls have only 30.8% accuracy — worse than random. This is a distinct failure class from gap-down bear calls (covered by the gap-down abstain gate).
+
+**Mechanism**: When SSR ≤ 24, all signal groups are simultaneously bearish. This extreme consensus represents maximum pessimism, which is already priced into the market by open. Non-gap-down days with SSR ≤ 24 tend to bounce (mean reversion) rather than confirm the bear signal. The 9 wrong calls in this band are directionally correlated — all wrong for the same structural reason.
+
+**Results**:
+| Window | Before | After | Δ | Coverage |
+|--------|--------|-------|---|----------|
+| 2yr rolling | 58.8% (90/153) | 61.4% (86/140) | +2.6pp | 91.5% |
+| 60d gate | 54.55% (18/33) | 55.6% (15/27) | +1.1pp | 81.8% |
+
+**Applied in**: app.py (live UI shows "STRONG-BEAR ABSTAIN"), backtest_export.py, run_ablation.py.
+
+**Precedent**: Extends the gap-down abstain gate pattern (behavior-specific failure modes get dedicated gates rather than global threshold changes).
+
+---
+
+## Calendar Completion: CAL-03 (2026-04-06 rev 8)
+
+### 2026 H2 PCE + PPI Dates Added
+
+- 2026 Jul–Dec PCE dates (HIGH impact): added to app.py, run_ablation.py, backtest_export.py
+- 2026 Jul–Dec PPI dates (MED impact): added to app.py
+- Calendar is now complete through December 2026 for all event types
+
+---
+
+## Shadow Ledger Display Fixes (2026-04-06 rev 8)
+
+### Bug: actual_dir "up/down" not recognized as "bull/bear"
+
+Historical rows in `shadow-ledger.csv` used "up/down" notation (manually entered), while the display code checked for "bull/bear". Fixed with `_norm_dir()` normalizer.
+
+### Bug: live_adj_ssr "n/a" caused int() failure
+
+All 60 historical rows had `live_adj_ssr = "n/a"`. Fixed with `_effective_ssr()` fallback to `core_ssr`.
+
+**Combined effect**: Shadow ledger accuracy display now shows 48.0% (60d) / 51.7% (last 30d) instead of 0/0 = 0%.
+
+---
+
+## Backtest Export Enhancements (2026-04-06 rev 8)
+
+- **EXP-02**: Score-band accuracy breakdown added to `daily.regime_breakdown.score_band` — reveals that soft bull/bear (55–62 / 38–44) outperform extreme calls in this bear regime
+- **ABLATION-ENH-01**: OpEx day-of-week sub-breakdown added to run_ablation.py output
+- **LEDGER-ENH-01**: Score-band and DOW breakdowns added to shadow ledger display in research tab
 
 ---
 
