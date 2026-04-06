@@ -304,6 +304,13 @@ _ECON_CAL = [
     ("2026-04-11","PPI Report","PPI","MED"),
     ("2026-05-14","PPI Report","PPI","MED"),
     ("2026-06-11","PPI Report","PPI","MED"),
+    # 2026 PPI H2 (day after each month's CPI release)
+    ("2026-07-16","PPI Report","PPI","MED"),
+    ("2026-08-13","PPI Report","PPI","MED"),
+    ("2026-09-11","PPI Report","PPI","MED"),
+    ("2026-10-15","PPI Report","PPI","MED"),
+    ("2026-11-13","PPI Report","PPI","MED"),
+    ("2026-12-11","PPI Report","PPI","MED"),
     # GDP Advance Estimate (quarterly: Jan/Apr/Jul/Oct — advance estimate, ~4 weeks after quarter end)
     # 2025 GDP advance estimates
     ("2025-01-30","GDP Advance Estimate","GDP","MED"),
@@ -335,6 +342,13 @@ _ECON_CAL = [
     ("2026-04-24","PCE Inflation Report","PCE","HIGH"),
     ("2026-05-29","PCE Inflation Report","PCE","HIGH"),
     ("2026-06-26","PCE Inflation Report","PCE","HIGH"),
+    # 2026 PCE H2 (last business Friday of month; Nov moved earlier to avoid Thanksgiving)
+    ("2026-07-31","PCE Inflation Report","PCE","HIGH"),
+    ("2026-08-28","PCE Inflation Report","PCE","HIGH"),
+    ("2026-09-25","PCE Inflation Report","PCE","HIGH"),
+    ("2026-10-30","PCE Inflation Report","PCE","HIGH"),
+    ("2026-11-20","PCE Inflation Report","PCE","HIGH"),
+    ("2026-12-18","PCE Inflation Report","PCE","HIGH"),
 ]
 
 _EVENT_ICON  = {"FOMC":"🏦","CPI":"📊","NFP":"👷","PPI":"🏭","GDP":"📈","PCE":"🧾"}
@@ -5583,31 +5597,44 @@ with _tab_research:
             except Exception:
                 pass
             _recent = _ledger_rows[-30:][::-1]   # last 30, newest first
+            # Normalize actual_dir: support both "up/down" (manual) and "bull/bear" (auto)
+            def _norm_dir(d):
+                return {"up":"bull","down":"bear"}.get(d, d)
             # Exclude flat days, neutral SSR, and gap-down abstain days from accuracy.
             # Only measure directional calls (SSR ≥55 or ≤44) on directional outcomes.
             # gap_down_abstain="yes" means we explicitly did NOT make the bear call
             # even though score ≤44 — excluding these prevents false-bear miscount.
+            # When live_adj_ssr is unavailable ("n/a" or empty), fall back to core_ssr
+            # so historical rows (pre-live tracking) still display correctly.
+            def _effective_ssr(r):
+                """Return the best available SSR: live_adj if numeric, else core_ssr."""
+                raw = r.get("live_adj_ssr", "")
+                try:
+                    return int(raw)
+                except (ValueError, TypeError):
+                    try:
+                        return int(r.get("core_ssr", 50) or 50)
+                    except (ValueError, TypeError):
+                        return 50
             def _is_directional_call(r):
                 if r.get("gap_down_abstain", "no") == "yes":
                     return False   # abstained — not a real call
-                sc = int(r.get("live_adj_ssr", 50))
+                sc = _effective_ssr(r)
                 return sc >= 55 or sc <= 44
             _hits_c = sum(1 for r in _recent
-                          if r.get("actual_dir","").strip()
-                          and r["actual_dir"] in ("bull","bear")
+                          if _norm_dir(r.get("actual_dir","")) in ("bull","bear")
                           and _is_directional_call(r)
-                          and ((r["actual_dir"] == "bull" and int(r.get("live_adj_ssr",50)) >= 55)
-                               or (r["actual_dir"] == "bear" and int(r.get("live_adj_ssr",50)) <= 44)))
+                          and ((_norm_dir(r["actual_dir"]) == "bull" and _effective_ssr(r) >= 55)
+                               or (_norm_dir(r["actual_dir"]) == "bear" and _effective_ssr(r) <= 44)))
             _tot_known = sum(1 for r in _recent
-                             if r.get("actual_dir","").strip()
-                             and r["actual_dir"] in ("bull","bear")
+                             if _norm_dir(r.get("actual_dir","")) in ("bull","bear")
                              and _is_directional_call(r))
             _ldg_acc   = int(_hits_c / _tot_known * 100) if _tot_known else 0
             _ldg_c     = "#4ade80" if _ldg_acc >= 60 else ("#f59e0b" if _ldg_acc >= 45 else "#f87171")
             # Extra breakdown counts
-            _flat_count    = sum(1 for r in _recent if r.get("actual_dir","") == "flat")
+            _flat_count    = sum(1 for r in _recent if _norm_dir(r.get("actual_dir","")) == "flat")
             _neutral_count = sum(1 for r in _recent
-                                 if r.get("actual_dir","") in ("bull","bear")
+                                 if _norm_dir(r.get("actual_dir","")) in ("bull","bear")
                                  and not _is_directional_call(r))
             if _tot_known:
                 st.markdown(
@@ -5621,23 +5648,26 @@ with _tab_research:
                     unsafe_allow_html=True)
             _ldg_rows_html = ""
             for _lr in _recent:
-                _cs  = int(_lr.get("core_ssr","50") or 50)
-                _ls  = int(_lr.get("live_adj_ssr","50") or 50)
+                _cs  = _effective_ssr(_lr)  # core_ssr numeric
+                _ls_eff = _effective_ssr(_lr)  # live_adj if available, else core
+                _ls_raw = _lr.get("live_adj_ssr","")
+                _ls_disp = _ls_raw if _ls_raw and _ls_raw not in ("n/a","") else "—"
                 _ad  = _lr.get("actual_dir","")
                 _ap  = _lr.get("actual_pts","")
                 _cs_c = "#4ade80" if _cs >= 55 else "#ef4444" if _cs <= 44 else "#94a3b8"
-                _ls_c = "#4ade80" if _ls >= 55 else "#ef4444" if _ls <= 44 else "#94a3b8"
-                _ad_c = "#4ade80" if _ad == "bull" else "#ef4444" if _ad == "bear" else "#64748b"
-                # Model call from live-adj SSR; abstained rows are treated as neutral
+                _ls_c = "#4ade80" if _ls_eff >= 55 else "#ef4444" if _ls_eff <= 44 else "#94a3b8"
+                _adn = _norm_dir(_ad)  # normalized: bull/bear/flat
+                _ad_c = "#4ade80" if _adn == "bull" else "#ef4444" if _adn == "bear" else "#64748b"
+                # Model call from effective SSR; abstained rows are treated as neutral
                 _abstained = _lr.get("gap_down_abstain", "no") == "yes"
-                _model_call = "neutral" if _abstained else ("bull" if _ls >= 55 else ("bear" if _ls <= 44 else "neutral"))
+                _model_call = "neutral" if _abstained else ("bull" if _ls_eff >= 55 else ("bear" if _ls_eff <= 44 else "neutral"))
                 _mc_c = "#4ade80" if _model_call == "bull" else "#ef4444" if _model_call == "bear" else "#64748b"
                 # Result: ✅ correct / ❌ wrong / ⚪ flat, neutral, or abstained / — unknown
                 if not _ad:
                     _result = "—"
-                elif _ad == "flat" or _model_call == "neutral":
+                elif _adn == "flat" or _model_call == "neutral":
                     _result = "⚪"
-                elif _ad == _model_call:
+                elif _adn == _model_call:
                     _result = "✅"
                 else:
                     _result = "❌"
@@ -5645,7 +5675,7 @@ with _tab_research:
                     f'<tr style="border-bottom:1px solid #1a1f33">'
                     f'<td style="padding:4px 8px;font-size:11px;color:#64748b">{_lr["date"]}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;color:{_cs_c};font-weight:700">{_cs}</td>'
-                    f'<td style="padding:4px 8px;font-size:12px;color:{_ls_c};font-weight:700">{_ls}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;color:{_ls_c};font-weight:700">{_ls_disp}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:{_mc_c}">{_model_call}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("vix","")}</td>'
                     f'<td style="padding:4px 8px;font-size:11px;color:#94a3b8">{_lr.get("gap_pts","")}</td>'
