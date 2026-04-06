@@ -471,7 +471,7 @@ def run_backtest(days: int = 60) -> dict:
         "history_period": period,
         "model_alignment": "equal_weight_static_core",
         "limitations": [
-            "Daily and weekly outputs validate the 28 closed-bar Core SSR signals only.",
+            "Daily and weekly outputs validate the 29 closed-bar Core SSR signals only.",
             "Session-open and live-overlay signals are intentionally excluded from this exporter.",
             "IMPORTANT: the live app applies (a) drift dampening (signals persistent-wrong for 10d "
             "are set to abstain) and (b) dynamic per-group weights derived from a rolling backtest. "

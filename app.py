@@ -85,7 +85,7 @@ SIGNAL_GROUPS = {
                    "VIX 1d Down"],               # day-over-day VIX decline (live + historical)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
                    "Sector Breadth ≥ 70%",        # strong breadth: second tier for gradient
-                   "Sector Breadth ≥ 85%"],        # near-full breadth: third tier
+                   "Sector Breadth ≥ 85%"],         # near-full breadth: third tier
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],

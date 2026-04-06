@@ -1,6 +1,6 @@
 # Peer Review Follow-up
 
-Updated: 2026-04-06 CT
+Updated: 2026-04-06 CT (rev 2)
 Project: `/Users/amummaneni/Desktop/Codex/Projects/spx-algo`
 
 Purpose:
@@ -42,6 +42,32 @@ The 60d gate passes at the exact floor (24/50 = 48.0%). Two weak sub-regimes rem
 - **gap-up**: 2/8 = 25.0% — Gap Up Day signal nudged some calls to neutral but core bearish cluster still dominates on gap-up days in high-VIX
 
 Neither is blocking. Both are tracked for next calibration pass.
+
+---
+
+## Signal Expansion Deferred (2026-04-06 rev 2)
+
+Three new core signals were designed, implemented, and empirically tested:
+
+| Signal | Group | Rationale |
+|--------|-------|-----------|
+| `Prior Day Bull Bar` | Momentum | yesterday close > yesterday open = net buyer session |
+| `Seasonal Bull Week` | Context | ISO week historical mean daily return > 0.3% |
+| `Sector Breadth 5d ≥ 50%` | Breadth | short-term 5d SMA breadth |
+
+**Result**: All three signals hurt 60d and 90d accuracy in the current market environment.
+
+| Model | 60d | 90d |
+|-------|-----|-----|
+| 29-sig (baseline) | 24/50 = **48.0%** ✓ | 37/75 = **49.3%** ✓ |
+| 32-sig (with all 3) | 21/46 = 45.7% ✗ | — |
+| 31-sig (without Breadth 5d) | 22/48 = 45.8% ✗ | 34/72 = 47.2% ✗ |
+
+**Root cause**: In the current high-VIX bear-market regime (Feb–Apr 2026), the new bullish signals fire on bounce days and nudge borderline bear scores (43–44) into the neutral zone (45–54), reducing the denominator count and losing correct bear calls. This is a regime-sensitive failure, not a structural signal defect.
+
+**Decision**: Reverted all three signals from scoring model. Deferred to next calibration pass when market conditions allow a balanced 2-yr regime test. Signals are documented here for reuse.
+
+**Note**: `run_ablation.py` was structurally synced (VIX Falling fixed to 5-day, Gap Up Day added to Context group + computed) — these are reporting-only changes that don't affect the live score.
 
 ---
 

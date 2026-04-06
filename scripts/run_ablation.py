@@ -50,7 +50,7 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
-    "Context":    ["Gap/ATR Normal", "VIX No Spike"],
+    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Seasonal Bull Week"],
     "Position":   ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid",
                    "Above Prior Day High", "Above Pivot", "Above 5d High"],
 }
@@ -175,7 +175,9 @@ def _compute_signals(
         vv    = _sf(vix_c, default=20.0)
         sigs["VIX Below 20"]  = int(vv < 20)
         sigs["VIX Below 15"]  = int(vv < 15)
-        sigs["VIX Falling"]   = int(len(vix_c) >= 2 and vv < _sf(vix_c, -2))
+        # VIX Falling: 5-day trend — aligned with backtest_export.py and app.py
+        sigs["VIX Falling"]   = int(len(vix_c) >= 6 and vv < _sf(vix_c, -6))
+        # VIX 1d Down: single-session decline — independent from 5-day VIX Falling
         sigs["VIX 1d Down"]   = int(len(vix_c) >= 2 and vv < _sf(vix_c, -2))
         if len(vix_c) >= 4:
             v3d         = _sf(vix_c, -4, default=vv)
@@ -212,6 +214,13 @@ def _compute_signals(
         sigs["Sector Breadth ≥ 50%"] = int((above / total_sec) >= 0.50)
         sigs["Sector Breadth ≥ 70%"] = int((above / total_sec) >= 0.70)
         sigs["Sector Breadth ≥ 85%"] = int((above / total_sec) >= 0.85)
+
+    # Gap Up Day — requires Open column
+    if "Open" in spx_sl.columns:
+        open_s = _squeeze(spx_sl, "Open")
+        if len(open_s) >= 2 and len(close) >= 2:
+            _gap_pts = _sf(open_s) - _sf(close, -2)
+            sigs["Gap Up Day"] = int(_gap_pts > GAP_THRESHOLD)
 
     # Extremes
     sigs["Stoch Bullish"] = int(_sf(stoch_k) > _sf(stoch_d))
