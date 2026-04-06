@@ -284,13 +284,33 @@ _ECON_CAL = [
     ("2026-11-06","NFP Jobs Report","NFP","HIGH"),
     ("2026-12-04","NFP Jobs Report","NFP","HIGH"),
     # PPI — Producer Price Index (BLS, day after CPI)
+    # 2025 PPI (one trading day after each month's CPI release)
+    ("2025-01-16","PPI Report","PPI","MED"),
+    ("2025-02-13","PPI Report","PPI","MED"),
+    ("2025-03-13","PPI Report","PPI","MED"),
+    ("2025-04-11","PPI Report","PPI","MED"),
+    ("2025-05-14","PPI Report","PPI","MED"),
+    ("2025-06-12","PPI Report","PPI","MED"),
+    ("2025-07-16","PPI Report","PPI","MED"),
+    ("2025-08-13","PPI Report","PPI","MED"),
+    ("2025-09-11","PPI Report","PPI","MED"),
+    ("2025-10-16","PPI Report","PPI","MED"),
+    ("2025-11-14","PPI Report","PPI","MED"),
+    ("2025-12-11","PPI Report","PPI","MED"),
+    # 2026 PPI
     ("2026-01-15","PPI Report","PPI","MED"),
     ("2026-02-12","PPI Report","PPI","MED"),
     ("2026-03-12","PPI Report","PPI","MED"),
     ("2026-04-11","PPI Report","PPI","MED"),
     ("2026-05-14","PPI Report","PPI","MED"),
     ("2026-06-11","PPI Report","PPI","MED"),
-    # GDP Advance Estimate (quarterly: Jan/Apr/Jul/Oct)
+    # GDP Advance Estimate (quarterly: Jan/Apr/Jul/Oct — advance estimate, ~4 weeks after quarter end)
+    # 2025 GDP advance estimates
+    ("2025-01-30","GDP Advance Estimate","GDP","MED"),
+    ("2025-04-30","GDP Advance Estimate","GDP","MED"),
+    ("2025-07-30","GDP Advance Estimate","GDP","MED"),
+    ("2025-10-29","GDP Advance Estimate","GDP","MED"),
+    # 2026 GDP advance estimates
     ("2026-01-28","GDP Advance Estimate","GDP","MED"),
     ("2026-04-29","GDP Advance Estimate","GDP","MED"),
     ("2026-07-29","GDP Advance Estimate","GDP","MED"),
