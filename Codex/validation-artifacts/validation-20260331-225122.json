@@ -1,0 +1,436 @@
+{
+  "generated_at": "2026-03-31T22:51:22.015773-05:00",
+  "timezone": "America/Chicago",
+  "project": "/Users/amummaneni/Desktop/Codex/Projects/spx-algo",
+  "profile": "behavior",
+  "profile_expectation": "syntax gate plus backtest/report evidence note for behavior changes",
+  "head_short": "eb79177",
+  "head_long": "eb791772085f3376e257386f71ec2b3f4fec5adf",
+  "worktree_clean": false,
+  "git_status": [
+    "M app.py",
+    " M scripts/backtest_export.py",
+    " M scripts/run_validation_review.py",
+    "?? Codex/validation-artifacts/validation-20260331-224148.json",
+    "?? Codex/validation-artifacts/validation-20260331-224148.md"
+  ],
+  "recent_commits": [
+    "eb79177 Fix three market analysis failures: catalyst filter, VIX dampening, borderline score",
+    "164a60c Fix NameError in run_backtest_for_day: _daily_atr \u2192 bt_atr",
+    "0d359b9 Commit generated validation artifacts and session reviews",
+    "51ff986 Refine artifact schema to match app expectations",
+    "863b50b Add ablation report and seed shadow ledger",
+    "b38007e Wire standalone backtest export into validation workflow"
+  ],
+  "commands": [
+    {
+      "label": "py_compile",
+      "command": [
+        "/usr/local/bin/python3",
+        "-m",
+        "py_compile",
+        "app.py"
+      ],
+      "returncode": 0,
+      "ok": true,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "label": "backtest_export",
+      "command": [
+        "/usr/local/bin/python3",
+        "scripts/backtest_export.py",
+        "--days",
+        "60"
+      ],
+      "returncode": 1,
+      "ok": false,
+      "stdout": "{\n  \"ok\": false,\n  \"accuracy\": 0.4792,\n  \"hits\": 23,\n  \"total\": 48,\n  \"threshold\": 0.48,\n  \"eval_days\": 60,\n  \"vix_last\": 25.25,\n  \"regime\": \"high_vix\",\n  \"history_period\": \"2y\",\n  \"model_alignment\": \"core_ssr_clone\",\n  \"limitations\": [\n    \"Daily and weekly outputs validate the 28 closed-bar Core SSR signals only.\",\n    \"Session-open and live-overlay signals are intentionally excluded from this exporter.\"\n  ],\n  \"avg_signals_present\": 27.6,\n  \"expected_core_signals\": 28,\n  \"daily\": {\n    \"accuracy\": 0.4792,\n    \"hits\": 23,\n    \"total\": 48,\n    \"threshold\": 0.48,\n    \"eval_days\": 60,\n    \"avg_signals_present\": 27.6,\n    \"expected_core_signals\": 28,\n    \"regime_breakdown\": {\n      \"vix\": {\n        \"low\": {\n          \"hits\": 9,\n          \"total\": 19,\n          \"accuracy\": 0.4737\n        },\n        \"mid\": {\n          \"hits\": 8,\n          \"total\": 18,\n          \"accuracy\": 0.4444\n        },\n        \"high\": {\n          \"hits\": 6,\n          \"total\": 11,\n          \"accuracy\": 0.5455\n        }\n      },\n      \"gap\": {\n        \"up\": {\n          \"hits\": 4,\n          \"total\": 8,\n          \"accuracy\": 0.5\n        },\n        \"flat\": {\n          \"hits\": 14,\n          \"total\": 30,\n          \"accuracy\": 0.4667\n        },\n        \"down\": {\n          \"hits\": 5,\n          \"total\": 10,\n          \"accuracy\": 0.5\n        }\n      }\n    },\n    \"recent_results\": [\n      {\n        \"date\": \"2026-03-24\",\n        \"score\": 10,\n        \"bull\": false,\n        \"bear\": true,\n        \"up\": true,\n        \"correct\": false,\n        \"vix_regime\": \"high\",\n        \"gap_regime\": \"down\",\n        \"signals_present\": 26\n      },\n      {\n        \"date\": \"2026-03-25\",\n        \"score\": 42,\n        \"bull\": false,\n        \"bear\": true,\n        \"up\": false,\n        \"correct\": true,\n        \"vix_regime\": \"high\",\n        \"gap_regime\": \"up\",\n        \"signals_present\": 26\n      },\n      {\n        \"date\": \"2026-03-26\",\n        \"score\": 20,\n        \"bull\": false,\n        \"bear\": true,\n        \"up\": false,\n        \"correct\": true,\n        \"vix_regime\": \"high\",\n        \"gap_regime\": \"down\",\n        \"signals_present\": 26\n      },\n      {\n        \"date\": \"2026-03-27\",\n        \"score\": 6,\n        \"bull\": false,\n        \"bear\": true,\n        \"up\": false,\n        \"correct\": true,\n        \"vix_regime\": \"high\",\n        \"gap_regime\": \"flat\",\n        \"signals_present\": 26\n      },\n      {\n        \"date\": \"2026-03-30\",\n        \"score\": 20,\n        \"bull\": false,\n        \"bear\": true,\n        \"up\": true,\n        \"correct\": false,\n        \"vix_regime\": \"high\",\n        \"gap_regime\": \"up\",\n        \"signals_present\": 26\n      }\n    ]\n  },\n  \"weekly\": {\n    \"accuracy\": 0.5319,\n    \"hits\": 25,\n    \"total\": 47,\n    \"neutral\": 2,\n    \"avg_signals_present\": 27.7,\n    \"expected_core_signals\": 28,\n    \"recent_results\": [\n      {\n        \"week\": \"2025-11-03\",\n        \"score\": 58,\n        \"call\": \"bull\",\n        \"actual\": \"bear\",\n        \"move\": -153.5,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-11-10\",\n        \"score\": 53,\n        \"call\": \"neutral\",\n        \"actual\": \"bear\",\n        \"move\": -51.2,\n        \"correct\": null,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-11-17\",\n        \"score\": 25,\n        \"call\": \"bear\",\n        \"actual\": \"bear\",\n        \"move\": -110.6,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-11-24\",\n        \"score\": 45,\n        \"call\": \"bear\",\n        \"actual\": \"bull\",\n        \"move\": 176.1,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-12-02\",\n        \"score\": 57,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 15.5,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-12-09\",\n        \"score\": 63,\n        \"call\": \"bull\",\n        \"actual\": \"bear\",\n        \"move\": -24.1,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-12-16\",\n        \"score\": 67,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 78.4,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-12-23\",\n        \"score\": 85,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 23.8,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2025-12-31\",\n        \"score\": 69,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 22.1,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-01-08\",\n        \"score\": 70,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 12.5,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-01-15\",\n        \"score\": 56,\n        \"call\": \"bull\",\n        \"actual\": \"bear\",\n        \"move\": -56.1,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-01-23\",\n        \"score\": 72,\n        \"call\": \"bull\",\n        \"actual\": \"bull\",\n        \"move\": 61.2,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-01-30\",\n        \"score\": 65,\n        \"call\": \"bull\",\n        \"actual\": \"bear\",\n        \"move\": -148.9,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-02-06\",\n        \"score\": 19,\n        \"call\": \"bear\",\n        \"actual\": \"bull\",\n        \"move\": 16.0,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-02-13\",\n        \"score\": 24,\n        \"call\": \"bear\",\n        \"actual\": \"bull\",\n        \"move\": 75.2,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-02-23\",\n        \"score\": 69,\n        \"call\": \"bull\",\n        \"actual\": \"bear\",\n        \"move\": -22.4,\n        \"correct\": false,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-03-02\",\n        \"score\": 41,\n        \"call\": \"bear\",\n        \"actual\": \"bear\",\n        \"move\": -84.3,\n        \"correct\": true,\n        \"signals_present\": 28\n      },\n      {\n        \"week\": \"2026-03-09\",\n        \"score\": 12,\n        \"call\": \"bear\",\n        \"actual\": \"bear\",\n        \"move\": -67.6,\n        \"correct\": true,\n        \"signals_present\": 26\n      },\n      {\n        \"week\": \"2026-03-16\",\n        \"score\": 15,\n        \"call\": \"bear\",\n        \"actual\": \"bear\",\n        \"move\": -167.9,\n        \"correct\": true,\n        \"signals_present\": 26\n      },\n      {\n        \"week\": \"2026-03-23\",\n        \"score\": 13,\n        \"call\": \"bear\",\n        \"actual\": \"bear\",\n        \"move\": -206.1,\n        \"correct\": true,\n        \"signals_present\": 26\n      }\n    ]\n  },\n  \"generated_at\": \"2026-04-01T03:51:26.682491+00:00\",\n  \"recent_results\": [\n    {\n      \"date\": \"2026-03-24\",\n      \"score\": 10,\n      \"bull\": false,\n      \"bear\": true,\n      \"up\": true,\n      \"correct\": false,\n      \"vix_regime\": \"high\",\n      \"gap_regime\": \"down\",\n      \"signals_present\": 26\n    },\n    {\n      \"date\": \"2026-03-25\",\n      \"score\": 42,\n      \"bull\": false,\n      \"bear\": true,\n      \"up\": false,\n      \"correct\": true,\n      \"vix_regime\": \"high\",\n      \"gap_regime\": \"up\",\n      \"signals_present\": 26\n    },\n    {\n      \"date\": \"2026-03-26\",\n      \"score\": 20,\n      \"bull\": false,\n      \"bear\": true,\n      \"up\": false,\n      \"correct\": true,\n      \"vix_regime\": \"high\",\n      \"gap_regime\": \"down\",\n      \"signals_present\": 26\n    },\n    {\n      \"date\": \"2026-03-27\",\n      \"score\": 6,\n      \"bull\": false,\n      \"bear\": true,\n      \"up\": false,\n      \"correct\": true,\n      \"vix_regime\": \"high\",\n      \"gap_regime\": \"flat\",\n      \"signals_present\": 26\n    },\n    {\n      \"date\": \"2026-03-30\",\n      \"score\": 20,\n      \"bull\": false,\n      \"bear\": true,\n      \"up\": true,\n      \"correct\": false,\n      \"vix_regime\": \"high\",\n      \"gap_regime\": \"up\",\n      \"signals_present\": 26\n    }\n  ]\n}",
+      "stderr": ""
+    }
+  ],
+  "ok": true,
+  "app_metadata": {
+    "model_version": "SSR-v3 \u00b7 2yr backtest \u00b7 28 core signals",
+    "gap_threshold": "25.0"
+  },
+  "evidence_notes": [
+    "252-session daily backtest: 107/207 = 51.69%; weakest broad regime is gap-down days at 12/32 = 37.5%",
+    "Recent misses cluster on 2026-03-24 and 2026-03-30: both were bearish core scores that failed on upside reversal sessions"
+  ],
+  "artifact_checks": {
+    "ablation_report_status": "placeholder",
+    "shadow_ledger_status": "empty",
+    "shadow_ledger_rows": 0
+  },
+  "summary": "Session 2026-03-31: upgraded backtest exporter to mirror 28-signal Core SSR; recent 60-session daily edge is weak while broader baseline remains modestly positive.",
+  "backtest_result": {
+    "ok": false,
+    "accuracy": 0.4792,
+    "hits": 23,
+    "total": 48,
+    "threshold": 0.48,
+    "eval_days": 60,
+    "vix_last": 25.25,
+    "regime": "high_vix",
+    "history_period": "2y",
+    "model_alignment": "core_ssr_clone",
+    "limitations": [
+      "Daily and weekly outputs validate the 28 closed-bar Core SSR signals only.",
+      "Session-open and live-overlay signals are intentionally excluded from this exporter."
+    ],
+    "avg_signals_present": 27.6,
+    "expected_core_signals": 28,
+    "daily": {
+      "accuracy": 0.4792,
+      "hits": 23,
+      "total": 48,
+      "threshold": 0.48,
+      "eval_days": 60,
+      "avg_signals_present": 27.6,
+      "expected_core_signals": 28,
+      "regime_breakdown": {
+        "vix": {
+          "low": {
+            "hits": 9,
+            "total": 19,
+            "accuracy": 0.4737
+          },
+          "mid": {
+            "hits": 8,
+            "total": 18,
+            "accuracy": 0.4444
+          },
+          "high": {
+            "hits": 6,
+            "total": 11,
+            "accuracy": 0.5455
+          }
+        },
+        "gap": {
+          "up": {
+            "hits": 4,
+            "total": 8,
+            "accuracy": 0.5
+          },
+          "flat": {
+            "hits": 14,
+            "total": 30,
+            "accuracy": 0.4667
+          },
+          "down": {
+            "hits": 5,
+            "total": 10,
+            "accuracy": 0.5
+          }
+        }
+      },
+      "recent_results": [
+        {
+          "date": "2026-03-24",
+          "score": 10,
+          "bull": false,
+          "bear": true,
+          "up": true,
+          "correct": false,
+          "vix_regime": "high",
+          "gap_regime": "down",
+          "signals_present": 26
+        },
+        {
+          "date": "2026-03-25",
+          "score": 42,
+          "bull": false,
+          "bear": true,
+          "up": false,
+          "correct": true,
+          "vix_regime": "high",
+          "gap_regime": "up",
+          "signals_present": 26
+        },
+        {
+          "date": "2026-03-26",
+          "score": 20,
+          "bull": false,
+          "bear": true,
+          "up": false,
+          "correct": true,
+          "vix_regime": "high",
+          "gap_regime": "down",
+          "signals_present": 26
+        },
+        {
+          "date": "2026-03-27",
+          "score": 6,
+          "bull": false,
+          "bear": true,
+          "up": false,
+          "correct": true,
+          "vix_regime": "high",
+          "gap_regime": "flat",
+          "signals_present": 26
+        },
+        {
+          "date": "2026-03-30",
+          "score": 20,
+          "bull": false,
+          "bear": true,
+          "up": true,
+          "correct": false,
+          "vix_regime": "high",
+          "gap_regime": "up",
+          "signals_present": 26
+        }
+      ]
+    },
+    "weekly": {
+      "accuracy": 0.5319,
+      "hits": 25,
+      "total": 47,
+      "neutral": 2,
+      "avg_signals_present": 27.7,
+      "expected_core_signals": 28,
+      "recent_results": [
+        {
+          "week": "2025-11-03",
+          "score": 58,
+          "call": "bull",
+          "actual": "bear",
+          "move": -153.5,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-11-10",
+          "score": 53,
+          "call": "neutral",
+          "actual": "bear",
+          "move": -51.2,
+          "correct": null,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-11-17",
+          "score": 25,
+          "call": "bear",
+          "actual": "bear",
+          "move": -110.6,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-11-24",
+          "score": 45,
+          "call": "bear",
+          "actual": "bull",
+          "move": 176.1,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-12-02",
+          "score": 57,
+          "call": "bull",
+          "actual": "bull",
+          "move": 15.5,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-12-09",
+          "score": 63,
+          "call": "bull",
+          "actual": "bear",
+          "move": -24.1,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-12-16",
+          "score": 67,
+          "call": "bull",
+          "actual": "bull",
+          "move": 78.4,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-12-23",
+          "score": 85,
+          "call": "bull",
+          "actual": "bull",
+          "move": 23.8,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2025-12-31",
+          "score": 69,
+          "call": "bull",
+          "actual": "bull",
+          "move": 22.1,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-01-08",
+          "score": 70,
+          "call": "bull",
+          "actual": "bull",
+          "move": 12.5,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-01-15",
+          "score": 56,
+          "call": "bull",
+          "actual": "bear",
+          "move": -56.1,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-01-23",
+          "score": 72,
+          "call": "bull",
+          "actual": "bull",
+          "move": 61.2,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-01-30",
+          "score": 65,
+          "call": "bull",
+          "actual": "bear",
+          "move": -148.9,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-02-06",
+          "score": 19,
+          "call": "bear",
+          "actual": "bull",
+          "move": 16.0,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-02-13",
+          "score": 24,
+          "call": "bear",
+          "actual": "bull",
+          "move": 75.2,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-02-23",
+          "score": 69,
+          "call": "bull",
+          "actual": "bear",
+          "move": -22.4,
+          "correct": false,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-03-02",
+          "score": 41,
+          "call": "bear",
+          "actual": "bear",
+          "move": -84.3,
+          "correct": true,
+          "signals_present": 28
+        },
+        {
+          "week": "2026-03-09",
+          "score": 12,
+          "call": "bear",
+          "actual": "bear",
+          "move": -67.6,
+          "correct": true,
+          "signals_present": 26
+        },
+        {
+          "week": "2026-03-16",
+          "score": 15,
+          "call": "bear",
+          "actual": "bear",
+          "move": -167.9,
+          "correct": true,
+          "signals_present": 26
+        },
+        {
+          "week": "2026-03-23",
+          "score": 13,
+          "call": "bear",
+          "actual": "bear",
+          "move": -206.1,
+          "correct": true,
+          "signals_present": 26
+        }
+      ]
+    },
+    "generated_at": "2026-04-01T03:51:26.682491+00:00",
+    "recent_results": [
+      {
+        "date": "2026-03-24",
+        "score": 10,
+        "bull": false,
+        "bear": true,
+        "up": true,
+        "correct": false,
+        "vix_regime": "high",
+        "gap_regime": "down",
+        "signals_present": 26
+      },
+      {
+        "date": "2026-03-25",
+        "score": 42,
+        "bull": false,
+        "bear": true,
+        "up": false,
+        "correct": true,
+        "vix_regime": "high",
+        "gap_regime": "up",
+        "signals_present": 26
+      },
+      {
+        "date": "2026-03-26",
+        "score": 20,
+        "bull": false,
+        "bear": true,
+        "up": false,
+        "correct": true,
+        "vix_regime": "high",
+        "gap_regime": "down",
+        "signals_present": 26
+      },
+      {
+        "date": "2026-03-27",
+        "score": 6,
+        "bull": false,
+        "bear": true,
+        "up": false,
+        "correct": true,
+        "vix_regime": "high",
+        "gap_regime": "flat",
+        "signals_present": 26
+      },
+      {
+        "date": "2026-03-30",
+        "score": 20,
+        "bull": false,
+        "bear": true,
+        "up": true,
+        "correct": false,
+        "vix_regime": "high",
+        "gap_regime": "up",
+        "signals_present": 26
+      }
+    ]
+  }
+}

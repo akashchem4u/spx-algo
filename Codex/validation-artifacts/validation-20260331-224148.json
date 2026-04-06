@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-03-31T22:41:48.405982-05:00",
+  "timezone": "America/Chicago",
+  "project": "/Users/amummaneni/Desktop/Codex/Projects/spx-algo",
+  "profile": "local",
+  "profile_expectation": "syntax-only gate; no network-backed market validation required",
+  "head_short": "eb79177",
+  "head_long": "eb791772085f3376e257386f71ec2b3f4fec5adf",
+  "worktree_clean": true,
+  "git_status": [],
+  "recent_commits": [
+    "eb79177 Fix three market analysis failures: catalyst filter, VIX dampening, borderline score",
+    "164a60c Fix NameError in run_backtest_for_day: _daily_atr \u2192 bt_atr",
+    "0d359b9 Commit generated validation artifacts and session reviews",
+    "51ff986 Refine artifact schema to match app expectations",
+    "863b50b Add ablation report and seed shadow ledger",
+    "b38007e Wire standalone backtest export into validation workflow"
+  ],
+  "commands": [
+    {
+      "label": "py_compile",
+      "command": [
+        "/usr/local/bin/python3",
+        "-m",
+        "py_compile",
+        "app.py"
+      ],
+      "returncode": 0,
+      "ok": true,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "ok": true,
+  "app_metadata": {
+    "model_version": "SSR-v3 \u00b7 2yr backtest \u00b7 28 core signals",
+    "gap_threshold": "25.0"
+  },
+  "evidence_notes": [],
+  "artifact_checks": {
+    "ablation_report_status": "placeholder",
+    "shadow_ledger_status": "empty",
+    "shadow_ledger_rows": 0
+  },
+  "summary": "",
+  "backtest_result": null
+}
