@@ -2982,7 +2982,7 @@ score        = max(0, min(100, _weighted_base + _news_nudge))
 # ── Core SSR: weighted score from backtestable closed-bar signals only ───────
 # Excludes session context (Gap/ATR Normal) and live-only signals (PCR, macro, overnight).
 # NOTE ON MODEL ALIGNMENT: the standalone backtest exporter (scripts/backtest_export.py)
-# validates an equal-weight static clone of these 28 signals.  The live Core SSR below
+# validates an equal-weight static clone of these 22+1opt signals.  The live Core SSR below
 # uses dynamic per-group weights (compute_group_weights) and drift dampening applied
 # above — meaning the two paths can diverge in trending regimes.  Do not treat
 # exporter accuracy numbers as a full validation of this dynamically-weighted score.
@@ -3379,7 +3379,7 @@ with cL:
         <div style="background:#0f1f0f;border-radius:6px;padding:5px 8px;text-align:center">
           <div style="font-size:9px;color:#64748b;letter-spacing:.8px">CORE SSR</div>
           <div style="font-size:18px;font-weight:800;color:{'#22c55e' if _core_ssr>=55 else '#ef4444' if _core_ssr<=44 else '#94a3b8'}">{_core_ssr}</div>
-          <div style="font-size:9px;color:#475569">backtested · 28 signals</div>
+          <div style="font-size:9px;color:#475569">backtested · 22+1opt signals</div>
         </div>
         <div style="background:#0f1117;border-radius:6px;padding:5px 8px;text-align:center;border:1px solid #1e3a5f">
           <div style="font-size:9px;color:#64748b;letter-spacing:.8px">LIVE-ADJ SSR</div>
