@@ -229,9 +229,10 @@ def build_artifact_payload(args: argparse.Namespace) -> tuple[dict, list[Command
     backtest_cmd: CommandResult | None = None
     if args.profile in ("behavior", "release"):
         backtest_result, backtest_cmd = _run_backtest_export(days=60)
-        # For release profile the backtest must pass to gate ok.
-        # For behavior profile we attach it as evidence but don't hard-fail.
-        if args.profile == "release" and backtest_cmd is not None:
+        # Both behavior and release profiles gate ok on the backtest result.
+        # Previously behavior only attached it as evidence — that allowed a green
+        # artifact even when the 60d backtest was below threshold (peer review finding #3).
+        if backtest_cmd is not None:
             gate_commands.append(backtest_cmd)
 
     git_status = _git_output("status", "--short")
@@ -298,38 +299,71 @@ def write_validation_artifacts(payload: dict) -> tuple[Path, Path]:
     bt = payload.get("backtest_result")
     if bt is not None:
         bt_status = "PASS" if bt.get("ok") else "FAIL"
-        bt_acc    = bt.get("accuracy", "n/a")
-        bt_hits   = bt.get("hits", "n/a")
-        bt_total  = bt.get("total", "n/a")
-        bt_thresh = bt.get("threshold", "n/a")
-        bt_regime = bt.get("regime", "n/a")
-        bt_vix    = bt.get("vix_last", "n/a")
-        bt_err    = bt.get("error", "")
-        bt_recent = bt.get("recent_results", [])
+        bt_daily = bt.get("daily") or bt
+        bt_weekly = bt.get("weekly") or {}
+        bt_err = bt.get("error", "")
         bt_lines: list[str] = [
             "## Backtest Export",
             "",
             f"- status: `{bt_status}`",
-            f"- accuracy: `{bt_acc}` (threshold: `{bt_thresh}`)",
-            f"- hits / evaluated: `{bt_hits}` / `{bt_total}`",
-            f"- VIX at eval: `{bt_vix}` → regime `{bt_regime}`",
+            f"- model alignment: `{bt.get('model_alignment', 'unknown')}`",
+            f"- history period: `{bt.get('history_period', 'n/a')}`",
+            f"- daily accuracy: `{bt_daily.get('accuracy', 'n/a')}` (threshold: `{bt_daily.get('threshold', bt.get('threshold', 'n/a'))}`)",
+            f"- daily hits / evaluated: `{bt_daily.get('hits', 'n/a')}` / `{bt_daily.get('total', 'n/a')}`",
+            f"- average core signals present: `{bt_daily.get('avg_signals_present', bt.get('avg_signals_present', 'n/a'))}` / `{bt_daily.get('expected_core_signals', bt.get('expected_core_signals', 'n/a'))}`",
+            f"- VIX at eval: `{bt.get('vix_last', 'n/a')}` → regime `{bt.get('regime', 'n/a')}`",
         ]
         if bt_err:
             bt_lines.append(f"- error: `{bt_err}`")
+        if bt.get("limitations"):
+            bt_lines += ["", "### Scope", ""]
+            bt_lines.extend(f"- {line}" for line in bt["limitations"])
+        bt_regime = bt_daily.get("regime_breakdown", {})
+        if bt_regime:
+            bt_lines += ["", "### Daily Regime Breakdown", ""]
+            for regime_name, buckets in bt_regime.items():
+                for bucket_name, bucket in buckets.items():
+                    if bucket.get("total"):
+                        bt_lines.append(
+                            f"- `{regime_name}:{bucket_name}` accuracy `{bucket.get('accuracy')}` "
+                            f"({bucket.get('hits')}/{bucket.get('total')})"
+                        )
+        bt_recent = bt_daily.get("recent_results") or bt.get("recent_results") or []
         if bt_recent:
+            bt_lines += ["", "### Recent Daily Results", ""]
+            for row in bt_recent:
+                tick = "✓" if row.get("correct") else "✗"
+                direction = "BULL" if row.get("bull") else "BEAR"
+                outcome = "UP" if row.get("up") else "DN"
+                extras = []
+                if row.get("vix_regime"):
+                    extras.append(f"vix={row.get('vix_regime')}")
+                if row.get("gap_regime"):
+                    extras.append(f"gap={row.get('gap_regime')}")
+                extra_txt = f" · {' · '.join(extras)}" if extras else ""
+                bt_lines.append(
+                    f"- `{row.get('date', '?')}` score={row.get('score', '?')} "
+                    f"{direction}→{outcome} {tick}{extra_txt}"
+                )
+        if bt_weekly:
             bt_lines += [
                 "",
-                "### Recent Results (last 5 directional days)",
+                "### Weekly Summary",
                 "",
+                f"- weekly accuracy: `{bt_weekly.get('accuracy', 'n/a')}`",
+                f"- weekly hits / evaluated: `{bt_weekly.get('hits', 'n/a')}` / `{bt_weekly.get('total', 'n/a')}`",
+                f"- weekly neutral calls: `{bt_weekly.get('neutral', 'n/a')}`",
             ]
-            for row in bt_recent:
-                tick      = "✓" if row.get("correct") else "✗"
-                direction = "BULL" if row.get("bull") else "BEAR"
-                outcome   = "UP" if row.get("up") else "DN"
-                bt_lines.append(
-                    f"- `{row.get('date','?')}` score={row.get('score','?')} "
-                    f"{direction}→{outcome} {tick}"
-                )
+            weekly_recent = bt_weekly.get("recent_results") or []
+            if weekly_recent:
+                bt_lines += ["", "### Recent Weekly Results", ""]
+                for row in weekly_recent[-5:]:
+                    tick = "✓" if row.get("correct") else ("-" if row.get("correct") is None else "✗")
+                    bt_lines.append(
+                        f"- `{row.get('week', '?')}` score={row.get('score', '?')} "
+                        f"{row.get('call', '?')}→{row.get('actual', '?')} {tick} "
+                        f"(move `{row.get('move', '?')}`)"
+                    )
         bt_lines.append("")
     else:
         bt_lines = []
@@ -410,9 +444,12 @@ def write_session_review(
             f"- worktree clean at validation time: `{'yes' if payload['worktree_clean'] else 'no'}`",
             *(
                 [
-                    f"- backtest accuracy: `{payload['backtest_result'].get('accuracy', 'n/a')}` "
+                    f"- daily backtest accuracy: `{(payload['backtest_result'].get('daily') or payload['backtest_result']).get('accuracy', 'n/a')}` "
                     f"({'PASS' if payload['backtest_result'].get('ok') else 'FAIL'})",
+                    f"- weekly backtest accuracy: `{payload['backtest_result'].get('weekly', {}).get('accuracy', 'n/a')}`",
                     f"- backtest regime: `{payload['backtest_result'].get('regime', 'n/a')}`",
+                    f"- signal coverage: `{(payload['backtest_result'].get('daily') or payload['backtest_result']).get('avg_signals_present', payload['backtest_result'].get('avg_signals_present', 'n/a'))}` "
+                    f"/ `{(payload['backtest_result'].get('daily') or payload['backtest_result']).get('expected_core_signals', payload['backtest_result'].get('expected_core_signals', 'n/a'))}` core signals",
                 ]
                 if payload.get("backtest_result") is not None else []
             ),

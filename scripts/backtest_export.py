@@ -188,10 +188,12 @@ def _compute_signals_fast(
         # drift monitor (which flags them as stuck_bear only when they've been wrong
         # for 10+ days), not by a static always-remove-in-hi-VIX rule.
 
-    # Breadth
+    # Breadth — accumulation: above-average volume AND price up (not panic selling)
     if len(volume) >= 20:
         vol_avg = volume.rolling(20).mean()
-        sigs["Volume Above Average"] = int(_safe_float(volume) > _safe_float(vol_avg))
+        _vol_ok    = _safe_float(volume) > _safe_float(vol_avg)
+        _price_up  = len(close) >= 2 and _safe_float(close) > _safe_float(close, -2)
+        sigs["Volume Above Average"] = int(_vol_ok and _price_up)
 
     total_sectors = len(sector_slices)
     if total_sectors:
@@ -374,7 +376,7 @@ def run_backtest(days: int = 60) -> dict:
         correct = (bull_call and up) or (bear_call and dn)
         vix_on_day = _safe_float(_squeeze(vix_slice, "Close"), default=20.0) if not vix_slice.empty else 20.0
         vix_key = "high" if vix_on_day > VIX_FEAR_THRESHOLD else ("low" if vix_on_day < VIX_CALM_THRESHOLD else "mid")
-        day_gap = _safe_float(opens, i) - _safe_float(close, i - 1)
+        day_gap = _safe_float(opens, i) - _safe_float(close, i - 1) if i > 0 else 0.0
         gap_key = "up" if day_gap > GAP_THRESHOLD else ("down" if day_gap < -GAP_THRESHOLD else "flat")
         vix_buckets[vix_key]["total"] += 1
         vix_buckets[vix_key]["hits"] += int(correct)
@@ -437,10 +439,15 @@ def run_backtest(days: int = 60) -> dict:
         "vix_last": vix_last,
         "regime": regime,
         "history_period": period,
-        "model_alignment": "core_ssr_clone",
+        "model_alignment": "equal_weight_static_core",
         "limitations": [
             "Daily and weekly outputs validate the 28 closed-bar Core SSR signals only.",
             "Session-open and live-overlay signals are intentionally excluded from this exporter.",
+            "IMPORTANT: the live app applies (a) drift dampening (signals persistent-wrong for 10d "
+            "are set to abstain) and (b) dynamic per-group weights derived from a rolling backtest. "
+            "This exporter uses static equal-weight group averaging. The two scoring paths may "
+            "diverge in trending regimes. Do not treat exporter accuracy numbers as a full "
+            "validation of the live displayed Core SSR score.",
         ],
         "avg_signals_present": avg_signals,
         "expected_core_signals": EXPECTED_CORE_SIGNAL_COUNT,

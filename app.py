@@ -1258,10 +1258,13 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
         sigs["Gap/ATR Normal"] = int(0.0 <= _signed_gap_atr < 0.5)
 
     # ── Breadth group ────────────────────────────────────────────────────────
-    # Volume directional: confirmed only when price is also higher (accumulation),
-    # not raw volume (which could be panic selling).
-    sigs["Volume Above Average"] = int(vol.iloc[-1] > vol.rolling(20).mean().iloc[-1]
-                                       and len(vol.dropna()) >= 20)
+    # Volume directional: requires BOTH above-average volume AND a positive close
+    # (accumulation = institutions buying into strength).  Raw high-volume alone
+    # can be panic selling — that is not a bull signal.
+    _vol_20_mean = vol.rolling(20).mean().iloc[-1]
+    _vol_above_avg = len(vol.dropna()) >= 20 and vol.iloc[-1] > _vol_20_mean
+    _price_up_today = len(close) >= 2 and close.iloc[-1] > close.iloc[-2]
+    sigs["Volume Above Average"] = int(_vol_above_avg and _price_up_today)
 
     # Sector breadth — only 50% threshold kept (30% and 70% were redundant)
     _sec_closes = {}
@@ -1865,16 +1868,27 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         # Borderline score (35–65) means SSR is near-neutral — reduce direction weight
         # in hi-VIX to avoid projecting strong directional moves from a weak signal.
         _score_borderline = 35 < score < 65
+        # Large gap-up: prior-day SSR captures yesterday's close regime, not the gap.
+        # When the gap is >0.5× daily ATR, window bias is a better intraday guide.
+        _gap_atr_ratio = gap / max(daily_atr, 1.0)
+        _large_gap_up  = gap > GAP_THRESHOLD and _gap_atr_ratio > 0.5
         if vix > VIX_FEAR_THRESHOLD:
             # Gap-down + hi-VIX: reduce SSR conviction weight — bounce risk is high.
             if gap < -GAP_THRESHOLD:
                 _dir_w, _win_w = (0.40, 0.60) if _score_borderline else (0.50, 0.50)
+            elif _large_gap_up:
+                # Large gap-up in hi-VIX: SSR reflects fear from prior close; let windows lead.
+                _dir_w, _win_w = (0.35, 0.65) if _score_borderline else (0.45, 0.55)
             else:
                 _dir_w, _win_w = (0.55, 0.45) if _score_borderline else (0.70, 0.30)
         elif 0 < vix < VIX_CALM_THRESHOLD:
             _dir_w, _win_w = 0.40, 0.60
         elif gap < -GAP_THRESHOLD:
             _dir_w, _win_w = 0.65, 0.35
+        elif _large_gap_up:
+            # Large gap-up in normal VIX: SSR is a poor predictor of intraday direction
+            # from the gap-up open. Reduce SSR weight so model doesn't project reversal.
+            _dir_w, _win_w = (0.40, 0.60) if _score_borderline else (0.50, 0.50)
         elif gap > GAP_THRESHOLD:
             _dir_w, _win_w = 0.60, 0.40
         elif opex:
@@ -2813,7 +2827,11 @@ score        = max(0, min(100, _weighted_base + _news_nudge))
 
 # ── Core SSR: weighted score from backtestable closed-bar signals only ───────
 # Excludes session context (Gap/ATR Normal) and live-only signals (PCR, macro, overnight).
-# This is the score that the day backtest actually validates — use it when citing accuracy.
+# NOTE ON MODEL ALIGNMENT: the standalone backtest exporter (scripts/backtest_export.py)
+# validates an equal-weight static clone of these 28 signals.  The live Core SSR below
+# uses dynamic per-group weights (compute_group_weights) and drift dampening applied
+# above — meaning the two paths can diverge in trending regimes.  Do not treat
+# exporter accuracy numbers as a full validation of this dynamically-weighted score.
 # Live-Adj SSR = score (above) includes all signals for the richest real-time estimate.
 _core_wg_s, _core_wg_w = [], []
 for _gn, _gs in SIGNAL_GROUPS.items():
@@ -4341,16 +4359,29 @@ with _tab_live:
             _s_atr = bt_atr * _p
             # Regime-aware blend — same logic as generate_spx_projections()
             _bt_score_borderline = 35 < bt_score < 65
+            # Large gap-up ATR ratio — used to detect gap-dominant sessions where
+            # the prior-day SSR is a weaker predictor than the gap itself.
+            _bt_gap_atr_ratio = day_gap / max(bt_atr, 1.0)
+            _large_gap_up = day_gap > GAP_THRESHOLD and _bt_gap_atr_ratio > 0.5
             if vix_on_day > VIX_FEAR_THRESHOLD:
                 # Gap-down + hi-VIX: mirror live projection dampening in backtest.
                 if day_gap < -GAP_THRESHOLD:
                     _dw, _ww = (0.40, 0.60) if _bt_score_borderline else (0.50, 0.50)
+                elif _large_gap_up:
+                    # Large gap-up in hi-VIX: SSR reflects fear from prior close,
+                    # not the gap continuation context. Let windows dominate.
+                    _dw, _ww = (0.35, 0.65) if _bt_score_borderline else (0.45, 0.55)
                 else:
                     _dw, _ww = (0.55, 0.45) if _bt_score_borderline else (0.70, 0.30)
             elif 0 < vix_on_day < VIX_CALM_THRESHOLD:
                 _dw, _ww = 0.40, 0.60
             elif day_gap < -GAP_THRESHOLD:
                 _dw, _ww = 0.65, 0.35
+            elif _large_gap_up:
+                # Large gap-up in normal VIX: prior-day SSR is a poor predictor of
+                # intraday direction from the gap-up open. Reduce SSR weight so the
+                # model doesn't over-predict a reversal on days where the gap holds.
+                _dw, _ww = (0.40, 0.60) if _bt_score_borderline else (0.50, 0.50)
             elif day_gap > GAP_THRESHOLD:
                 _dw, _ww = 0.60, 0.40
             else:
@@ -4370,7 +4401,12 @@ with _tab_live:
             actual = actual_at(p["slot"])
             if actual is None: continue
             idx    = slots.index(p["slot"])
-            prev_a = actual_at(slots[idx-1]) if idx > 0 else prev_close
+            # Opening slot (09:30): baseline is day_open so overnight gap is not credited
+            # to the projection. Prior-slot price for all subsequent slots.
+            if idx == 0:
+                prev_a = day_open
+            else:
+                prev_a = actual_at(slots[idx-1]) or day_open
             actual_dir = "bull" if actual > prev_a else ("bear" if actual < prev_a else "chop")
             # Chop = flat/indeterminate — threshold scales with VIX and per-slot ATR.
             # Use adaptive per-slot ATR (front-loaded morning vol) so early-session
