@@ -53,7 +53,8 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Gap Down Contrarian"],
     # Gap Down Contrarian: optional — only in sigs on large gap-down days
     # Seasonal Bull Week removed: not computed in _compute_signals(), caused 0% coverage in ablation
-    "Position":   ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid",
+    "Position":   ["52w Range Upper Half", "52w Range Top 20%",
+                   # Above BB Mid removed: identical to Above 20 SMA (close > 20d SMA)
                    "Above Prior Day High", "Above Pivot", "Above 5d High"],
 }
 

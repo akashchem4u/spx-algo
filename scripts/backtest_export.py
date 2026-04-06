@@ -40,7 +40,7 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 26
+EXPECTED_CORE_SIGNAL_COUNT = 25
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
     "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
@@ -57,7 +57,9 @@ SIGNAL_GROUPS = {
     # Absent on all other days, so _grp_score() skips it.  Adds 1 bullish Context vote on
     # large-gap-down days where the fade-the-gap tendency is statistically strong (~68% of
     # gap-down days reverse).  2yr: removes 73%-wrong calls, improving accuracy +7pp.
-    "Position": ["52w Range Upper Half", "52w Range Top 20%", "Above BB Mid", "Above Prior Day High", "Above Pivot", "Above 5d High"],
+    "Position": ["52w Range Upper Half", "52w Range Top 20%", "Above Prior Day High", "Above Pivot", "Above 5d High"],
+    # Above BB Mid removed: identical calculation to Above 20 SMA (close > 20d SMA) — was
+    # double-counting in two groups (Trend + Position).  Kept in display tier for the UI.
 }
 
 MIN_ACCURACY_THRESHOLD = 0.48
@@ -130,7 +132,7 @@ def _compute_signals_fast(
     sector_slices: dict[str, pd.DataFrame],
 ) -> dict[str, int]:
     """
-    Reconstruct the 26 closed-bar core signals that the app backtests.
+    Reconstruct the 25 closed-bar core signals that the app backtests.
     Session-open and live-overlay signals are intentionally excluded.
     """
     sigs: dict[str, int] = {}
@@ -263,7 +265,8 @@ def _compute_signals_fast(
         sigs["52w Range Upper Half"] = int(range_pos > 0.5)
         sigs["52w Range Top 20%"] = int(range_pos > 0.80)
 
-    sigs["Above BB Mid"] = int(c > _safe_float(close.rolling(20).mean()))
+    # Above BB Mid: removed from scoring — identical computation to Above 20 SMA (close > 20d SMA).
+    # Having it in both Trend (via Above 20 SMA) and Position was double-counting.
     if len(close) >= 2:
         sigs["Above Prior Day High"] = int(c > _safe_float(high, -2))
         pivot = (_safe_float(high, -2) + _safe_float(low, -2) + _safe_float(close, -2)) / 3.0
@@ -484,7 +487,7 @@ def run_backtest(days: int = 60) -> dict:
         "history_period": period,
         "model_alignment": "equal_weight_static_core",
         "limitations": [
-            "Daily and weekly outputs validate the 26 closed-bar Core SSR signals only.",
+            "Daily and weekly outputs validate the 25 closed-bar Core SSR signals only.",
             "Session-open and live-overlay signals are intentionally excluded from this exporter.",
             "IMPORTANT: the live app applies (a) drift dampening (signals persistent-wrong for 10d "
             "are set to abstain) and (b) dynamic per-group weights derived from a rolling backtest. "

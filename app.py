@@ -105,7 +105,8 @@ SIGNAL_GROUPS = {
                    "ES Pre-Market Momentum Bear"], # ES falling last 30 min pre-open
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
                    "52w Range Top 20%",           # near yearly highs = momentum continuation
-                   "Above BB Mid",               # above 20d BB midline = short-term bull context
+                   # Above BB Mid removed: identical to Above 20 SMA (close > 20d SMA) — was
+                   # double-counting in Trend and Position groups simultaneously
                    "Above Prior Day High",        # current close > PDH = trend continuation / breakout
                    "Above Pivot",                 # above classic pivot = session bull lean
                    "Above 5d High"],              # broke above prior 5-bar high = weekly breakout
@@ -146,7 +147,7 @@ SIGNAL_TIERS = {
     "RSI Trend Zone":         "core",
     "52w Range Upper Half":   "core",
     "52w Range Top 20%":      "core",
-    "Above BB Mid":           "core",
+    "Above BB Mid":           "display",   # was duplicate of Above 20 SMA (same 20d SMA calculation)
     "Above Prior Day High":   "core",
     "Above Pivot":            "core",
     "Above 5d High":          "core",
@@ -3032,7 +3033,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 26+1opt core signals · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 25+1opt core signals · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):
