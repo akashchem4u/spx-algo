@@ -2234,11 +2234,20 @@ def windows_html(now_hhmm, win_acc=None, cur_vix=0.0, cur_gap=0.0):
         now_badge = '<span class="win-now">NOW</span>' if is_now else ""
         row_style = 'background:#1a2744;border-radius:6px;' if is_now else ""
         acc_badge = ""
-        # Look up by full label first (exact override match); fall back to base label
-        # so windows without overrides still show aggregate stats.
+        # Look up by full label first (exact override match); fall back to base label.
+        # When multiple override variants share the same base label (e.g. "Morning Trend
+        # (hi-VIX→bear)" vs "Morning Trend (hi-VIX→chop)"), prefer the variant whose
+        # key contains the current VIX regime suffix so the badge reflects the actual
+        # live regime, not a random first match (peer review finding #5).
         _lookup_key = lbl if (win_acc and lbl in win_acc) else None
         if _lookup_key is None and win_acc:
-            _lookup_key = next((k for k, v in win_acc.items() if v.get("base_label") == lbl), None)
+            _candidates = [(k, v) for k, v in win_acc.items() if v.get("base_label") == lbl]
+            if _candidates:
+                _vix_sfx = ("hi-VIX" if cur_vix > VIX_FEAR_THRESHOLD
+                            else "vix-calm" if (0 < cur_vix < VIX_CALM_THRESHOLD)
+                            else "")
+                _regime_match = next((k for k, _ in _candidates if _vix_sfx and _vix_sfx in k), None)
+                _lookup_key = _regime_match if _regime_match else _candidates[0][0]
         if win_acc and _lookup_key and _lookup_key in win_acc:
             _ws  = win_acc[_lookup_key]
             _tot = _ws.get("total", 0)
@@ -2471,16 +2480,17 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
                 _pos = _dl.index(_day)
                 _off = _td - _pos
                 _sb  = _spx_d.iloc[:-_off] if _off > 0 else _spx_d
-                _vb  = _vix_d[_vix_d.index <= _spx_d.index[_pos]]
-                _eb  = {k: v[v.index <= _spx_d.index[_pos]] for k, v in _sec_d.items()}
+                # Use strict-less-than so target-day VIX and sector closes are excluded.
+                # Using <= previously leaked same-day data into calibration (peer review finding).
+                _vb  = _vix_d[_vix_d.index < _spx_d.index[_pos]]
+                _eb  = {k: v[v.index < _spx_d.index[_pos]] for k, v in _sec_d.items()}
 
-                # Actual direction: prefer 5m intraday (close vs open = intraday move),
-                # fall back to daily close-to-close when 5m is unavailable.
-                _ds = _day_s.get(_day)
-                if _ds is not None and len(_ds) >= 2:
-                    _day_move = float(_ds.iloc[-1]) - float(_ds.iloc[0])
-                elif _pos + 1 < _td:
-                    # daily fallback: next close vs this close
+                # Always use next-day close-to-close for calibration target.
+                # Previously mixed intraday (close-open) vs close-to-close targets depending
+                # on 5m availability — blending two different horizons into one sample made
+                # group weights unstable and harder to interpret (peer review finding).
+                # Close-to-close matches the exporter's validation target exactly.
+                if _pos + 1 < _td:
                     _this_c = float(_spx_d["Close"].squeeze().iloc[_pos])
                     _next_c = float(_spx_d["Close"].squeeze().iloc[_pos + 1])
                     _day_move = _next_c - _this_c
@@ -2870,7 +2880,10 @@ _core_wg_s, _core_wg_w = [], []
 for _gn, _gs in SIGNAL_GROUPS.items():
     _cpr = [signals.get(k, 0) for k in _gs if SIGNAL_TIERS.get(k) == "core" and k in signals]
     if _cpr:
-        _cw = _grp_weights.get(_gn, 1.0)
+        # Equal weights (1.0) for all groups so Core SSR is directly comparable to the
+        # equal_weight_static_core exporter accuracy numbers (peer review finding #3).
+        # Live-Adj SSR (score) still uses dynamic _grp_weights + news nudge for richer real-time use.
+        _cw = 1.0
         _core_wg_s.append((sum(_cpr) / len(_cpr)) * _cw)
         _core_wg_w.append(_cw)
 _core_ssr      = round(sum(_core_wg_s) / sum(_core_wg_w) * 100) if _core_wg_s else _weighted_base
@@ -2968,7 +2981,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 2yr backtest · 28 core signals"
+_model_ver  = "SSR-v3 · 28 core signals · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):
@@ -3796,7 +3809,9 @@ with _tab_research:
             st.markdown(
                 f'<div style="font-size:13px;color:#94a3b8;margin-bottom:8px">'
                 f'Weekly directional accuracy: <b style="color:{_wk_acc_c};font-size:16px">{_wk_acc}%</b>'
-                f' ({_wk_hits}/{_wk_total} directional calls{_neutral_note})</div>',
+                f' ({_wk_hits}/{_wk_total} directional calls{_neutral_note})'
+                f'<span style="font-size:10px;color:#64748b;margin-left:8px">'
+                f'[full dynamic model — differs from equal-weight static-core exporter]</span></div>',
                 unsafe_allow_html=True)
             _wk_rows = ""
             for _r in _wkly_results:
