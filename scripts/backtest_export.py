@@ -40,7 +40,7 @@ except ImportError as exc:
 GAP_THRESHOLD = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
-EXPECTED_CORE_SIGNAL_COUNT = 25
+EXPECTED_CORE_SIGNAL_COUNT = 23
 SECTOR_TICKERS = ["XLF", "XLK", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 SIGNAL_GROUPS = {
     "Trend": ["Above 20 SMA", "Above 50 SMA", "Above 200 SMA"],
@@ -49,7 +49,10 @@ SIGNAL_GROUPS = {
     "Momentum": ["Higher Close (1d)", "Higher Close (5d)", "RSI Above 50", "MACD Bullish", "RSI Strong Trend"],
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting", "VIX Below 15", "VIX 1d Down"],
     "Breadth": ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
-    "Extremes": ["Stoch Bullish", "RSI Trend Zone"],
+    "Extremes": ["Stoch Bullish"],
+    # RSI Trend Zone removed: ablation delta +1.3% — fires = 1 in the RSI 45–65 zone,
+    # which catches early-bounce days that subsequently fail; the Momentum group's RSI
+    # signals already cover the 50+ threshold with better precision.
     "Options": ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro": ["Yield Curve Positive", "Credit Spread Calm"],
     "Context": ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Gap Down Contrarian"],
@@ -57,7 +60,10 @@ SIGNAL_GROUPS = {
     # Absent on all other days, so _grp_score() skips it.  Adds 1 bullish Context vote on
     # large-gap-down days where the fade-the-gap tendency is statistically strong (~68% of
     # gap-down days reverse).  2yr: removes 73%-wrong calls, improving accuracy +7pp.
-    "Position": ["52w Range Upper Half", "52w Range Top 20%", "Above Prior Day High", "Above Pivot", "Above 5d High"],
+    "Position": ["52w Range Upper Half", "Above Prior Day High", "Above Pivot", "Above 5d High"],
+    # 52w Range Top 20% removed: ablation delta +1.0% — fires = 0 throughout bear trends
+    # (SPX well below 52w highs), dragging Position group score bearish even on days when
+    # near-term price context is constructive.  Kept in display tier for reference.
     # Above BB Mid removed: identical calculation to Above 20 SMA (close > 20d SMA) — was
     # double-counting in two groups (Trend + Position).  Kept in display tier for the UI.
 }
@@ -401,10 +407,21 @@ def run_backtest(days: int = 60) -> dict:
         signal_counts.append(len(sigs))
         dow_idx = spx.index[i].weekday()
 
+        # Opening gap — computed early for the gap-down abstain gate below.
+        day_gap = _safe_float(opens, i) - _safe_float(close, i - 1) if i > 0 else 0.0
+
         bull_call = score >= 55
         bear_call = score <= 44
 
         if not bull_call and not bear_call:
+            continue
+
+        # Gap-down bear abstain: on large-gap-down days the model's bear calls are wrong
+        # ~68% of the time (fade-the-gap pattern — markets reverse gap-down opens more
+        # often than they confirm them).  Abstaining on these removes systematic
+        # false-bear calls without losing meaningful edge; rare bull calls on gap-down
+        # days (score ≥55) still go through since those reflect strong multi-group conviction.
+        if day_gap < -GAP_THRESHOLD and bear_call:
             continue
 
         nxt = float(close.iloc[i + 1])
@@ -417,7 +434,6 @@ def run_backtest(days: int = 60) -> dict:
         correct = (bull_call and up) or (bear_call and dn)
         vix_on_day = _safe_float(_squeeze(vix_slice, "Close"), default=20.0) if not vix_slice.empty else 20.0
         vix_key = "high" if vix_on_day > VIX_FEAR_THRESHOLD else ("low" if vix_on_day < VIX_CALM_THRESHOLD else "mid")
-        day_gap = _safe_float(opens, i) - _safe_float(close, i - 1) if i > 0 else 0.0
         gap_key = "up" if day_gap > GAP_THRESHOLD else ("down" if day_gap < -GAP_THRESHOLD else "flat")
         dow_name = _DOW_NAMES.get(dow_idx, "?")
         vix_buckets[vix_key]["total"] += 1

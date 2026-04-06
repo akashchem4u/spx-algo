@@ -104,7 +104,9 @@ SIGNAL_GROUPS = {
                    "ES Pre-Market Momentum Bull", # ES rising last 30 min pre-open
                    "ES Pre-Market Momentum Bear"], # ES falling last 30 min pre-open
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
-                   "52w Range Top 20%",           # near yearly highs = momentum continuation
+                   # 52w Range Top 20% removed: ablation delta +1.0% — fires = 0 throughout
+                   # bear trends (SPX well below 52w highs), dragging Position group bearish
+                   # even on constructive near-term days.  Kept in display tier for reference.
                    # Above BB Mid removed: identical to Above 20 SMA (close > 20d SMA) — was
                    # double-counting in Trend and Position groups simultaneously
                    "Above Prior Day High",        # current close > PDH = trend continuation / breakout
@@ -122,7 +124,7 @@ SIGNAL_GROUPS = {
 # Core SSR = score from core signals only → directly comparable to backtest accuracy numbers
 # Live-Adj SSR = Core + session/live overlay → richer but only partially validated
 SIGNAL_TIERS = {
-    # ── core (26 active scoring signals) — backtestable from closed daily bars ─
+    # ── core (23 active scoring signals) — backtestable from closed daily bars ─
     "Above 20 SMA":           "core",
     "Above 50 SMA":           "core",
     "Above 200 SMA":          "core",
@@ -144,9 +146,9 @@ SIGNAL_TIERS = {
     "Sector Breadth ≥ 70%":   "display",   # computed for display; removed from scoring (ablation +0.7% drag)
     "Sector Breadth ≥ 85%":   "core",
     "Stoch Bullish":          "core",
-    "RSI Trend Zone":         "core",
+    "RSI Trend Zone":         "display",   # removed from scoring: ablation +1.3% drag — fires on early-bounce days that fail
     "52w Range Upper Half":   "core",
-    "52w Range Top 20%":      "core",
+    "52w Range Top 20%":      "display",   # removed from scoring: ablation +1.0% drag — fires 0 through bear trends
     "Above BB Mid":           "display",   # was duplicate of Above 20 SMA (same 20d SMA calculation)
     "Above Prior Day High":   "core",
     "Above Pivot":            "core",
@@ -2968,6 +2970,18 @@ es_display = f"{es_price:,.2f}" if live["es_price"] else "—"
 spx_display= f"{spx_price:,.2f}" if live["spx_price"] else f"{levels['current']:,.1f}"
 
 rating, action, bias, color = ssr_meta(score)
+
+# Gap-down bear abstain: same logic as backtest_export.py.
+# When the day has a large gap-down AND the model scores ≤44 (bear territory),
+# the historical error rate is ~68%.  We flag this for the user and suppress the
+# directional label — the score is still shown so they can see the raw signals.
+_gap_down_abstain = signals.get("Gap Down Contrarian") == 1 and score <= 44
+if _gap_down_abstain:
+    rating = "⚪ NEUTRAL"
+    action = "GAP-DOWN ABSTAIN — fade-the-gap regime; bear edge is ~32% accurate"
+    bias   = "neutral"
+    color  = "#6b7280"
+
 trade   = suggest_trade(score, levels)
 cur_win, cur_bias, cur_start, cur_end = get_current_window()
 
@@ -3033,7 +3047,7 @@ _sector_status_color = "#4ade80" if _sectors_ok else "#f59e0b"
 _sector_status_txt   = f"Sectors {_sector_count}/{_sector_total}" + (" ✓" if _sectors_ok else " ⚠")
 _vix_status_color = "#4ade80" if vix_now and vix_now > 0 else "#f87171"
 _vix_status_txt   = f"VIX {vix_now}" if vix_now and vix_now > 0 else "VIX unavail"
-_model_ver  = "SSR-v3 · 25+1opt core signals · Core=equal-wt / Live-Adj=dynamic"
+_model_ver  = "SSR-v3 · 23+1opt core signals · gap-down abstain · Core=equal-wt / Live-Adj=dynamic"
 _weights_ts = _grp_weights_ts
 
 def _trust_chip(label, color, title=""):

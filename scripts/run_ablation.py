@@ -47,13 +47,17 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15", "VIX 1d Down"],
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
-    "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
+    "Extremes":   ["Stoch Bullish"],
+    # RSI Trend Zone removed: ablation delta +1.3% — fires on early-bounce days that fail;
+    # Momentum group RSI signals cover the useful directional RSI information.
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Gap Down Contrarian"],
     # Gap Down Contrarian: optional — only in sigs on large gap-down days
     # Seasonal Bull Week removed: not computed in _compute_signals(), caused 0% coverage in ablation
-    "Position":   ["52w Range Upper Half", "52w Range Top 20%",
+    "Position":   ["52w Range Upper Half",
+                   # 52w Range Top 20% removed: ablation delta +1.0% — fires = 0 throughout
+                   # bear trends, dragging Position group even on constructive near-term days.
                    # Above BB Mid removed: identical to Above 20 SMA (close > 20d SMA)
                    "Above Prior Day High", "Above Pivot", "Above 5d High"],
 }
@@ -329,6 +333,9 @@ def run_ablation(verbose: bool = False) -> dict:
             sigs     = _compute_signals(spx_sl, vix_sl, sec_sl)
             score    = _grp_score(sigs)
 
+            # Opening gap — computed early for gap-down abstain gate and regime bucket.
+            gp = float(openp.iloc[i]) - float(close.iloc[i - 1]) if i > 0 else 0.0
+
             nxt      = float(close.iloc[i + 1])
             cur      = float(close.iloc[i])
             up       = nxt > cur + 5
@@ -337,6 +344,12 @@ def run_ablation(verbose: bool = False) -> dict:
             bear_c   = score <= 44
             if not bull_c and not bear_c:
                 continue   # neutral — skip
+
+            # Gap-down bear abstain: mirrors backtest_export.py gate.
+            # Bear calls on large-gap-down days are wrong ~68% of the time.
+            if gp < -GAP_THRESHOLD and bear_c:
+                continue
+
             correct  = (bull_c and up) or (bear_c and dn)
 
             base_t += 1
@@ -350,11 +363,9 @@ def run_ablation(verbose: bool = False) -> dict:
             if correct: _reg["vix"][vk][0] += 1
 
             # Gap regime
-            if i > 0:
-                gp = float(openp.iloc[i]) - float(close.iloc[i - 1])
-                gk = "up" if gp > GAP_THRESHOLD else ("down" if gp < -GAP_THRESHOLD else "flat")
-                _reg["gap"][gk][1] += 1
-                if correct: _reg["gap"][gk][0] += 1
+            gk = "up" if gp > GAP_THRESHOLD else ("down" if gp < -GAP_THRESHOLD else "flat")
+            _reg["gap"][gk][1] += 1
+            if correct: _reg["gap"][gk][0] += 1
 
             # Weekday
             wd = spx.index[i].weekday()

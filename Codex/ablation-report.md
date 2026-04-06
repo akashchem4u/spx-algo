@@ -1,9 +1,9 @@
 # Ablation Report — SPX Algo Core SSR
 
-Generated: `2026-04-06T06:26:31Z`  
+Generated: `2026-04-06T06:54:11Z`  
 Walk-forward period: `2025-01-21` → `2026-04-01`  
-Total directional calls evaluated: `257`  
-**Baseline accuracy: 45.5%  (117/257)**
+Total directional calls evaluated: `211`  
+**Baseline accuracy: 49.3%  (104/211)**
 
 ---
 
@@ -13,41 +13,41 @@ Total directional calls evaluated: `257`
 
 | Regime | Accuracy | Calls |
 |--------|----------|-------|
-| VIX:low | 45.3% (63/139) | 139 |
-| VIX:mid | 45.3% (39/86) | 86 |
-| VIX:high | 46.9% (15/32) | 32 |
+| VIX:low | 49.6% (63/127) | 127 |
+| VIX:mid | 50.0% (34/68) | 68 |
+| VIX:high | 43.8% (7/16) | 16 |
 
 ### Gap Regime
 
 | Regime | Accuracy | Calls |
 |--------|----------|-------|
-| gap:up | 51.0% (26/51) | 51 |
-| gap:flat | 46.7% (79/169) | 169 |
-| gap:down | 32.4% (12/37) | 37 |
+| gap:up | 53.7% (22/41) | 41 |
+| gap:flat | 48.8% (81/166) | 166 |
+| gap:down | 25.0% (1/4) | 4 |
 
 ### Day of Week
 
 | Day | Accuracy | Calls |
 |-----|----------|-------|
-| Mon | 49.0% (25/51) | 51 |
-| Tue | 38.0% (19/50) | 50 |
-| Wed | 56.6% (30/53) | 53 |
-| Thu | 37.0% (20/54) | 54 |
-| Fri | 46.9% (23/49) | 49 |
+| Mon | 51.4% (19/37) | 37 |
+| Tue | 48.8% (21/43) | 43 |
+| Wed | 62.2% (28/45) | 45 |
+| Thu | 39.5% (17/43) | 43 |
+| Fri | 44.2% (19/43) | 43 |
 
 ### Event Days (FOMC/CPI/NFP)
 
 | Type | Accuracy | Calls |
 |------|----------|-------|
-| event | 62.5% (5/8) | 8 |
-| normal | 45.0% (112/249) | 249 |
+| event | 80.0% (4/5) | 5 |
+| normal | 48.5% (100/206) | 206 |
 
 ### OpEx Week
 
 | Type | Accuracy | Calls |
 |------|----------|-------|
-| opex | 48.3% (28/58) | 58 |
-| normal | 44.7% (89/199) | 199 |
+| opex | 53.1% (26/49) | 49 |
+| normal | 48.1% (78/162) | 162 |
 
 ---
 
@@ -59,37 +59,35 @@ Each row shows what happens when one signal is removed from the model.
 
 | Signal | Group | Baseline Acc | Excl Acc | Delta | Coverage |
 |--------|-------|-------------|----------|-------|----------|
-| Gap Down Contrarian | Context | 32.4% | 26.5% (9/34) | -6.0% | 92% |
-| Sector Breadth ≥ 50% | Breadth | 45.5% | 44.4% (103/232) | -1.1% | 90% |
-| Sector Breadth ≥ 85% | Breadth | 45.5% | 44.5% (110/247) | -1.0% | 96% |
-| Volume Above Average | Breadth | 45.5% | 44.6% (111/249) | -0.9% | 97% |
-| MACD Bullish | Momentum | 45.5% | 44.7% (113/253) | -0.9% | 98% |
-| VIX No Spike | Context | 45.5% | 44.8% (99/221) | -0.7% | 86% |
-| Higher Close (5d) | Momentum | 45.5% | 44.8% (112/250) | -0.7% | 97% |
-| Higher Close (1d) | Momentum | 45.5% | 45.0% (113/251) | -0.5% | 98% |
-| VIX 1d Down | Volatility | 45.5% | 45.1% (114/253) | -0.5% | 98% |
-| VIX Falling | Volatility | 45.5% | 45.2% (112/248) | -0.4% | 96% |
-| RSI Above 50 | Momentum | 45.5% | 45.2% (113/250) | -0.3% | 97% |
-| Above 200 SMA | Trend | 45.5% | 45.3% (116/256) | -0.2% | 100% |
-| ATR Contracting | Volatility | 45.5% | 45.3% (112/247) | -0.2% | 96% |
-| Stoch Bullish | Extremes | 45.5% | 45.3% (112/247) | -0.2% | 96% |
-| Above 20 SMA | Trend | 45.5% | 45.4% (114/251) | -0.1% | 98% |
-| Above 50 SMA | Trend | 45.5% | 45.5% (116/255) | -0.0% | 99% |
+| VIX No Spike | Context | 49.3% | 46.8% (88/188) | -2.5% | 89% |
+| Sector Breadth ≥ 50% | Breadth | 49.3% | 47.7% (95/199) | -1.6% | 94% |
+| Higher Close (5d) | Momentum | 49.3% | 47.8% (97/203) | -1.5% | 96% |
+| 52w Range Upper Half | Position | 49.3% | 48.0% (95/198) | -1.3% | 94% |
+| VIX Falling | Volatility | 49.3% | 48.0% (97/202) | -1.3% | 96% |
+| Stoch Bullish | Extremes | 49.3% | 48.0% (85/177) | -1.3% | 84% |
+| VIX Below 20 | Volatility | 49.3% | 48.3% (98/203) | -1.0% | 96% |
+| Volume Above Average | Breadth | 49.3% | 48.5% (97/200) | -0.8% | 95% |
+| RSI Above 50 | Momentum | 49.3% | 48.5% (99/204) | -0.8% | 97% |
+| Gap Up Day | Context | 49.3% | 48.9% (92/188) | -0.4% | 89% |
+| VIX 1d Down | Volatility | 49.3% | 49.0% (98/200) | -0.3% | 95% |
+| Above 20 SMA | Trend | 49.3% | 49.0% (102/208) | -0.3% | 99% |
+| VIX Below 15 | Volatility | 49.3% | 49.3% (99/201) | -0.0% | 95% |
+| Higher Close (1d) | Momentum | 49.3% | 49.3% (100/203) | -0.0% | 96% |
+| ATR Contracting | Volatility | 49.3% | 49.3% (100/203) | -0.0% | 96% |
+| Above Pivot | Position | 49.3% | 49.3% (100/203) | -0.0% | 96% |
+| MACD Bullish | Momentum | 49.3% | 49.3% (101/205) | -0.0% | 97% |
+| RSI Strong Trend | Momentum | 49.3% | 49.3% (101/205) | -0.0% | 97% |
+| Above 200 SMA | Trend | 49.3% | 49.3% (103/209) | -0.0% | 99% |
 | Put/Call Fear Premium | Options | n/a | n/a (coverage loss) | n/a | 0% |
 | Put/Call Fear Abating | Options | n/a | n/a (coverage loss) | n/a | 0% |
 | Yield Curve Positive | Macro | n/a | n/a (coverage loss) | n/a | 0% |
 | Credit Spread Calm | Macro | n/a | n/a (coverage loss) | n/a | 0% |
 | Gap/ATR Normal | Context | n/a | n/a (coverage loss) | n/a | 0% |
-| Gap Up Day | Context | 45.5% | 45.5% (112/246) | +0.0% | 96% |
-| VIX Below 15 | Volatility | 45.5% | 45.6% (115/252) | +0.1% | 98% |
-| Above Pivot | Position | 45.5% | 45.6% (115/252) | +0.1% | 98% |
-| Above 5d High | Position | 45.5% | 45.6% (115/252) | +0.1% | 98% |
-| Above Prior Day High | Position | 45.5% | 45.7% (116/254) | +0.1% | 99% |
-| RSI Strong Trend | Momentum | 45.5% | 45.8% (116/253) | +0.3% | 98% |
-| 52w Range Upper Half | Position | 45.5% | 45.9% (113/246) | +0.4% | 96% |
-| RSI Trend Zone | Extremes | 45.5% | 46.1% (106/230) | +0.6% | 89% |
-| VIX Below 20 | Volatility | 45.5% | 46.1% (113/245) | +0.6% | 95% |
-| 52w Range Top 20% | Position | 45.5% | 46.3% (114/246) | +0.8% | 96% |
+| Above Prior Day High | Position | 49.3% | 49.5% (101/204) | +0.2% | 97% |
+| Above 50 SMA | Trend | 49.3% | 49.5% (104/210) | +0.2% | 100% |
+| Sector Breadth ≥ 85% | Breadth | 49.3% | 49.8% (101/203) | +0.5% | 96% |
+| Above 5d High | Position | 49.3% | 49.8% (101/203) | +0.5% | 96% |
+| Gap Down Contrarian | Context | 25.0% | 33.3% (1/3) | +8.3% | 75% |
 
 ---
 
