@@ -92,7 +92,13 @@ SIGNAL_GROUPS = {
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
                    "VIX No Spike",               # no 3-day VIX surge = calm context (inverted: 0 when spike)
                    "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
-                   "Overnight Upper Third"],      # ES in top 1/3 of overnight range: strong bull lean
+                   "Overnight Upper Third",       # ES in top 1/3 of overnight range: strong bull lean
+                   "Overnight Range Compressed",  # tight overnight range = breakout pending
+                   "Overnight Range Expanded",    # wide overnight range = exhaustion / chop lean
+                   "NQ Bull Divergence",          # NQ outperforming ES = tech risk-on
+                   "NQ Bear Divergence",          # NQ lagging ES = distribution / risk-off
+                   "ES Pre-Market Momentum Bull", # ES rising last 30 min pre-open
+                   "ES Pre-Market Momentum Bear"], # ES falling last 30 min pre-open
     "Position":   ["52w Range Upper Half",       # above midpoint of 52w range = trend context
                    "52w Range Top 20%",           # near yearly highs = momentum continuation
                    "Above BB Mid",               # above 20d BB midline = short-term bull context
@@ -148,8 +154,14 @@ SIGNAL_TIERS = {
     "Put/Call Fear Abating":  "live",
     "Yield Curve Positive":   "live",
     "Credit Spread Calm":     "live",
-    "Above Overnight Midpoint": "live",
-    "Overnight Upper Third":  "live",
+    "Above Overnight Midpoint":      "live",
+    "Overnight Upper Third":         "live",
+    "Overnight Range Compressed":    "live",
+    "Overnight Range Expanded":      "live",
+    "NQ Bull Divergence":            "live",
+    "NQ Bear Divergence":            "live",
+    "ES Pre-Market Momentum Bull":   "live",
+    "ES Pre-Market Momentum Bear":   "live",
 }
 
 # US Federal Holidays (market closed) — 2025 and 2026
@@ -988,6 +1000,53 @@ def fetch_live():
             results["spx_ts"]     = spx_df.index[-1].astimezone(EST).strftime("%I:%M %p EST")
     except Exception:
         pass
+
+    # ── NQ/ES divergence ─────────────────────────────────────────────────────
+    # NQ outperforming ES = tech/growth risk-on (bull lean).
+    # NQ lagging ES = distribution in leadership (bear lean).
+    # divergence = nq_pct − es_pct. Threshold ±0.15% separates signal from noise.
+    try:
+        nq_df = yf.download("NQ=F", period="2d", interval="1m", progress=False, auto_adjust=True)
+        if not nq_df.empty:
+            nq_df.index = nq_df.index.tz_convert(EST)
+            _nq_last  = _last_bar_est if results.get("es_price") else nq_df.index[-1]
+            _staleness = (datetime.now(EST) - nq_df.index[-1]).total_seconds() / 60
+            if _staleness <= 30:
+                nq_price = round(_close_scalar(nq_df, -1), 2)
+                nq_prev  = _close_scalar(nq_df, -2) if len(nq_df) > 1 else nq_price
+                nq_pct   = round((nq_price - nq_prev) / nq_prev * 100, 3) if nq_prev else 0.0
+                es_pct   = results.get("es_pct") or 0.0
+                results["nq_price"]    = nq_price
+                results["nq_pct"]      = nq_pct
+                results["nq_es_div"]   = round(nq_pct - es_pct, 3)   # + = NQ leading, − = NQ lagging
+    except Exception:
+        pass
+
+    # ── ES pre-market momentum (last 30 min slope) ───────────────────────────
+    # Compares ES price now to 30 min ago.  Rising = momentum bull, falling = bear.
+    # Only meaningful pre-market (ES is the forward price signal pre-9:30).
+    # Uses the same es_df fetched above (still in scope via closure over results).
+    try:
+        if results.get("es_price") and "es_df" not in dir():
+            pass  # es_df already processed above; reference via re-fetch only if needed
+        # Re-use es_df if it was set above (it is in outer try scope via yfinance call)
+        # We access it through a separate fetch to keep the logic self-contained.
+        _es_mom_df = yf.download("ES=F", period="1d", interval="1m", progress=False, auto_adjust=True)
+        if not _es_mom_df.empty:
+            _es_mom_df.index = _es_mom_df.index.tz_convert(EST)
+            _now_est = datetime.now(EST)
+            _t30_ago = _now_est - timedelta(minutes=30)
+            _recent  = _es_mom_df[_es_mom_df.index >= _t30_ago]
+            if len(_recent) >= 4:
+                _mom_start = _close_scalar(_es_mom_df, _es_mom_df.index.searchsorted(_t30_ago))
+                _mom_end   = _close_scalar(_es_mom_df, -1)
+                _mom_chg   = round(_mom_end - _mom_start, 2)
+                _mom_pct   = round(_mom_chg / _mom_start * 100, 3) if _mom_start else 0.0
+                results["es_mom_30m"]     = _mom_chg    # pts change last 30 min
+                results["es_mom_30m_pct"] = _mom_pct    # % change last 30 min
+    except Exception:
+        pass
+
     return results
 
 
@@ -1257,6 +1316,35 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None):
     if macro and macro.get("overnight_pos") is not None:
         sigs["Above Overnight Midpoint"] = int(macro["overnight_pos"] > 0.5)
         sigs["Overnight Upper Third"]    = int(macro["overnight_pos"] > 0.67)
+
+    # ── NQ/ES divergence ─────────────────────────────────────────────────────
+    # NQ outperforming ES (div > +0.15%) = tech leadership = risk-on bull signal.
+    # NQ lagging ES (div < −0.15%) = distribution in leadership = bear signal.
+    # Threshold 0.15% filters out tick noise on quiet pre-market sessions.
+    if macro and macro.get("nq_es_div") is not None:
+        _div = macro["nq_es_div"]
+        sigs["NQ Bull Divergence"] = int(_div > 0.15)   # NQ leading ES = risk-on
+        sigs["NQ Bear Divergence"] = int(_div < -0.15)  # NQ lagging ES = risk-off
+
+    # ── ES pre-market momentum ────────────────────────────────────────────────
+    # Rising ES over the last 30 min = pre-market momentum confirms bull bias.
+    # Falling ES over 30 min dampens any bull score — supply entering pre-open.
+    # Threshold ±0.05% (≈ ±3 pts on ES at 5800) filters micro-noise.
+    if macro and macro.get("es_mom_30m_pct") is not None:
+        _ep = macro["es_mom_30m_pct"]
+        sigs["ES Pre-Market Momentum Bull"] = int(_ep >  0.05)
+        sigs["ES Pre-Market Momentum Bear"] = int(_ep < -0.05)
+
+    # ── Overnight range compression ───────────────────────────────────────────
+    # overnight_range_atr: overnight range expressed as a fraction of the daily ATR.
+    # Narrow range (<0.30× ATR) = compression = breakout risk either direction.
+    # Wide range (>0.70× ATR) = expansion = most of the day's move may be done.
+    # Compressed overnight = score dampening applied downstream via projection confidence.
+    # Here we fire a signal only for the expansion case (most move done = mean-revert lean).
+    if macro and macro.get("overnight_range_atr") is not None:
+        _ora = macro["overnight_range_atr"]
+        sigs["Overnight Range Compressed"] = int(_ora < 0.30)  # tight range = pending breakout
+        sigs["Overnight Range Expanded"]   = int(_ora > 0.70)  # big overnight = exhaustion lean
 
     # ── Macro / regime signals ────────────────────────────────────────────────
     # Yield Curve: 10yr − 3mo > 0 = normal (bull context); < 0 = inverted = recession warning
@@ -2305,6 +2393,13 @@ news_data = load_news(vix_now=vix_now)
 if live.get("overnight_pos") is not None:
     macro_data["overnight_pos"] = live["overnight_pos"]
 
+# NQ/ES divergence and ES pre-market momentum from live feed.
+# overnight_range_atr is injected later (after levels = compute_levels) since it needs ATR.
+if live.get("nq_es_div") is not None:
+    macro_data["nq_es_div"] = live["nq_es_div"]
+if live.get("es_mom_30m_pct") is not None:
+    macro_data["es_mom_30m_pct"] = live["es_mom_30m_pct"]
+
 _base_score, buys, sells, signals = compute_ssr(spx, vix, pcr, sectors, macro=macro_data)
 
 # ── Intraday RSI override: replace daily RSI signals with 5-min RSI during RTH ──
@@ -2654,6 +2749,28 @@ if _pre_market and live["es_price"]:
         signals["Gap/ATR Normal"] = int(0.0 <= _impl_gap_atr < 0.5)
         buys  = sum(1 for v in signals.values() if v == 1)
         sells = sum(1 for v in signals.values() if v == 0)
+
+# ── Overnight range quality (needs levels["atr"] — injected here post-levels) ──
+# Compressed range (<0.30× ATR) = breakout pending; expanded (>0.70×) = exhaustion lean.
+_on_high_v = live.get("overnight_high")
+_on_low_v  = live.get("overnight_low")
+if _on_high_v is not None and _on_low_v is not None and levels["atr"] > 0:
+    _ora = round((_on_high_v - _on_low_v) / levels["atr"], 3)
+    macro_data["overnight_range_atr"] = _ora
+    signals["Overnight Range Compressed"] = int(_ora < 0.30)
+    signals["Overnight Range Expanded"]   = int(_ora > 0.70)
+
+# ── NQ/ES divergence and ES pre-market momentum (direct signal injection) ────
+# These are already in macro_data but need a direct signals[] write so the
+# re-scorer below picks them up without another full compute_ssr pass.
+if live.get("nq_es_div") is not None:
+    _div = live["nq_es_div"]
+    signals["NQ Bull Divergence"] = int(_div >  0.15)
+    signals["NQ Bear Divergence"] = int(_div < -0.15)
+if live.get("es_mom_30m_pct") is not None:
+    _ep = live["es_mom_30m_pct"]
+    signals["ES Pre-Market Momentum Bull"] = int(_ep >  0.05)
+    signals["ES Pre-Market Momentum Bear"] = int(_ep < -0.05)
 
 # ── Drift dampening: neutralize persistently-wrong signals before re-score ────
 # _signal_drift_check() is defined below; its @st.cache_data wrapper means
@@ -3436,6 +3553,41 @@ if live.get("overnight_pos") is not None:
                 else "Lower third — bear lean" if _on_pos < 0.33
                 else "Mid range — no clear edge")
     _why_rows.append(("Overnight (ES)", _on_lbl, _on_c, _on_ov))
+
+# 4c. Overnight range compression vs daily ATR
+if macro_data.get("overnight_range_atr") is not None:
+    _ora     = macro_data["overnight_range_atr"]
+    _ora_pct = round(_ora * 100)
+    _ora_c   = "#f59e0b" if _ora < 0.30 else ("#94a3b8" if _ora < 0.70 else "#f87171")
+    _ora_ov  = ("Compressed (<30% ATR) — breakout pending" if _ora < 0.30
+                else "Expanded (>70% ATR) — exhaustion lean, expect chop" if _ora >= 0.70
+                else "Normal range — no override")
+    _why_rows.append(("ON Range vs ATR", f"{_ora_pct}% of daily ATR", _ora_c, _ora_ov))
+
+# 4d. NQ/ES divergence
+if live.get("nq_es_div") is not None:
+    _div    = live["nq_es_div"]
+    _nq_p   = live.get("nq_pct", 0.0)
+    _es_p   = live.get("es_pct", 0.0)
+    _div_c  = "#4ade80" if _div > 0.15 else ("#f87171" if _div < -0.15 else "#94a3b8")
+    _div_ov = ("NQ leading ES — tech risk-on, bull lean" if _div > 0.15
+               else "NQ lagging ES — tech distributing, bear lean" if _div < -0.15
+               else "No meaningful divergence")
+    _why_rows.append(("NQ/ES Divergence",
+                      f"NQ {_nq_p:+.2f}%  ES {_es_p:+.2f}%  (Δ{_div:+.3f}%)",
+                      _div_c, _div_ov))
+
+# 4e. ES pre-market momentum (30-min slope)
+if live.get("es_mom_30m_pct") is not None:
+    _ep    = live["es_mom_30m_pct"]
+    _ep_pt = live.get("es_mom_30m", 0.0)
+    _ep_c  = "#4ade80" if _ep > 0.05 else ("#f87171" if _ep < -0.05 else "#94a3b8")
+    _ep_ov = ("Rising momentum — confirms bull bias" if _ep > 0.05
+              else "Falling momentum — supply entering pre-open" if _ep < -0.05
+              else "Flat — no momentum signal")
+    _why_rows.append(("ES Mom (30m)",
+                      f"{_ep_pt:+.1f} pts  ({_ep:+.3f}%)",
+                      _ep_c, _ep_ov))
 
 # 5. OpEx
 if _opex_friday:
