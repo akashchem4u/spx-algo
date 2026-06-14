@@ -44,7 +44,22 @@ TIME_WINDOWS = [
 ]
 
 # Gap thresholds (points) for conditional window overrides
-GAP_THRESHOLD = 25.0
+GAP_THRESHOLD = 25.0  # legacy floor; prefer gap_threshold_for_atr() in vol-sensitive contexts
+
+def gap_threshold_for_atr(atr: float) -> float:
+    """ATR-relative gap threshold.
+
+    Replaces the hardcoded 25.0pt threshold with one that scales with daily volatility.
+    At ATR ~70 (post-2024 norm), returns ~24.5 — essentially unchanged.
+    At ATR ~40 (deep calm), returns 20.0 — more sensitive to gap-conditional logic.
+    At ATR ~100 (VIX spike), returns 35.0 — avoids over-triggering on routine vol-day gaps.
+
+    Floor of 20pt prevents over-aggressive triggering in ultra-low-vol regimes;
+    fraction of 0.35 matches the empirical "meaningful gap" magnitude relative to daily range.
+    """
+    if not (atr and atr > 0):
+        return GAP_THRESHOLD
+    return max(20.0, atr * 0.35)
 
 # VIX regime thresholds for window bias overrides
 VIX_FEAR_THRESHOLD = 25.0   # high fear → chop windows trend bear, bull windows soften
@@ -86,19 +101,24 @@ SIGNAL_GROUPS = {
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
                    "VIX Below 15",              # ultra-calm tier for gradient
                    "VIX 1d Down",               # day-over-day VIX decline (live + historical)
-                   "VVIX Below 100"],            # second-order vol (VIX of VIX < 100 = calm)
+                   "VVIX Below 100",            # second-order vol (VIX of VIX < 100 = calm)
+                   "VIX Term Contango"],        # VIX9D < VIX (no near-term fear premium)
                    # VVIX Below 100 added: 2yr +1.9pp, 60d +2.9pp.  Pearson r=0.57 vs VIX Below 20 (partial independence).
                    # VIX 3d Relief removed: ablation shows +0.5% drag (fires on bear-market relief rallies)
     "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "A/D Line Positive",
-                   "Sector Breadth ≥ 85%"],         # near-full breadth: third tier
+                   "Sector Breadth ≥ 85%",
+                   "XLK Leadership"],          # tech-led breadth (quality risk-on)         # near-full breadth: third tier
                    # Sector Breadth ≥ 70% removed: ablation shows +0.7% drag (fires near bull market peaks)
-    "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],
+    "Extremes":   ["Stoch Bullish", "RSI Trend Zone"],   # iter 1 restored: removal hurt 252d -4pp
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
     "Context":    ["Gap/ATR Normal",             # gap < 0.5× daily ATR = low-conviction open
                    "VIX No Spike",               # no 3-day VIX surge = calm context (inverted: 0 when spike)
-                   "Gap Up Day",                 # open > prev close + GAP_THRESHOLD = large positive gap
+                   # Gap Up Day removed from scoring: ablation +1.1pp drag — gap-up days trigger fade,
+                   # so the binary bullish vote is counter-predictive.  Still computed in display tier
+                   # and used by window_bias_at() to apply intraday timing overrides.
                    "Gap Down Contrarian",        # OPTIONAL: only in sigs on large gap-down days (fade tendency)
+                   "Pre-FOMC Eve",               # day-before-FOMC drift (documented pre-FOMC rally pattern)
                    "Above Overnight Midpoint",   # ES holding upper half of overnight range (live-only)
                    "Overnight Upper Third",       # ES in top 1/3 of overnight range: strong bull lean
                    "Overnight Range Compressed",  # tight overnight range = breakout pending
@@ -145,11 +165,13 @@ SIGNAL_TIERS = {
     "VIX 3d Relief":          "display",   # computed for display; removed from scoring (ablation +0.5% drag)
     "VIX 1d Down":            "core",
     "VVIX Below 100":         "core",      # second-order vol; 2yr +1.9pp, 60d +2.9pp (VVIX-01)
+    "VIX Term Contango":      "core",      # VIX9D < VIX = no near-term fear premium (term structure)
     "VIX No Spike":           "core",
     "Volume Above Average":   "core",
     "Sector Breadth ≥ 50%":   "core",
     "Sector Breadth ≥ 70%":   "display",   # computed for display; removed from scoring (ablation +0.7% drag)
     "Sector Breadth ≥ 85%":   "core",
+    "XLK Leadership":         "core",      # tech-led breadth (XLK 5d return > XLP+XLU avg) = quality risk-on
     "Stoch Bullish":          "core",
     "RSI Trend Zone":         "display",   # removed from scoring: ablation +1.3% drag — fires on early-bounce days that fail
     "52w Range Upper Half":   "core",
@@ -158,8 +180,10 @@ SIGNAL_TIERS = {
     "Above Prior Day High":   "core",
     "Above Pivot":            "core",
     "Above 5d High":          "core",
-    "Gap Up Day":             "core",     # large positive gap, computable from daily OHLC Open
+    "Gap Up Day":             "display",  # REMOVED FROM SCORING: ablation +1.1pp drag — gap-up days trigger fade
+                                            # effect, so scoring it bullish is counter-predictive. Kept for window_bias_at overrides.
     "Gap Down Contrarian":    "core",     # optional: only in sigs on large gap-down days (fade tendency)
+    "Pre-FOMC Eve":           "core",     # 1 = tomorrow is FOMC day (documented pre-FOMC drift)
     # ── session (1 signal) — valid only after today's open price is known ────
     "Gap/ATR Normal":         "session",
     # ── live (7 signals) — real-time feeds; not available in day backtest ────
@@ -1012,6 +1036,10 @@ def to_ampm(hhmm):
 # DATA FETCH
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Module-level cache for auxiliary data series that compute_ssr consumes but doesn't
+# accept as a parameter (avoids breaking the signature in many call sites).
+_VIX9D_CACHE: dict = {"s": pd.Series(dtype=float)}
+
 @st.cache_data(ttl=300)
 def fetch_data():
     spx = yf.download("^GSPC", period="100d", interval="1d", progress=False, auto_adjust=True)
@@ -1021,6 +1049,14 @@ def fetch_data():
         vvix = _vvix_df["Close"].squeeze().dropna() if not _vvix_df.empty else pd.Series(dtype=float)
     except Exception:
         vvix = pd.Series(dtype=float)
+    # VIX9D — short-term VIX (9-day) for term structure signal.  Stored on module-level
+    # cache for compute_ssr to consume.  Backwardation (VIX9D > VIX) = near-term fear
+    # elevated relative to 30d expectation = bearish signal level can't see.
+    try:
+        _vix9d_df = yf.download("^VIX9D", period="30d", interval="1d", progress=False, auto_adjust=True)
+        _VIX9D_CACHE["s"] = _vix9d_df["Close"].squeeze().dropna() if not _vix9d_df.empty else pd.Series(dtype=float)
+    except Exception:
+        _VIX9D_CACHE["s"] = pd.Series(dtype=float)
     sectors = {}
     for t in ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]:
         try:
@@ -1029,9 +1065,18 @@ def fetch_data():
             sectors[t] = pd.DataFrame()
     old_err = sys.stderr; sys.stderr = io.StringIO()
     try:
-        pcr = yf.download("^CPC", period="60d", interval="1d", progress=False, auto_adjust=True)
+        # ^PCSP (equity-only PCR) preferred over ^CPC (total PCR) — total includes
+        # index options used for institutional hedging, which inflates the reading
+        # without reflecting equity sentiment.  Equity-only is more predictive of SPX
+        # direction.  Fallback to ^CPC if ^PCSP is unavailable from yfinance.
+        pcr = yf.download("^PCSP", period="60d", interval="1d", progress=False, auto_adjust=True)
+        if pcr.empty:
+            pcr = yf.download("^CPC", period="60d", interval="1d", progress=False, auto_adjust=True)
     except Exception:
-        pcr = pd.DataFrame()
+        try:
+            pcr = yf.download("^CPC", period="60d", interval="1d", progress=False, auto_adjust=True)
+        except Exception:
+            pcr = pd.DataFrame()
     sys.stderr = old_err
     return spx, vix, vvix, pcr, sectors
 
@@ -1315,11 +1360,22 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None, vvix=None):
     _mkt_open = (_now_wd < 5 and 9 <= _now_h < 16)
     sigs["VIX Falling"] = (int(len(vix_c) >= 6 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-6]))
                            if (len(vix_c) >= 6 and _mkt_open) else 0)
-    # ATR Contracting: need >= 20 bars for ATR(14) to stabilize + 5 for comparison
-    sigs["ATR Contracting"]   = int(len(atr_v.dropna()) >= 20 and atr_v.iloc[-1] < atr_v.iloc[-5])
-    # VIX Below 15: ultra-calm regime tier. Pairs with "VIX Below 20" for gradient:
-    # VIX 16-20 fires one signal; VIX <15 fires both — stronger low-vol bull context.
-    sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15)
+    # ATR Contracting: volatility compression regime.  Was 1-day comparison (noisy);
+    # now percentile-based — current ATR in lower 15% of its 20d range = genuine compression
+    # / breakout-pending regime.  Removes daily-noise false signals from non-trending markets.
+    _atr_dropna = atr_v.dropna()
+    if len(_atr_dropna) >= 20:
+        _atr_now      = float(_atr_dropna.iloc[-1])
+        _atr_20d_avg  = float(_atr_dropna.iloc[-20:].mean())
+        sigs["ATR Contracting"] = int(_atr_now < _atr_20d_avg * 0.85)
+    else:
+        sigs["ATR Contracting"] = 0
+    # VIX Below 15: ultra-calm regime tier. Now CONDITIONAL on VIX Falling.
+    # 2yr ablation showed raw VIX <15 has +0.8pp drag — ultra-low VIX often precedes
+    # complacency-driven corrections (false-bull at market tops). Requiring momentum
+    # (VIX Falling) ensures we only score it bullish when volatility is genuinely
+    # contracting rather than just pinned low.
+    sigs["VIX Below 15"]      = int(vix_c.iloc[-1] < 15 and sigs.get("VIX Falling", 0) == 1)
 
     # Note: VIX Below 20 / VIX Below 15 are NOT blanket-removed in hi-VIX.
     # They are correctly bearish during genuine sustained bear trends.
@@ -1346,6 +1402,20 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None, vvix=None):
     # while VIX Falling captures a multi-day fear-unwind trend.  The two are now
     # genuinely independent signals with different time horizons.
     sigs["VIX 1d Down"] = int(len(vix_c) >= 2 and float(vix_c.iloc[-1]) < float(vix_c.iloc[-2]))
+
+    # VIX Term Contango: VIX9D < VIX (30-day) = normal term structure = no near-term fear premium.
+    # Backwardation (VIX9D > VIX) = near-term fear spike that the raw VIX level misses.
+    # Captures regime changes (e.g. event-driven dislocations) before they show in spot VIX.
+    # Aligned by as-of-date so historical replays don't use future data.
+    try:
+        _v9d = _VIX9D_CACHE.get("s", pd.Series(dtype=float))
+        if as_of_dt is not None and len(_v9d) > 0:
+            _cut = pd.Timestamp(as_of_dt.date())
+            _v9d = _v9d[_v9d.index <= _cut]
+        if len(_v9d) > 0 and len(vix_c) > 0:
+            sigs["VIX Term Contango"] = int(float(_v9d.iloc[-1]) < float(vix_c.iloc[-1]))
+    except Exception:
+        pass
 
     # VVIX Below 100: second-order volatility signal — VVIX (VIX of VIX) < 100.
     # Measures the market's uncertainty about future VIX itself.  When VVIX < 100,
@@ -1400,14 +1470,36 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None, vvix=None):
             if _day_gap_pts < -GAP_THRESHOLD:
                 sigs["Gap Down Contrarian"] = 1
 
+    # Pre-FOMC Eve: SPX has documented pre-FOMC drift (~rallies into announcement).
+    # Fires = 1 when tomorrow is a FOMC decision day.  Uses the same event calendar
+    # already loaded (_ECON_CAL).  Context group bullish vote — does not affect FOMC-day overrides.
+    try:
+        _ref_date = as_of_dt.date() if as_of_dt is not None else datetime.now(EST).date()
+        _next_day = _ref_date + timedelta(days=1)
+        # Account for weekend: if today is Friday, "next session" is Monday
+        while _next_day.weekday() >= 5:    # 5=Sat, 6=Sun
+            _next_day = _next_day + timedelta(days=1)
+        _next_str = _next_day.strftime("%Y-%m-%d")
+        _is_pre_fomc = any(ev[0] == _next_str and ev[2] == "FOMC" for ev in _ECON_CAL)
+        sigs["Pre-FOMC Eve"] = int(_is_pre_fomc)
+    except Exception:
+        sigs["Pre-FOMC Eve"] = 0
+
     # ── Breadth group ────────────────────────────────────────────────────────
-    # Volume directional: requires BOTH above-average volume AND a positive close
-    # (accumulation = institutions buying into strength).  Raw high-volume alone
-    # can be panic selling — that is not a bull signal.
-    _vol_20_mean = vol.rolling(20).mean().iloc[-1]
-    _vol_above_avg = len(vol.dropna()) >= 20 and vol.iloc[-1] > _vol_20_mean
-    _price_up_today = len(close) >= 2 and close.iloc[-1] > close.iloc[-2]
-    sigs["Volume Above Average"] = int(_vol_above_avg and _price_up_today)
+    # Volume directional (Accumulation Day): above-average volume + intraday strength
+    # (close > open).  Was previously close > prev_close which duplicated "Higher Close (1d)";
+    # using close > open captures true intraday accumulation (buyers in control during the
+    # session), making the signal independent and more meaningful than overnight-gap-driven
+    # higher-close days.  Distribution days (high vol + close < open) explicitly set to 0.
+    _vol_20_mean    = vol.rolling(20).mean().iloc[-1]
+    _vol_above_avg  = len(vol.dropna()) >= 20 and vol.iloc[-1] > _vol_20_mean
+    try:
+        _open_today = float(spx["Open"].squeeze().iloc[-1])
+        _close_today = float(close.iloc[-1])
+        _intraday_up = _close_today > _open_today
+    except Exception:
+        _intraday_up = len(close) >= 2 and close.iloc[-1] > close.iloc[-2]   # fallback
+    sigs["Volume Above Average"] = int(_vol_above_avg and _intraday_up)
 
     # Sector breadth — only 50% threshold kept (30% and 70% were redundant)
     _sec_closes = {}
@@ -1432,6 +1524,21 @@ def compute_ssr(spx, vix, pcr, sectors, macro=None, as_of_dt=None, vvix=None):
         #   >50% = broad participation; >70% = strong; >85% = near-full breadth.
         sigs["Sector Breadth ≥ 70%"] = int((_above / _total_s) >= 0.7)
         sigs["Sector Breadth ≥ 85%"] = int((_above / _total_s) >= 0.85)
+
+        # XLK Leadership: tech (XLK, ~30% SPX weight) outperforming defensive sectors (XLP+XLU avg).
+        # Raw sector-count breadth treats every sector equally — but tech-led breadth signals
+        # genuine risk-on quality, while utility-led breadth often precedes corrections.
+        # 5-day return comparison removes single-day noise.
+        try:
+            if "XLK" in _sec_closes and "XLP" in _sec_closes and "XLU" in _sec_closes:
+                _xlk = _sec_closes["XLK"]; _xlp = _sec_closes["XLP"]; _xlu = _sec_closes["XLU"]
+                if len(_xlk) >= 6 and len(_xlp) >= 6 and len(_xlu) >= 6:
+                    _xlk_ret = float(_xlk.iloc[-1] / _xlk.iloc[-6] - 1)
+                    _def_ret = (float(_xlp.iloc[-1] / _xlp.iloc[-6] - 1) +
+                                float(_xlu.iloc[-1] / _xlu.iloc[-6] - 1)) / 2
+                    sigs["XLK Leadership"] = int(_xlk_ret > _def_ret)
+        except Exception:
+            pass
 
     # ── Extremes group ───────────────────────────────────────────────────────
     sigs["Stoch Bullish"]   = int(stoch_k.iloc[-1] > stoch_d.iloc[-1])
@@ -1638,7 +1745,7 @@ def is_opex_friday(ref_date=None):
 
 def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", opex=False,
                    event_types=None, weekday=None, orb_range_atr=0.0, atr=0.0,
-                   gap_confirmed=False):
+                   gap_confirmed=False, ssr_score=None):
     """
     Return (bias, label) for a given HH:MM.
     gap           = today's open − prior close (positive = gap-up, negative = gap-down).
@@ -1663,27 +1770,29 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
     """
     # Pre-compute ATR-relative gap size (0 = unknown ATR, skip ratio logic)
     _gap_atr_ratio = abs(gap) / atr if atr > 0 else 0.0
-    _small_gap_up  = gap > GAP_THRESHOLD and _gap_atr_ratio < 0.4   # gap-up but < 0.4× ATR
+    # ATR-dynamic gap threshold — scales with current volatility rather than fixed 25pt floor.
+    _gap_thresh    = gap_threshold_for_atr(atr)
+    _small_gap_up  = gap > _gap_thresh and _gap_atr_ratio < 0.4   # gap-up but < 0.4× ATR
     # Catalyst-aligned gap: strong news (|news_score| ≥ 0.25) that confirms the gap direction.
     # A macro catalyst (e.g. geopolitical de-escalation, surprise Fed pivot) means the gap
     # is fundamentally driven — it should NOT be faded and should NOT be suppressed by the
     # hi-VIX bull→chop override.  Both the gap-fade and the hi-VIX demotion are bypassed.
     _gap_catalyst_aligned = (
-        (gap > GAP_THRESHOLD  and news_score >=  0.25) or
-        (gap < -GAP_THRESHOLD and news_score <= -0.25)
+        (gap > _gap_thresh  and news_score >=  0.25) or
+        (gap < -_gap_thresh and news_score <= -0.25)
     )
     for start, end, label, bias in TIME_WINDOWS:
         if start <= hhmm < end:
             # ── Gap-conditional overrides ──────────────────────────────────
             # Skip gap-fade when a macro catalyst confirms the gap direction.
-            if label == "Pre-Bull Fade" and gap > GAP_THRESHOLD and not _gap_catalyst_aligned:
+            # Threshold (_gap_thresh) is ATR-relative: ~25pt at ATR 70, ~20pt at ATR 40, ~35pt at ATR 100.
+            if label == "Pre-Bull Fade" and gap > _gap_thresh and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-up→chop)"
-            if label == "Afternoon Trend" and gap > GAP_THRESHOLD and not _gap_catalyst_aligned:
+            if label == "Afternoon Trend" and gap > _gap_thresh and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-up→chop)"
             # Gap-down override: Bull Window loses reliability on large gap-down opens.
-            # On gap-down >25pts, the 10:00-10:30 bounce attempt is uncertain — treat as chop.
             # (VIX > 25 already handles this via hi-VIX→chop, but gap-down at VIX 18-25 is missed.)
-            if label == "Bull Window" and gap < -GAP_THRESHOLD and not _gap_catalyst_aligned:
+            if label == "Bull Window" and gap < -_gap_thresh and not _gap_catalyst_aligned:
                 return "chop", label + " (gap-down→chop)"
 
             # ── Hi-VIX small gap-up: Bull Window stays bull (gap-fade bounce) ──
@@ -1707,13 +1816,13 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                     # Gap confirmed after 9:45 AM: the gap is NOT fading — keep
                     # chop windows as chop rather than converting to bear in the
                     # first 2 hours.  The market is holding its ground despite VIX.
-                    if gap_confirmed and gap > GAP_THRESHOLD and hhmm < "11:30":
+                    if gap_confirmed and gap > _gap_thresh and hhmm < "11:30":
                         return "chop", label + " (gap-confirmed→chop)"
                     # Gap-down bounce protection: gap-down + hi-VIX mornings bounce
                     # >50% of the time historically.  Keep chop windows as chop until
                     # 11:30 instead of forcing bear — trend confirmation is unreliable
                     # before midday after a large gap-down open.
-                    if gap < -GAP_THRESHOLD and hhmm < "11:30" and not _gap_catalyst_aligned:
+                    if gap < -_gap_thresh and hhmm < "11:30" and not _gap_catalyst_aligned:
                         return "chop", label + " (gap-dn bounce zone)"
                     return "bear", label + " (hi-VIX→bear)"
                 if bias == "bull" and not _gap_catalyst_aligned:
@@ -1779,6 +1888,20 @@ def window_bias_at(hhmm, gap=0.0, vix=0.0, news_score=0.0, orb_status="inside", 
                     return "bull", label + " (news→bull)"
                 else:
                     return "bear", label + " (news→bear)"
+
+            # SSR-modulated softening: when daily Core SSR is strongly directional,
+            # counter-trend window biases lose reliability.  Strong bull day → bear windows
+            # soften to chop; strong bear day → bull windows soften to chop.  Applied AFTER
+            # all other overrides so explicit catalyst/VIX/news rules still take precedence.
+            if ssr_score is not None:
+                try:
+                    _ssr = int(ssr_score)
+                    if _ssr >= 70 and bias == "bear":
+                        return "chop", label + f" (SSR={_ssr}→softened)"
+                    if _ssr <= 30 and bias == "bull":
+                        return "chop", label + f" (SSR={_ssr}→softened)"
+                except Exception:
+                    pass
 
             return bias, label
     return "neutral", "Outside Hours"
@@ -1879,7 +2002,7 @@ def generate_es_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, news
         if is_es_active(t):
             hhmm     = t.strftime("%H:%M")
             _is_open_bell = (t == open_t)  # first slot of the session
-            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed)
+            win_bias, win_label = window_bias_at(hhmm, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed, ssr_score=score)
             wf       = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
             satr     = slot_atr(t.hour, is_open_bell=_is_open_bell)
 
@@ -1999,7 +2122,7 @@ def generate_spx_projections(base_price, daily_atr, score, gap=0.0, vix=0.0, new
         sh, sm = map(int, slot.split(":"))
         t        = EST.localize(datetime(session_date.year, session_date.month, session_date.day, sh, sm))
         is_past  = (not all_future) and (t < now)
-        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed)
+        win_bias, win_label = window_bias_at(slot, gap=gap, vix=vix, news_score=news_score, orb_status=orb_status, opex=opex, orb_range_atr=orb_range_atr, atr=daily_atr, gap_confirmed=gap_confirmed, ssr_score=score)
         win_factor  = {"bull": 0.5, "bear": -0.5, "chop": 0.0, "neutral": 0.0}[win_bias]
         _dir_conf   = min(1.0, abs(direction) + 0.15)
         _drift      = price - base_price
@@ -2666,9 +2789,17 @@ def compute_group_weights(today_date=None):  # today_date param IS the cache key
                 else:
                     continue
 
-                # Skip flat days — moves < 5 pts are noise, not reliable training signal.
+                # Skip flat days — ATR-relative threshold (1/8 ATR, floor 8pt) replaces fixed 5pt.
+                # At ATR ~70, 5pt is noise (~7% of daily range); ATR/8 keeps "directional" meaningful.
                 # Previously these were forced into bear (−1), biasing weights in bear markets.
-                if abs(_day_move) < 5.0:
+                try:
+                    _h_s = _sb["High"].squeeze(); _l_s = _sb["Low"].squeeze(); _cp = _sb["Close"].squeeze().shift()
+                    _tr_s = pd.concat([_h_s - _l_s, (_h_s - _cp).abs(), (_l_s - _cp).abs()], axis=1).max(axis=1)
+                    _atr_s = float(_tr_s.rolling(14).mean().iloc[-1])
+                    _flat_thresh = max(8.0, _atr_s * 0.125) if (_atr_s == _atr_s and _atr_s > 0) else 8.0
+                except Exception:
+                    _flat_thresh = 8.0
+                if abs(_day_move) < _flat_thresh:
                     continue
                 _act = 1 if _day_move > 0 else -1
 
@@ -2782,8 +2913,22 @@ def compute_historical_analysis():
 
                 _nxt = float(_close.iloc[_i + 1])
                 _cur = float(_close.iloc[_i])
-                _up  = _nxt > _cur + 5      # >5pt = directional bull
-                _dn  = _nxt < _cur - 5      # >5pt drop = directional bear
+                # ATR-relative directional label (replaces fixed 5pt — too tight at current ATR ~70).
+                # 1/8 of daily ATR, floor of 8pt, captures genuine directional moves across vol regimes.
+                try:
+                    _h = _spx_sl["High"].squeeze()
+                    _l = _spx_sl["Low"].squeeze()
+                    _c_prev = _spx_sl["Close"].squeeze().shift()
+                    _tr = pd.concat([_h - _l, (_h - _c_prev).abs(), (_l - _c_prev).abs()], axis=1).max(axis=1)
+                    _atr_today = float(_tr.rolling(14).mean().iloc[-1])
+                    if _atr_today == _atr_today and _atr_today > 0:
+                        _lt = max(8.0, _atr_today * 0.125)
+                    else:
+                        _lt = 8.0
+                except Exception:
+                    _lt = 8.0
+                _up  = _nxt > _cur + _lt    # >ATR/8 = directional bull
+                _dn  = _nxt < _cur - _lt    # >ATR/8 drop = directional bear
                 _bull_call = _core_sc >= 55
                 _bear_call = _core_sc <= 44
                 if not _bull_call and not _bear_call:
@@ -2879,7 +3024,7 @@ def compute_historical_analysis():
 
 
 @st.cache_data(ttl=3600)
-def _signal_drift_check(n_days: int = 10, flag_threshold: float = 0.70):
+def _signal_drift_check(n_days: int = 7, flag_threshold: float = 0.65):
     """
     Scan each core signal over the last n_days completed trading days.
 
@@ -2943,8 +3088,16 @@ def _signal_drift_check(n_days: int = 10, flag_threshold: float = 0.70):
 
             _nxt = float(_close.iloc[_i + 1])
             _cur = float(_close.iloc[_i])
-            _next_up = _nxt > _cur + 5    # clear bull outcome
-            _next_dn = _nxt < _cur - 5    # clear bear outcome
+            # ATR-relative directional threshold (1/8 ATR, floor 8pt) replaces fixed 5pt.
+            try:
+                _h_d = _spx_sl["High"].squeeze(); _l_d = _spx_sl["Low"].squeeze(); _cp_d = _spx_sl["Close"].squeeze().shift()
+                _tr_d = pd.concat([_h_d - _l_d, (_h_d - _cp_d).abs(), (_l_d - _cp_d).abs()], axis=1).max(axis=1)
+                _atr_d = float(_tr_d.rolling(14).mean().iloc[-1])
+                _drift_lt = max(8.0, _atr_d * 0.125) if (_atr_d == _atr_d and _atr_d > 0) else 8.0
+            except Exception:
+                _drift_lt = 8.0
+            _next_up = _nxt > _cur + _drift_lt    # clear bull outcome (ATR-relative)
+            _next_dn = _nxt < _cur - _drift_lt    # clear bear outcome (ATR-relative)
             if not _next_up and not _next_dn:
                 continue   # ambiguous day — skip to avoid noise
 
@@ -3051,7 +3204,7 @@ _core_signals_binary = {k: v for k, v in signals.items() if SIGNAL_TIERS.get(k) 
 # score in the wrong direction.  The original binary value is preserved in
 # the UI display — only the scoring copy (signals dict) is modified here.
 try:
-    _live_drift_flags = _signal_drift_check(n_days=10, flag_threshold=0.70)
+    _live_drift_flags = _signal_drift_check(n_days=7, flag_threshold=0.65)
     _drift_dampened_names = set()
     for _ldf in _live_drift_flags:
         _ldsig = _ldf["name"] if isinstance(_ldf, dict) else _ldf
@@ -3462,7 +3615,7 @@ except Exception:
 # knows the signal is temporarily unreliable and should be discounted.
 _drift_alert_html = ""
 try:
-    _drifting_sigs = _signal_drift_check(n_days=10, flag_threshold=0.70)
+    _drifting_sigs = _signal_drift_check(n_days=7, flag_threshold=0.65)
     if _drifting_sigs:
         _drift_rows = ""
         for _ds in _drifting_sigs:
@@ -3928,7 +4081,7 @@ with _tab_research:
     with st.expander(f"📊 Signal Breakdown — {buys} Buy / {sells} Sell · Core SSR: {_core_ssr} · Live-Adj: {score}", expanded=False):
         _INTRADAY_SIGS = {"RSI Above 50", "RSI Trend Zone"} if (_intra_rsi is not None and _is_rth_now) else set()
         # Tier label + color for each signal
-        _TIER_LABEL = {"core": "", "session": ("session", "#f59e0b"), "live": ("live", "#64748b")}
+        _TIER_LABEL = {"core": "", "session": ("session", "#f59e0b"), "live": ("live", "#64748b"), "display": ("ref", "#6b7280")}
         bull_sigs = {k:v for k,v in signals.items() if v==1}
         bear_sigs = {k:v for k,v in signals.items() if v==0}
         scol1, scol2, scol3 = st.columns(3)
@@ -4055,7 +4208,9 @@ with _tab_research:
                         _wk_open  = float(_opens.iloc[_nxt_start]) if len(_opens) > _nxt_start else float(_closes.iloc[_nxt_start])
                         _wk_close = float(_closes.iloc[_nxt_end - 1])
                         _wk_move  = round(_wk_close - _wk_open, 1)
-                        _actual   = "bull" if _wk_move > 5 else ("bear" if _wk_move < -5 else "neutral")
+                        # Weekly threshold raised from 5pt to 25pt — over 5 sessions, 5pt is near-noise
+                        # (sub-1% of SPX); 25pt is ~35% of one daily ATR, a genuine directional move.
+                        _actual   = "bull" if _wk_move > 25 else ("bear" if _wk_move < -25 else "neutral")
                         _correct  = (_proj_call == _actual) if _proj_call != "neutral" else None
                         _wk_label = _dates[_nxt_start].strftime("%b %d")
                         _results.append({
@@ -4162,9 +4317,10 @@ with _tab_research:
     # ─────────────────────────────────────────────────────────────────────────
     with st.expander("📐 Regime Accuracy Breakdown — 2yr Walk-Forward (click to expand)", expanded=False):
         st.caption(
-            "Uses core SSR only (28 backtestable signals, equal group weights). "
+            "Uses core SSR only (22 backtestable signals, equal group weights). "
             "Predicted direction: score ≥55 = bull, ≤44 = bear; neutral skipped. "
-            "Actual = next-day SPX close vs today's close (>5 pts = bull, <−5 = bear). "
+            "Actual = next-day SPX close vs today's close, ATR-relative threshold (≥ATR/8, floor 8pt). "
+            "Regime bins with n<25 flagged as 'insufficient' — binomial 95% CI too wide to act on. "
             "Run once per day (cached 24h) — first run downloads ~13 tickers."
         )
         if st.button("🔬 Run Regime & Ablation Analysis", key="run_ha"):
@@ -4248,11 +4404,21 @@ with _tab_research:
                         f'<table style="width:100%;border-collapse:collapse">{_band_rows}</table></div>',
                         unsafe_allow_html=True)
 
+            # Minimum samples before a regime bucket's accuracy is statistically meaningful.
+            # With binomial 95% CI of ~±10pp at n=25, p=0.5, anything below this is noise dressed up as signal.
+            MIN_REGIME_N = 25
             def _regime_table(title, buckets, labels):
                 rows = ""
                 for k, lbl in labels:
                     d = buckets.get(k, {"h":0,"t":0})
                     if d["t"] < 3: continue
+                    if d["t"] < MIN_REGIME_N:
+                        # Insufficient sample — show n but mark percent as unreliable
+                        rows += (f'<tr><td style="padding:4px 10px;font-size:12px;color:#94a3b8">{lbl}</td>'
+                                 f'<td style="padding:4px 8px;font-size:11px;font-style:italic;color:#64748b">insufficient</td>'
+                                 f'<td style="padding:4px 8px;font-size:11px;color:#475569">n={d["t"]} (&lt;{MIN_REGIME_N})</td>'
+                                 f'<td style="padding:4px 12px;min-width:80px"></td></tr>')
+                        continue
                     pct = int(d["h"] / d["t"] * 100)
                     c   = "#4ade80" if pct >= 60 else ("#f59e0b" if pct >= 50 else "#f87171")
                     bar = f'<div style="flex:1;background:#1e2130;border-radius:3px;height:6px;overflow:hidden"><div style="width:{pct}%;height:100%;background:{c};border-radius:3px"></div></div>'
@@ -5510,8 +5676,9 @@ with _tab_research:
 # ─────────────────────────────────────────────────────────────────────────────
 _LEDGER_DIR  = "Codex"
 _LEDGER_FILE = os.path.join(_LEDGER_DIR, "shadow-ledger.csv")
-_LEDGER_COLS = ["date","core_ssr","live_adj_ssr","vix","gap_pts","event_flags",
-                "opex","orb_status","gap_down_abstain","actual_dir","actual_pts"]
+_LEDGER_COLS = ["date","core_ssr","live_adj_ssr","vix","vix_regime","gap_pts","gap_regime",
+                "dow","event_flags","opex","orb_status","gap_down_abstain",
+                "actual_dir","actual_pts"]   # aligned with populate_shadow_ledger.py schema
 
 def _ledger_read():
     """Load the shadow ledger CSV; return list of dicts."""
@@ -5575,12 +5742,21 @@ if _is_post_close:
     _existing_dates = {r["date"] for r in _existing_rows}
     if _today_str not in _existing_dates:
         _today_events_str = ",".join(sorted(get_event_types_today()))
+        # Add regime classification and DOW so live writes match populate_shadow_ledger.py schema,
+        # enabling apples-to-apples comparison between historical (backfilled) and live rows.
+        _live_gap_pts   = round(live_gap, 1)
+        _live_vix_reg   = "high" if vix_now > VIX_FEAR_THRESHOLD else ("low" if vix_now < VIX_CALM_THRESHOLD else "mid")
+        _live_gap_reg   = "up" if _live_gap_pts > GAP_THRESHOLD else ("down" if _live_gap_pts < -GAP_THRESHOLD else "flat")
+        _live_dow_name  = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri"}.get(now_est.weekday(), "?")
         _ledger_append({
             "date":              _today_str,
             "core_ssr":          str(_core_ssr),
-            "live_adj_ssr":      str(score),
+            "live_adj_ssr":      str(score),       # ← Live-Adj SSR captured at market close
             "vix":               str(vix_now),
-            "gap_pts":           str(round(live_gap, 1)),
+            "vix_regime":        _live_vix_reg,
+            "gap_pts":           str(_live_gap_pts),
+            "gap_regime":        _live_gap_reg,
+            "dow":               _live_dow_name,
             "event_flags":       _today_events_str if _today_events_str else "none",
             "opex":              "yes" if _opex_week else "no",
             "orb_status":        _orb_status,

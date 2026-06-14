@@ -37,6 +37,11 @@ GAP_THRESHOLD      = 25.0
 VIX_FEAR_THRESHOLD = 25.0
 VIX_CALM_THRESHOLD = 18.0
 
+# ATR-based directional label threshold — replaces legacy fixed 5pt threshold.
+# At SPX 7500 / ATR 70, a 5pt move is ~7% of daily ATR (noise); 1/8 of ATR is meaningful.
+LABEL_ATR_FRACTION    = 0.125
+LABEL_THRESHOLD_FLOOR = 8.0
+
 SECTOR_TICKERS = ["XLF","XLK","XLE","XLV","XLI","XLC","XLY","XLP","XLB","XLRE","XLU"]
 
 SIGNAL_GROUPS: dict[str, list[str]] = {
@@ -46,15 +51,18 @@ SIGNAL_GROUPS: dict[str, list[str]] = {
     # RSI Above 50 removed: ablation delta +1.0% drag (2yr +1.4pp post-prune).  False-bullish
     # votes on counter-trend bounces that fail; RSI Strong Trend (>60) covers the useful content.
     "Volatility": ["VIX Below 20", "VIX Falling", "ATR Contracting",
-                   "VIX Below 15", "VIX 1d Down", "VVIX Below 100"],
+                   "VIX Below 15", "VIX 1d Down", "VVIX Below 100", "VIX Term Contango"],
     # VVIX Below 100: second-order vol signal (VIX of VIX < 100 = calm).  2yr +1.9pp, 60d +2.9pp.
-    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%"],
-    "Extremes":   ["Stoch Bullish"],
+    "Breadth":    ["Volume Above Average", "Sector Breadth ≥ 50%", "Sector Breadth ≥ 85%", "XLK Leadership"],
+    "Extremes":   ["Stoch Bullish"],   # iter 1 restored: 252d dropped 4pp without it
     # RSI Trend Zone removed: ablation delta +1.3% — fires on early-bounce days that fail;
     # Momentum group RSI signals cover the useful directional RSI information.
     "Options":    ["Put/Call Fear Premium", "Put/Call Fear Abating"],
     "Macro":      ["Yield Curve Positive", "Credit Spread Calm"],
-    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Up Day", "Gap Down Contrarian"],
+    "Context":    ["Gap/ATR Normal", "VIX No Spike", "Gap Down Contrarian", "Pre-FOMC Eve"],
+    # Gap Up Day removed from scoring: 2yr ablation +1.1pp drag — gap-up days trigger fade,
+    # so binary bullish vote is counter-predictive.  Still computed in _compute_signals for
+    # consistency with backtest_export but excluded from group scoring via this list.
     # Gap Down Contrarian: optional — only in sigs on large gap-down days
     # Seasonal Bull Week removed: not computed in _compute_signals(), caused 0% coverage in ablation
     "Position":   ["52w Range Upper Half",
@@ -70,6 +78,16 @@ CORE_SIGNALS: list[str] = [s for grp in SIGNAL_GROUPS.values() for s in grp]
 # 2yr walk-forward covers 2025-01-21 → 2026-04-01, so 2025 dates are required for
 # accurate event-day regime classification; previously only 2026 dates were included.
 # PCE added 2026-04-06: BEA Personal Income & Outlays (Fed's preferred inflation gauge).
+# FOMC-only date set — used by Pre-FOMC Eve signal.
+_FOMC_DATES: set[str] = {
+    # 2025
+    "2025-01-29","2025-03-19","2025-05-07","2025-06-18",
+    "2025-07-30","2025-09-17","2025-11-07","2025-12-17",
+    # 2026
+    "2026-01-28","2026-03-18","2026-04-29","2026-06-10","2026-07-29",
+    "2026-09-16","2026-11-04","2026-12-16",
+}
+
 _ECON_DATES: set[str] = {
     # 2025 FOMC
     "2025-01-29","2025-03-19","2025-05-07","2025-06-18",
@@ -161,6 +179,8 @@ def _compute_signals(
     vix_sl: pd.DataFrame,
     sec_sl: dict[str, pd.DataFrame],
     vvix_sl: "pd.Series | None" = None,
+    vix9d_sl: "pd.Series | None" = None,
+    as_of_date: "pd.Timestamp | None" = None,
 ) -> dict[str, int]:
     """Compute the 29 closed-bar signals (23 active + 7 display-only)."""
     sigs: dict[str, int] = {}
@@ -208,9 +228,12 @@ def _compute_signals(
         vix_c = _squeeze(vix_sl, "Close")
         vv    = _sf(vix_c, default=20.0)
         sigs["VIX Below 20"]  = int(vv < 20)
-        sigs["VIX Below 15"]  = int(vv < 15)
+        # VIX Falling computed FIRST so VIX Below 15 can gate on it.
         # VIX Falling: 5-day trend — aligned with backtest_export.py and app.py
         sigs["VIX Falling"]   = int(len(vix_c) >= 6 and vv < _sf(vix_c, -6))
+        # VIX Below 15 CONDITIONAL on VIX Falling (2yr ablation: raw <15 has +0.8pp drag —
+        # ultra-low VIX often precedes complacency corrections; require contracting momentum).
+        sigs["VIX Below 15"]  = int(vv < 15 and sigs["VIX Falling"] == 1)
         # VIX 1d Down: single-session decline — independent from 5-day VIX Falling
         sigs["VIX 1d Down"]   = int(len(vix_c) >= 2 and vv < _sf(vix_c, -2))
         if len(vix_c) >= 4:
@@ -221,9 +244,14 @@ def _compute_signals(
         else:
             sigs["VIX 3d Relief"] = 0
             sigs["VIX No Spike"]  = 1
-        sigs["ATR Contracting"] = int(
-            len(atr_v.dropna()) >= 20 and _sf(atr_v) < _sf(atr_v, -5)
-        )
+        # ATR Contracting: percentile-based (current ATR < 85% of 20d avg) — was 1d compare.
+        _atr_dna_r = atr_v.dropna()
+        if len(_atr_dna_r) >= 20:
+            _atr_now_r = float(_atr_dna_r.iloc[-1])
+            _atr_avg_r = float(_atr_dna_r.iloc[-20:].mean())
+            sigs["ATR Contracting"] = int(_atr_now_r < _atr_avg_r * 0.85)
+        else:
+            sigs["ATR Contracting"] = 0
 
     # VVIX — second-order volatility (VIX of VIX < 100 = calm options market)
     # Omitted (not 0) when vvix data is unavailable so the group falls back gracefully.
@@ -233,11 +261,24 @@ def _compute_signals(
         except Exception:
             pass  # omit on error
 
-    # Breadth — accumulation (volume + price confirmation)
+    # VIX Term Contango: VIX9D < VIX (30d) = no near-term fear premium.
+    if vix9d_sl is not None and len(vix9d_sl) >= 1 and not vix_sl.empty:
+        try:
+            _v9_ab = float(vix9d_sl.iloc[-1])
+            _v30_ab = _sf(_squeeze(vix_sl, "Close"), default=20.0)
+            sigs["VIX Term Contango"] = int(_v9_ab < _v30_ab)
+        except Exception:
+            pass
+
+    # Breadth — Accumulation Day: above-avg volume + intraday strength (close > open).
     if len(volume) >= 20:
         vol_avg  = volume.rolling(20).mean()
         vol_ok   = _sf(volume) > _sf(vol_avg)
-        price_up = len(close) >= 2 and _sf(close) > _sf(close, -2)
+        try:
+            open_s   = _squeeze(spx_sl, "Open")
+            price_up = _sf(close) > _sf(open_s)
+        except Exception:
+            price_up = len(close) >= 2 and _sf(close) > _sf(close, -2)
         sigs["Volume Above Average"] = int(vol_ok and price_up)
 
     total_sec = len(sec_sl)
@@ -256,6 +297,20 @@ def _compute_signals(
         sigs["Sector Breadth ≥ 50%"] = int((above / total_sec) >= 0.50)
         sigs["Sector Breadth ≥ 70%"] = int((above / total_sec) >= 0.70)
         sigs["Sector Breadth ≥ 85%"] = int((above / total_sec) >= 0.85)
+
+        # XLK Leadership: tech (XLK) 5d return > defensive avg (XLP+XLU).
+        try:
+            xk = sec_sl.get("XLK"); xp = sec_sl.get("XLP"); xu = sec_sl.get("XLU")
+            if xk is not None and xp is not None and xu is not None and \
+               not xk.empty and not xp.empty and not xu.empty:
+                xkc = _squeeze(xk, "Close"); xpc = _squeeze(xp, "Close"); xuc = _squeeze(xu, "Close")
+                if len(xkc) >= 6 and len(xpc) >= 6 and len(xuc) >= 6:
+                    xk_r = float(xkc.iloc[-1] / xkc.iloc[-6] - 1)
+                    df_r = (float(xpc.iloc[-1] / xpc.iloc[-6] - 1) +
+                            float(xuc.iloc[-1] / xuc.iloc[-6] - 1)) / 2
+                    sigs["XLK Leadership"] = int(xk_r > df_r)
+        except Exception:
+            pass
 
     # Gap Up Day + Gap Down Contrarian — require Open column
     if "Open" in spx_sl.columns:
@@ -295,6 +350,16 @@ def _compute_signals(
     if len(high) >= 6:
         sigs["Above 5d High"]  = int(c > float(high.iloc[-6:-1].max()))
 
+    # Pre-FOMC Eve: 1 = next trading day is FOMC.
+    if as_of_date is not None:
+        try:
+            nd = as_of_date + pd.Timedelta(days=1)
+            while nd.weekday() >= 5:
+                nd += pd.Timedelta(days=1)
+            sigs["Pre-FOMC Eve"] = int(nd.strftime("%Y-%m-%d") in _FOMC_DATES)
+        except Exception:
+            sigs["Pre-FOMC Eve"] = 0
+
     return sigs
 
 
@@ -316,24 +381,31 @@ def _pct(h: int, t: int) -> str:
 
 # ── Main ablation loop ────────────────────────────────────────────────────────
 
-def run_ablation(verbose: bool = False) -> dict:
-    print("[run_ablation] Fetching 2y SPX …")
-    spx = yf.download("^GSPC", period="2y", interval="1d",
+def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
+    print(f"[run_ablation] Fetching {period} SPX …")
+    spx = yf.download("^GSPC", period=period, interval="1d",
                       progress=False, auto_adjust=True)
-    print("[run_ablation] Fetching 2y VIX …")
-    vix = yf.download("^VIX",  period="2y", interval="1d",
+    print(f"[run_ablation] Fetching {period} VIX …")
+    vix = yf.download("^VIX",  period=period, interval="1d",
                       progress=False, auto_adjust=True)
-    print("[run_ablation] Fetching 2y VVIX …")
+    print(f"[run_ablation] Fetching {period} VVIX …")
     try:
-        _vvix_df = yf.download("^VVIX", period="2y", interval="1d",
+        _vvix_df = yf.download("^VVIX", period=period, interval="1d",
                                progress=False, auto_adjust=True)
         vvix_close = _squeeze(_vvix_df, "Close") if not _vvix_df.empty else pd.Series(dtype=float)
     except Exception:
         vvix_close = pd.Series(dtype=float)
+    print(f"[run_ablation] Fetching {period} VIX9D …")
+    try:
+        _v9_df = yf.download("^VIX9D", period=period, interval="1d",
+                             progress=False, auto_adjust=True)
+        vix9d_close = _squeeze(_v9_df, "Close") if not _v9_df.empty else pd.Series(dtype=float)
+    except Exception:
+        vix9d_close = pd.Series(dtype=float)
     sec: dict[str, pd.DataFrame] = {}
     for t in SECTOR_TICKERS:
         try:
-            sec[t] = yf.download(t, period="2y", interval="1d",
+            sec[t] = yf.download(t, period=period, interval="1d",
                                   progress=False, auto_adjust=True)
         except Exception:
             sec[t] = pd.DataFrame()
@@ -346,6 +418,17 @@ def run_ablation(verbose: bool = False) -> dict:
     close = _squeeze(spx, "Close")
     openp = _squeeze(spx, "Open")
     n     = len(spx)
+
+    # Pre-compute ATR series for ATR-relative directional label (replaces fixed 5pt).
+    _atr_v = _atr_series(spx)
+    def _label_threshold(idx: int) -> float:
+        try:
+            _a = float(_atr_v.iloc[idx])
+            if _a == _a:    # NaN check
+                return max(LABEL_THRESHOLD_FLOOR, _a * LABEL_ATR_FRACTION)
+        except Exception:
+            pass
+        return LABEL_THRESHOLD_FLOOR
 
     # ── Accumulators ──────────────────────────────────────────────────────────
     _reg: dict[str, dict] = {
@@ -373,8 +456,10 @@ def run_ablation(verbose: bool = False) -> dict:
             sec_sl   = {k: v[v.index <= cutoff]
                         for k, v in sec.items() if not v.empty}
             vvix_sl  = vvix_close[vvix_close.index <= cutoff] if not vvix_close.empty else pd.Series(dtype=float)
+            vix9d_sl = vix9d_close[vix9d_close.index <= cutoff] if not vix9d_close.empty else pd.Series(dtype=float)
 
-            sigs     = _compute_signals(spx_sl, vix_sl, sec_sl, vvix_sl)
+            sigs     = _compute_signals(spx_sl, vix_sl, sec_sl, vvix_sl, vix9d_sl,
+                                        as_of_date=cutoff)
             score    = _grp_score(sigs)
 
             # Opening gap — computed early for gap-down abstain gate and regime bucket.
@@ -382,8 +467,9 @@ def run_ablation(verbose: bool = False) -> dict:
 
             nxt      = float(close.iloc[i + 1])
             cur      = float(close.iloc[i])
-            up       = nxt > cur + 5
-            dn       = nxt < cur - 5
+            _lt      = _label_threshold(i)
+            up       = nxt > cur + _lt
+            dn       = nxt < cur - _lt
             bull_c   = score >= 55
             bear_c   = score <= 44
             if not bull_c and not bear_c:
@@ -393,6 +479,37 @@ def run_ablation(verbose: bool = False) -> dict:
             # Bear calls on large-gap-down days are wrong ~68% of the time.
             if gp < -GAP_THRESHOLD and bear_c:
                 continue
+
+            # Gap-up bear abstain: symmetric to gap-down.  Gap-up reversal-attempts produce
+            # bad bear calls from lagging signals.
+            if gp > GAP_THRESHOLD and bear_c:
+                continue
+
+            # Group-agreement filter: abstain when ≥3 of 8 groups vote AGAINST SSR direction.
+            # Structural filter (no calibrated thresholds) — rejects high-DISAGREEMENT calls.
+            _gpd_v = {}
+            for _gn, _gs in SIGNAL_GROUPS.items():
+                _pr = [sigs[k] for k in _gs if k in sigs]
+                if not _pr:
+                    _gpd_v[_gn] = 0
+                    continue
+                _gs_avg = sum(_pr) / len(_pr)
+                if _gs_avg > 0.5:   _gpd_v[_gn] =  1
+                elif _gs_avg < 0.5: _gpd_v[_gn] = -1
+                else:               _gpd_v[_gn] =  0
+            _bg = sum(1 for v in _gpd_v.values() if v ==  1)
+            _eg = sum(1 for v in _gpd_v.values() if v == -1)
+            if bull_c and _eg >= 3:
+                continue
+            if bear_c and _bg >= 3:
+                continue
+
+            # Thursday bear abstain: structural DOW drag (~48% accuracy, below random).
+            if spx.index[i].weekday() == 3 and bear_c:    # 3 = Thursday
+                continue
+
+            # Iter 2 Monday bear abstain reverted: pure in-sample data snooping (rule found AND
+            # validated on same 5yr window).  Awaiting 2015-2020 OOS confirmation.
 
             # Strong-bear abstain: SSR ≤ 24 = extreme pessimism already priced in.
             # Historical accuracy: 30.8% in 2yr rolling window (+2.6pp if abstained).
@@ -624,13 +741,14 @@ def build_report(res: dict) -> str:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="2yr walk-forward regime & ablation runner")
+    ap = argparse.ArgumentParser(description="Walk-forward regime & ablation runner (default 2y)")
     ap.add_argument("--out",     default=str(ROOT / "Codex" / "ablation-report.md"),
                     help="Output markdown path")
+    ap.add_argument("--period",  default="2y", help="yfinance history period (2y, 5y, max)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    res    = run_ablation(verbose=args.verbose)
+    res    = run_ablation(verbose=args.verbose, period=args.period)
     report = build_report(res)
 
     out = Path(args.out)
