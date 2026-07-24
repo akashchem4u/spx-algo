@@ -381,7 +381,11 @@ def _pct(h: int, t: int) -> str:
 
 # ── Main ablation loop ────────────────────────────────────────────────────────
 
-def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
+GATE_NAMES = ("gap_down", "gap_up", "group_agreement", "thursday", "strong_bear")
+
+
+def run_ablation(verbose: bool = False, period: str = "2y",
+                  disabled_gates: frozenset[str] = frozenset()) -> dict:
     print(f"[run_ablation] Fetching {period} SPX …")
     spx = yf.download("^GSPC", period=period, interval="1d",
                       progress=False, auto_adjust=True)
@@ -477,12 +481,12 @@ def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
 
             # Gap-down bear abstain: mirrors backtest_export.py gate.
             # Bear calls on large-gap-down days are wrong ~68% of the time.
-            if gp < -GAP_THRESHOLD and bear_c:
+            if gp < -GAP_THRESHOLD and bear_c and "gap_down" not in disabled_gates:
                 continue
 
             # Gap-up bear abstain: symmetric to gap-down.  Gap-up reversal-attempts produce
             # bad bear calls from lagging signals.
-            if gp > GAP_THRESHOLD and bear_c:
+            if gp > GAP_THRESHOLD and bear_c and "gap_up" not in disabled_gates:
                 continue
 
             # Group-agreement filter: abstain when ≥3 of 8 groups vote AGAINST SSR direction.
@@ -499,13 +503,14 @@ def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
                 else:               _gpd_v[_gn] =  0
             _bg = sum(1 for v in _gpd_v.values() if v ==  1)
             _eg = sum(1 for v in _gpd_v.values() if v == -1)
-            if bull_c and _eg >= 3:
-                continue
-            if bear_c and _bg >= 3:
-                continue
+            if "group_agreement" not in disabled_gates:
+                if bull_c and _eg >= 3:
+                    continue
+                if bear_c and _bg >= 3:
+                    continue
 
             # Thursday bear abstain: structural DOW drag (~48% accuracy, below random).
-            if spx.index[i].weekday() == 3 and bear_c:    # 3 = Thursday
+            if spx.index[i].weekday() == 3 and bear_c and "thursday" not in disabled_gates:    # 3 = Thursday
                 continue
 
             # Iter 2 Monday bear abstain reverted: pure in-sample data snooping (rule found AND
@@ -513,7 +518,7 @@ def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
 
             # Strong-bear abstain: SSR ≤ 24 = extreme pessimism already priced in.
             # Historical accuracy: 30.8% in 2yr rolling window (+2.6pp if abstained).
-            if bear_c and score <= 24:
+            if bear_c and score <= 24 and "strong_bear" not in disabled_gates:
                 continue
 
             correct  = (bull_c and up) or (bear_c and dn)
@@ -746,9 +751,13 @@ def main() -> None:
                     help="Output markdown path")
     ap.add_argument("--period",  default="2y", help="yfinance history period (2y, 5y, max)")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--disable-gate", action="append", default=[], choices=list(GATE_NAMES),
+                    help="Disable a named abstain gate for this run (repeatable). "
+                         f"Choices: {', '.join(GATE_NAMES)}")
     args = ap.parse_args()
 
-    res    = run_ablation(verbose=args.verbose, period=args.period)
+    res    = run_ablation(verbose=args.verbose, period=args.period,
+                          disabled_gates=frozenset(args.disable_gate))
     report = build_report(res)
 
     out = Path(args.out)
