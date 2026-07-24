@@ -2626,11 +2626,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── AUTO-REFRESH every 60 seconds ────────────────────────────────────────────
+# ── AUTO-REFRESH every 5 minutes ────────────────────────────────────────────
 # Injects a hidden JS timer that reloads the Streamlit page.
 # Combined with fetch_live() ttl=60 and fetch_data() ttl=300, every reload
-# gets fresh ES/SPX prices and fresh SSR every 5th reload.
-_REFRESH_SECS = 60
+# gets fresh ES/SPX prices and fresh SSR every reload.
+_REFRESH_SECS = 300
 _components.html(f"""
 <script>
 (function() {{
@@ -5956,7 +5956,7 @@ with _tab_research:
 
 st.markdown("""
 <div style="text-align:center;color:#374151;font-size:11px;margin-top:10px;padding-bottom:6px">
-  🔄 Auto-refreshes every 60s &nbsp;·&nbsp; ES &amp; SPX live prices update each refresh &nbsp;·&nbsp;
+  🔄 Auto-refreshes every 5 min &nbsp;·&nbsp; ES &amp; SPX live prices update each refresh &nbsp;·&nbsp;
   SSR recomputes every 5 min &nbsp;·&nbsp; Options flow via 🦅 unusualwhales.com &nbsp;·&nbsp;
   For educational purposes only · Not financial advice
 </div>
