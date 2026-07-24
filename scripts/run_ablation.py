@@ -450,9 +450,9 @@ def run_ablation(verbose: bool = False, period: str = "2y") -> dict:
     for i in range(START_IDX, n - 1):
         try:
             spx_sl   = spx.iloc[:i + 1]
-            vix_sl   = vix.iloc[:i + 1]
             dt       = spx.index[i].date()
             cutoff   = pd.Timestamp(dt)
+            vix_sl   = vix[vix.index <= cutoff]
             sec_sl   = {k: v[v.index <= cutoff]
                         for k, v in sec.items() if not v.empty}
             vvix_sl  = vvix_close[vvix_close.index <= cutoff] if not vvix_close.empty else pd.Series(dtype=float)
