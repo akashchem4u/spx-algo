@@ -385,32 +385,34 @@ GATE_NAMES = ("gap_down", "gap_up", "group_agreement", "thursday", "strong_bear"
 
 
 def run_ablation(verbose: bool = False, period: str = "2y",
-                  disabled_gates: frozenset[str] = frozenset()) -> dict:
-    print(f"[run_ablation] Fetching {period} SPX …")
-    spx = yf.download("^GSPC", period=period, interval="1d",
-                      progress=False, auto_adjust=True)
-    print(f"[run_ablation] Fetching {period} VIX …")
-    vix = yf.download("^VIX",  period=period, interval="1d",
-                      progress=False, auto_adjust=True)
-    print(f"[run_ablation] Fetching {period} VVIX …")
+                  disabled_gates: frozenset[str] = frozenset(),
+                  start: str | None = None, end: str | None = None) -> dict:
+    # Fixed calendar window (--start/--end) takes precedence over rolling --period.
+    # Used for the held-out confirmation window, which must be a stable block of
+    # history that does not shift as "today" advances (unlike period="2y"/"10y").
+    _fetch_kw = {"start": start, "end": end} if start else {"period": period}
+    _label    = f"{start}→{end or 'now'}" if start else period
+    print(f"[run_ablation] Fetching {_label} SPX …")
+    spx = yf.download("^GSPC", interval="1d", progress=False, auto_adjust=True, **_fetch_kw)
+    print(f"[run_ablation] Fetching {_label} VIX …")
+    vix = yf.download("^VIX",  interval="1d", progress=False, auto_adjust=True, **_fetch_kw)
+    print(f"[run_ablation] Fetching {_label} VVIX …")
     try:
-        _vvix_df = yf.download("^VVIX", period=period, interval="1d",
-                               progress=False, auto_adjust=True)
+        _vvix_df = yf.download("^VVIX", interval="1d", progress=False, auto_adjust=True, **_fetch_kw)
         vvix_close = _squeeze(_vvix_df, "Close") if not _vvix_df.empty else pd.Series(dtype=float)
     except Exception:
         vvix_close = pd.Series(dtype=float)
-    print(f"[run_ablation] Fetching {period} VIX9D …")
+    print(f"[run_ablation] Fetching {_label} VIX9D …")
     try:
-        _v9_df = yf.download("^VIX9D", period=period, interval="1d",
-                             progress=False, auto_adjust=True)
+        _v9_df = yf.download("^VIX9D", interval="1d", progress=False, auto_adjust=True, **_fetch_kw)
         vix9d_close = _squeeze(_v9_df, "Close") if not _v9_df.empty else pd.Series(dtype=float)
     except Exception:
         vix9d_close = pd.Series(dtype=float)
     sec: dict[str, pd.DataFrame] = {}
     for t in SECTOR_TICKERS:
         try:
-            sec[t] = yf.download(t, period=period, interval="1d",
-                                  progress=False, auto_adjust=True)
+            sec[t] = yf.download(t, interval="1d",
+                                  progress=False, auto_adjust=True, **_fetch_kw)
         except Exception:
             sec[t] = pd.DataFrame()
     print(f"[run_ablation] SPX bars: {len(spx)}, VIX bars: {len(vix)}, VVIX bars: {len(vvix_close)}")
@@ -519,6 +521,16 @@ def run_ablation(verbose: bool = False, period: str = "2y",
             # Strong-bear abstain: SSR ≤ 24 = extreme pessimism already priced in.
             # Historical accuracy: 30.8% in 2yr rolling window (+2.6pp if abstained).
             if bear_c and score <= 24 and "strong_bear" not in disabled_gates:
+                continue
+
+            # Flat-move exclusion: mirrors backtest_export.py (`if not up and not dn: continue`).
+            # A bull/bear-scored call on a day the price never clears the ATR-relative threshold
+            # in either direction is not a testable claim -- it must be excluded, not auto-scored
+            # as a miss.  This check was missing here (present only in backtest_export.py) since
+            # the file's original fixed-5pt-threshold version, where flat days were rare enough
+            # not to matter; the ATR-relative threshold makes the gap material, especially on
+            # lower-priced/older SPX history where the threshold captures a larger share of days.
+            if not up and not dn:
                 continue
 
             correct  = (bull_c and up) or (bear_c and dn)
@@ -750,6 +762,10 @@ def main() -> None:
     ap.add_argument("--out",     default=str(ROOT / "Codex" / "ablation-report.md"),
                     help="Output markdown path")
     ap.add_argument("--period",  default="2y", help="yfinance history period (2y, 5y, max)")
+    ap.add_argument("--start",   default=None, help="Fixed window start date YYYY-MM-DD "
+                    "(overrides --period; use with --end for a stable held-out window)")
+    ap.add_argument("--end",     default=None, help="Fixed window end date YYYY-MM-DD "
+                    "(only used with --start)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--disable-gate", action="append", default=[], choices=list(GATE_NAMES),
                     help="Disable a named abstain gate for this run (repeatable). "
@@ -757,7 +773,8 @@ def main() -> None:
     args = ap.parse_args()
 
     res    = run_ablation(verbose=args.verbose, period=args.period,
-                          disabled_gates=frozenset(args.disable_gate))
+                          disabled_gates=frozenset(args.disable_gate),
+                          start=args.start, end=args.end)
     report = build_report(res)
 
     out = Path(args.out)
