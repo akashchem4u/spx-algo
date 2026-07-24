@@ -4684,10 +4684,8 @@ with _tab_live:
         _next_time   = _future_rows[0]["time"]      if _future_rows else "—"
 
         st.markdown(f"""
-        <div style="background:linear-gradient(135deg,#0f1a2e,#1a1a2e);border:1px solid #2d3a5a;
-                    border-radius:14px;padding:22px 28px;margin-bottom:16px">
+        <div style="background:linear-gradient(135deg,#0f1a2e,#1a1a2e);border:1px solid #2d3a5a;border-radius:14px;padding:22px 28px;margin-bottom:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">
-
             <!-- Left: big close number -->
             <div>
               <div style="font-size:11px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:6px">
@@ -4700,14 +4698,12 @@ with _tab_live:
                 Range &nbsp;<span style="color:#94a3b8;font-weight:600">{int(_proj_close_lo):,} – {int(_proj_close_hi):,}</span>
               </div>
             </div>
-
             <!-- Middle: live context -->
             <div style="text-align:center">
               <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Now</div>
               <div style="font-size:26px;font-weight:700;color:#f1f5f9">{spx_price:,.1f}</div>
               <div style="font-size:12px;color:{_today_color};margin-top:2px">{_td_sign}{_move_today:+.1f} today &nbsp;({_atr_pct:.0f}% ATR)</div>
             </div>
-
             <!-- Right: remaining move + regime -->
             <div style="text-align:right">
               <div style="font-size:11px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Remaining move</div>
@@ -4717,7 +4713,6 @@ with _tab_live:
                 Next: <span style="color:#94a3b8">{_next_time} {_next_window}</span>
               </div>
             </div>
-
           </div>
         </div>
         """, unsafe_allow_html=True)
