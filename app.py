@@ -2281,6 +2281,8 @@ def generate_weekly_projections(base_price, daily_atr, score, vix=0.0):
 def suggest_trade(score, levels):
     _, _, bias, _ = ssr_meta(score)
     c = levels["current"]; atr14 = levels["atr"]
+    if pd.isna(c) or pd.isna(atr14):
+        return None
     today = date.today()
     friday = today + timedelta(days=(4-today.weekday())%7)
     next_w = today + timedelta(days=7+(4-today.weekday())%7)
@@ -3146,9 +3148,11 @@ _grp_weights_ts = now_est.strftime("%b %d %I:%M %p")   # frozen for this session
 levels  = compute_levels(spx)
 es_price   = live["es_price"]  or levels["current"]
 spx_price  = live["spx_price"] or levels["current"]
-# Guard: if daily SPX data failed, levels["current"] = 0.
-# Patch with live spx_price so gap, delta, and signal calcs don't use 0 as prior close.
-if levels["current"] <= 0 and spx_price > 0:
+# Guard: if daily SPX data failed, levels["current"] = 0.0, or the most recent daily bar was a
+# stale/partial print, levels["current"] can come back NaN (`c <= 0` is False for NaN, so it
+# would silently slip past a `<= 0`-only check). Patch with live spx_price in both cases so
+# gap, delta, and signal calcs -- and suggest_trade()'s strike rounding -- don't operate on 0 or NaN.
+if (levels["current"] <= 0 or pd.isna(levels["current"])) and spx_price > 0:
     levels["current"] = spx_price
 
 # ── Pre-market implied gap injection (MUST happen before SSR scoring) ────────
@@ -5341,7 +5345,7 @@ with _tab_research:
                 'Live accuracy available during market hours (Mon–Fri 9:30 AM+ EST).'
                 '</div>', unsafe_allow_html=True)
         else:
-            _5m_close = _today_5m["Close"].squeeze()
+            _5m_close = _today_5m["Close"]
             if isinstance(_5m_close, pd.DataFrame): _5m_close = _5m_close.iloc[:, 0]
             _5m_open  = float(_5m_close.iloc[0]) if len(_5m_close) else spx_price
 
@@ -5349,7 +5353,9 @@ with _tab_research:
                 hh, mm = map(int, hhmm.split(":"))
                 _mask = ((_today_5m.index.hour == hh) &
                          (_today_5m.index.minute >= mm))
-                _s = _today_5m[_mask]["Close"].squeeze()
+                # No .squeeze() here: a mask matching exactly one row would collapse the
+                # Series to a bare numpy.float64, which has no len() and crashed this call.
+                _s = _today_5m[_mask]["Close"]
                 if isinstance(_s, pd.DataFrame): _s = _s.iloc[:, 0]
                 return round(float(_s.iloc[0]), 1) if len(_s) else None
 
