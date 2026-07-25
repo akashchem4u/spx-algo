@@ -1669,6 +1669,13 @@ def compute_levels(spx):
     if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
     if isinstance(high,  pd.DataFrame): high  = high.iloc[:, 0]
     if isinstance(low,   pd.DataFrame): low   = low.iloc[:, 0]
+    # Drop any row where the daily bar is a stale/partial print (NaN close/high/low) -- e.g. a
+    # yfinance quirk on the current in-progress day. Without this, c/ph/pl/pc below can be NaN,
+    # which the ATR fallback chain doesn't actually protect against (its own fallback multiplies
+    # by the same NaN `c`), and levels["atr"] ends up NaN -- surfacing as "ATR: nan" in the UI
+    # and crashing any downstream int()/round() call that assumes a real number.
+    _valid = close.notna() & high.notna() & low.notna()
+    close, high, low = close[_valid], high[_valid], low[_valid]
     if len(close) < 6:
         return {k: 0.0 for k in ["current","atr","pivot","resistance_1","resistance_2",
                                    "resistance_3","support_1","support_2","support_3",
@@ -3806,7 +3813,7 @@ with cR:
             lrow("Status",
                  f'{"↑ Above" if o["status"]=="above" else "↓ Below" if o["status"]=="below" else "Inside"}',
                  "#4ade80" if o["status"]=="above" else "#f87171" if o["status"]=="below" else "#94a3b8") +
-            lrow("Range", f'{o["range_pts"]} pts  ({round(o["range_pts"]/max(levels["atr"],1)*100)}% ATR)',
+            lrow("Range", f'{o["range_pts"]} pts  ({round(_orb_range_atr*100)}% ATR)',
                  "#f59e0b" if _orb_range_atr >= 0.12 else "#475569") +
             (lrow("Dist/ATR", f'{_orb_distance_atr:.2f}× ATR {"↑" if o["status"]=="above" else "↓"}',
                   "#4ade80" if o["status"]=="above" else "#f87171")
